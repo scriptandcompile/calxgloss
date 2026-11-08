@@ -312,8 +312,67 @@ async fn tls_findings_slot_after_the_thread_spawns() {
 #[tokio::test]
 async fn two_functions_that_lock_the_same_objects_in_opposite_orders_land_a_lock_order_finding() {
     // The classic deadlock shape, invisible to either body read
-    // on its own: one function takes `local_20` before `local_40`,
-    // the other the other way round.
+    // on its own: one function takes `DAT_guard` before
+    // `DAT_monitor`, the other the other way round.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "\
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "\
+  EnterCriticalSection(&DAT_monitor);
+  EnterCriticalSection(&DAT_guard);
+  LeaveCriticalSection(&DAT_guard);
+  LeaveCriticalSection(&DAT_monitor);",
+        ),
+    );
+    let result = scan(program).await;
+
+    let finding = result
+        .findings
+        .iter()
+        .find(|finding| finding.kind() == "lock_order")
+        .expect("the reversed orders read as a lock-order finding");
+    let SyncFinding::LockOrder(record) = finding else {
+        unreachable!("the reversed orders read as a lock-order finding");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.partner, "FUN_18003e750");
+    assert_eq!(record.first_lock, "DAT_guard");
+    assert_eq!(record.second_lock, "DAT_monitor");
+    assert_eq!(
+        record.suggestion,
+        "pick one consistent lock acquisition order"
+    );
+    assert_eq!(record.confidence, 70);
+    // The evidence carries both functions' acquire orders.
+    assert_eq!(
+        record.evidence,
+        "FUN_18003ab00: DAT_guard -> DAT_monitor; \
+             FUN_18003e750: DAT_monitor -> DAT_guard"
+    );
+}
+
+#[tokio::test]
+async fn two_functions_reversing_same_named_stack_slot_locks_file_no_lock_order_finding() {
+    // The false-positive gate (issue #435): `local_20` in one body is
+    // that body's own stack slot, so two reversed bodies share no lock
+    // instance and claim no deadlock. The in-body pairing still sees
+    // both functions' lock pairs — only the cross-function claim goes.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -342,35 +401,28 @@ async fn two_functions_that_lock_the_same_objects_in_opposite_orders_land_a_lock
     );
     let result = scan(program).await;
 
-    let finding = result
-        .findings
-        .iter()
-        .find(|finding| finding.kind() == "lock_order")
-        .expect("the reversed orders read as a lock-order finding");
-    let SyncFinding::LockOrder(record) = finding else {
-        unreachable!("the reversed orders read as a lock-order finding");
-    };
-    assert_eq!(record.function, "FUN_18003ab00");
-    assert_eq!(record.partner, "FUN_18003e750");
-    assert_eq!(record.first_lock, "local_20");
-    assert_eq!(record.second_lock, "local_40");
-    assert_eq!(
-        record.suggestion,
-        "pick one consistent lock acquisition order"
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| finding.kind() != "lock_order"),
+        "two stack slots sharing a name are not one lock the pair could reverse"
     );
-    assert_eq!(record.confidence, 70);
-    // The evidence carries both functions' acquire orders.
     assert_eq!(
-        record.evidence,
-        "FUN_18003ab00: local_20 -> local_40; \
-             FUN_18003e750: local_40 -> local_20"
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "mutex")
+            .count(),
+        4,
+        "the in-body pairing keeps both functions' lock pairs"
     );
 }
 
 #[tokio::test]
 async fn functions_that_lock_shared_objects_in_a_consistent_order_claim_nothing() {
-    // Clean code stays clean: both functions take `local_20`
-    // before `local_40`, so there is no order to disagree about.
+    // Clean code stays clean: both functions take `DAT_guard`
+    // before `DAT_monitor`, so there is no order to disagree about.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -379,10 +431,10 @@ async fn functions_that_lock_shared_objects_in_a_consistent_order_claim_nothing(
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "\
-  EnterCriticalSection(&local_20);
-  EnterCriticalSection(&local_40);
-  LeaveCriticalSection(&local_40);
-  LeaveCriticalSection(&local_20);",
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
         ),
     );
     program.bodies.insert(
@@ -391,10 +443,10 @@ async fn functions_that_lock_shared_objects_in_a_consistent_order_claim_nothing(
             "FUN_18003e750",
             "undefined FUN_18003e750(void)",
             "\
-  EnterCriticalSection(&local_20);
-  EnterCriticalSection(&local_40);
-  LeaveCriticalSection(&local_40);
-  LeaveCriticalSection(&local_20);",
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
         ),
     );
     let result = scan(program).await;
@@ -476,10 +528,10 @@ async fn a_function_that_will_not_decompile_fabricates_no_cross_function_claim()
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "\
-  EnterCriticalSection(&local_20);
-  EnterCriticalSection(&local_40);
-  LeaveCriticalSection(&local_40);
-  LeaveCriticalSection(&local_20);",
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
         ),
     );
     program.fail_decompiles = vec!["FUN_18003e750".into()];
@@ -508,10 +560,10 @@ async fn lock_order_findings_append_after_the_per_function_findings() {
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "\
-  EnterCriticalSection(&local_20);
-  EnterCriticalSection(&local_40);
-  LeaveCriticalSection(&local_40);
-  LeaveCriticalSection(&local_20);",
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
         ),
     );
     program.bodies.insert(
@@ -519,7 +571,7 @@ async fn lock_order_findings_append_after_the_per_function_findings() {
         function(
             "FUN_18003e750",
             "undefined FUN_18003e750(void)",
-            "  EnterCriticalSection(&local_40);\n  EnterCriticalSection(&local_20);\n",
+            "  EnterCriticalSection(&DAT_monitor);\n  EnterCriticalSection(&DAT_guard);\n",
         ),
     );
     let result = scan(program).await;

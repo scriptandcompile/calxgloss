@@ -20,7 +20,11 @@
 //! same two locks in opposite relative orders land one
 //! [`SyncFinding::LockOrder`] per conflicting lock pair, naming both
 //! functions and both lock objects, with the two acquire orders as
-//! evidence.
+//! evidence. A deadlock claim stays two functions; the conflict
+//! keeps its pair shape. The pass gates its inputs: the global-state
+//! crate's shared rule admits only lock objects that could be one
+//! instance in both bodies, so two same-named stack slots like
+//! `local_20` invent no deadlock (issue #435).
 //!
 //! The data-race reading then uses the same kept bodies. Which
 //! identifiers name program globals is the global-state crate's
@@ -43,7 +47,7 @@ use std::collections::HashMap;
 use crate::mutex::{MutexDetector, lock_object};
 use crate::types::{DataRace, LockOrder, RaceSide, SyncFinding};
 use calxgloss_decomp::DecompiledFunction;
-use calxgloss_globalstate::{AccessKind, global_sites, statement_at};
+use calxgloss_globalstate::{AccessKind, global_sites, is_global_name, statement_at};
 
 use calxgloss_types::{NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites};
 
@@ -104,13 +108,16 @@ impl CrossFunctionAnalyzer {
     /// each pair of lock objects the two acquire in opposite relative
     /// orders lands one [`SyncFinding::LockOrder`] on the earlier
     /// function, naming the later one as its partner — once per
-    /// conflicting lock pair. A full reversal of three locks therefore
-    /// reads as three two-lock conflicts, the shape a deadlock review
-    /// takes one lock pair at a time. Then the data races, in the
-    /// same pair order: every global two functions both name lands
-    /// one [`SyncFinding::DataRace`] on the earlier one — once per
-    /// pair per global — unless one lock object's span covers every
-    /// access on both sides.
+    /// conflicting lock pair. Only lock objects the global-state
+    /// crate's shared rule reads as naming program data enter that
+    /// comparison. A stack-slot lock in one body never matches a
+    /// same-named slot in another. A full reversal of three locks
+    /// therefore reads as three two-lock conflicts, the shape a
+    /// deadlock review takes one lock pair at a time. Then the data
+    /// races, in the same pair order: every global two functions both
+    /// name lands one [`SyncFinding::DataRace`] on the earlier one —
+    /// once per pair per global — unless one lock object's span
+    /// covers every access on both sides.
     ///
     /// A function whose body never made it — skipped when its
     /// decompile failed — is simply absent from `functions`, so it
@@ -278,18 +285,23 @@ impl CrossFunctionAnalyzer {
     }
 }
 
-/// The sequence of distinct lock objects one body acquires, in body
-/// order: every direct call to a configured acquire name, tied to its
-/// lock object by [`lock_object`] — the pairing detector's own
-/// extraction, so an acquire naming anything but a plain variable
-/// (a field, an indexed element) names nothing this pass can key on.
-/// Repeats of one lock object count once: the reading is about
-/// relative order, not counts.
+/// The sequence of distinct lock objects one body acquires that
+/// another body could share, in body order: every direct call to a
+/// configured acquire name, tied to its lock object by
+/// [`lock_object`] — the pairing detector's own extraction, so an
+/// acquire naming anything but a plain variable (a field, an indexed
+/// element) names nothing this pass can key on. The global-state
+/// crate's shared rule then drops the decompiler-minted names: a
+/// `local_20` lock never leaves its own frame, so it never joins a
+/// pair two functions could disagree about (issue #435). Repeats of
+/// one lock object count once: the reading is about relative order,
+/// not counts.
 fn lock_sequence(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<String> {
     let mut sequence: Vec<String> = Vec::new();
     for call in call_sites(&func.body, &CALL_SCAN) {
         if mutex.acquires().iter().any(|a| a.name == call.callee)
             && let Some(lock) = call.args.first().and_then(|arg| lock_object(arg))
+            && is_global_name(&lock)
             && !sequence.contains(&lock)
         {
             sequence.push(lock);
@@ -464,11 +476,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_monitor);",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20);",
+                "EnterCriticalSection(&DAT_monitor); EnterCriticalSection(&DAT_guard);",
             ),
         ]);
         assert_eq!(findings.len(), 1);
@@ -477,8 +489,8 @@ mod tests {
         };
         assert_eq!(record.function, "FUN_18003ab00");
         assert_eq!(record.partner, "FUN_18003e750");
-        assert_eq!(record.first_lock, "local_20");
-        assert_eq!(record.second_lock, "local_40");
+        assert_eq!(record.first_lock, "DAT_guard");
+        assert_eq!(record.second_lock, "DAT_monitor");
         assert_eq!(
             record.suggestion,
             "pick one consistent lock acquisition order"
@@ -487,8 +499,49 @@ mod tests {
         // The evidence records both functions' acquire orders.
         assert_eq!(
             record.evidence,
-            "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
+            "FUN_18003ab00: DAT_guard -> DAT_monitor; \
+             FUN_18003e750: DAT_monitor -> DAT_guard"
         );
+    }
+
+    #[test]
+    fn two_functions_reversing_same_named_stack_slot_locks_conflict_nothing() {
+        // The shared rule's gate (issue #435): `local_20` in one body
+        // is that body's own stack slot, so reversed same-named slots
+        // share no lock instance and the pass compares nothing.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40);",
+            ),
+            (
+                "FUN_18003e750",
+                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20);",
+            ),
+        ]);
+        assert!(
+            findings.is_empty(),
+            "two stack slots sharing a name are not one lock"
+        );
+    }
+
+    #[test]
+    fn a_stack_slot_lock_never_pairs_with_a_comparable_lock() {
+        // Half the pair is a stack slot: one body takes `mtx` before
+        // `local_20`, the other the other way round. The slot leaves
+        // no sequence to compare, and one comparable lock alone is
+        // not a pair, so the reversed orders claim nothing.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "EnterCriticalSection(&mtx); EnterCriticalSection(&local_20);",
+            ),
+            (
+                "FUN_18003e750",
+                "EnterCriticalSection(&local_20); EnterCriticalSection(&mtx);",
+            ),
+        ]);
+        assert!(findings.is_empty());
     }
 
     #[test]
@@ -496,11 +549,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_monitor);",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_monitor);",
             ),
         ]);
         assert!(findings.is_empty(), "one shared order is not a conflict");
@@ -508,14 +561,14 @@ mod tests {
 
     #[test]
     fn functions_sharing_only_one_lock_object_conflict_nothing() {
-        // The later function never acquires `local_20`, so there is no
-        // pair whose order could disagree.
+        // The later function never acquires `DAT_guard`, so there is
+        // no pair whose order could disagree.
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_monitor);",
             ),
-            ("FUN_18003e750", "EnterCriticalSection(&local_40);"),
+            ("FUN_18003e750", "EnterCriticalSection(&DAT_monitor);"),
         ]);
         assert!(findings.is_empty());
     }
@@ -523,17 +576,17 @@ mod tests {
     #[test]
     fn a_repeated_acquire_of_one_lock_counts_once() {
         // The reading is about relative order, not counts: two
-        // acquisitions of `local_20` before `local_40` still form one
-        // sequence, so the conflict lands once.
+        // acquisitions of `DAT_guard` before `DAT_monitor` still form
+        // one sequence, so the conflict lands once.
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_20); \
-                 EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_guard); \
+                 EnterCriticalSection(&DAT_monitor);",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20);",
+                "EnterCriticalSection(&DAT_monitor); EnterCriticalSection(&DAT_guard);",
             ),
         ]);
         assert_eq!(findings.len(), 1);
@@ -629,11 +682,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&(local_10.field_0)); EnterCriticalSection(&local_40);",
+                "EnterCriticalSection(&(monitor.field_0)); EnterCriticalSection(&guard);",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&(local_10.field_0));",
+                "EnterCriticalSection(&guard); EnterCriticalSection(&(monitor.field_0));",
             ),
         ]);
         assert!(findings.is_empty());
@@ -644,11 +697,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "printf(\"EnterCriticalSection(&local_20) then &local_40\");",
+                "printf(\"EnterCriticalSection(&mtx) then &guard\");",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20);",
+                "EnterCriticalSection(&guard); EnterCriticalSection(&mtx);",
             ),
         ]);
         assert!(findings.is_empty());
@@ -662,11 +715,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "iVar1 = pthread_mutex_trylock(&local_20); x.EnterCriticalSection(&local_40);",
+                "iVar1 = pthread_mutex_trylock(&mtx); x.EnterCriticalSection(&guard);",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); pthread_mutex_trylock(&local_20);",
+                "EnterCriticalSection(&guard); pthread_mutex_trylock(&mtx);",
             ),
         ]);
         assert!(findings.is_empty());
@@ -675,10 +728,10 @@ mod tests {
     #[test]
     fn a_truncated_body_contributes_no_sequence() {
         let findings = analyze(&[
-            ("FUN_18003ab00", "EnterCriticalSection(&local_20;"),
+            ("FUN_18003ab00", "EnterCriticalSection(&mtx;"),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20);",
+                "EnterCriticalSection(&guard); EnterCriticalSection(&mtx);",
             ),
         ]);
         assert!(findings.is_empty());
@@ -1038,11 +1091,11 @@ mod tests {
         let findings = analyze(&[
             (
                 "FUN_18003ab00",
-                "EnterCriticalSection(&local_20); EnterCriticalSection(&local_40); DAT_g = 1;",
+                "EnterCriticalSection(&DAT_guard); EnterCriticalSection(&DAT_monitor); DAT_g = 1;",
             ),
             (
                 "FUN_18003e750",
-                "EnterCriticalSection(&local_40); EnterCriticalSection(&local_20); uVar1 = DAT_g;",
+                "EnterCriticalSection(&DAT_monitor); EnterCriticalSection(&DAT_guard); uVar1 = DAT_g;",
             ),
         ]);
         let kinds: Vec<&str> = findings.iter().map(|finding| finding.kind()).collect();

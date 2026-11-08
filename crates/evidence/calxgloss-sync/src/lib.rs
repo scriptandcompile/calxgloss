@@ -53,7 +53,10 @@
 //!   scan keeps. `CrossFunctionAnalyzer` derives each body's lock
 //!   acquisition sequence from the decompiles the scan already
 //!   fetched. Two functions acquiring the same two locks in opposite
-//!   orders are reported as a `lock_order` conflict. The same bodies
+//!   orders are reported as a `lock_order` conflict. The comparison
+//!   admits only lock objects the global-state crate's shared reading
+//!   could name in both bodies, so two same-named stack slots invent
+//!   no conflict (issue #435). The same bodies
 //!   are then read for a `data_race` claim: one shared global read
 //!   and written by two or more accessor functions with no lock
 //!   every access sits under lands exactly one finding (issue #434),

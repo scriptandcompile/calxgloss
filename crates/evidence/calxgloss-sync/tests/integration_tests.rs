@@ -432,10 +432,11 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
 
 #[tokio::test]
 async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
-    // The deadlock shape across two functions: one takes `local_20`
-    // before `local_40`, the other the other way round. The conflict
-    // is saved into the tagged union document on disk and read back.
-    // It renders into the escalate prompt through the usual accessors.
+    // The deadlock shape across two functions: one takes `DAT_guard`
+    // before `DAT_monitor`, the other the other way round. The
+    // conflict is saved into the tagged union document on disk and
+    // read back. It renders into the escalate prompt through the
+    // usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
     program.bodies.insert(
@@ -443,10 +444,10 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
         function(
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
-            "  EnterCriticalSection(&local_20);\n\
-             \x20 EnterCriticalSection(&local_40);\n\
-             \x20 LeaveCriticalSection(&local_40);\n\
-             \x20 LeaveCriticalSection(&local_20);\n",
+            "  EnterCriticalSection(&DAT_guard);\n\
+             \x20 EnterCriticalSection(&DAT_monitor);\n\
+             \x20 LeaveCriticalSection(&DAT_monitor);\n\
+             \x20 LeaveCriticalSection(&DAT_guard);\n",
         ),
     );
     program.bodies.insert(
@@ -454,10 +455,10 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
         function(
             "FUN_18003e750",
             "undefined FUN_18003e750(void)",
-            "  EnterCriticalSection(&local_40);\n\
-             \x20 EnterCriticalSection(&local_20);\n\
-             \x20 LeaveCriticalSection(&local_20);\n\
-             \x20 LeaveCriticalSection(&local_40);\n",
+            "  EnterCriticalSection(&DAT_monitor);\n\
+             \x20 EnterCriticalSection(&DAT_guard);\n\
+             \x20 LeaveCriticalSection(&DAT_guard);\n\
+             \x20 LeaveCriticalSection(&DAT_monitor);\n",
         ),
     );
 
@@ -484,14 +485,14 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     };
     assert_eq!(record.function, "FUN_18003ab00");
     assert_eq!(record.partner, "FUN_18003e750");
-    assert_eq!(record.first_lock, "local_20");
-    assert_eq!(record.second_lock, "local_40");
+    assert_eq!(record.first_lock, "DAT_guard");
+    assert_eq!(record.second_lock, "DAT_monitor");
     assert_eq!(record.confidence, 70);
     assert_eq!(
         record.evidence,
-        "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
+        "FUN_18003ab00: DAT_guard -> DAT_monitor; FUN_18003e750: DAT_monitor -> DAT_guard"
     );
-    assert!(conflicts[0].target().contains("local_20"));
+    assert!(conflicts[0].target().contains("DAT_guard"));
 
     // The cross-function finding comes after the per-function
     // findings, so the persisted document stays easy to diff.
@@ -534,7 +535,7 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     assert!(prompt.contains("CONCURRENCY"));
     assert!(prompt.contains("pick one consistent lock acquisition order"));
     assert!(prompt.contains("lock_order construct, confidence 70"));
-    assert!(prompt.contains("FUN_18003e750: local_40 -> local_20"));
+    assert!(prompt.contains("FUN_18003e750: DAT_monitor -> DAT_guard"));
 }
 
 // ------------------------------------------------------------

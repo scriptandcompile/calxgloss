@@ -47,7 +47,7 @@ pub mod types;
 
 pub use detector::{
     EXACT_SPELLING_CONFIDENCE, GlobalSite, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE,
-    global_sites, statement_at,
+    global_sites, is_global_name, statement_at,
 };
 pub use engine::GlobalStateEngine;
 pub use error::{GlobalStateError, Result};

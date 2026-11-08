@@ -253,7 +253,7 @@ fn global_name_sites(body: &str) -> Vec<(usize, &str)> {
                     i = end;
                     continue;
                 }
-                if !is_body_noise(name) && !is_decompiler_local(name) {
+                if is_global_name(name) {
                     sites.push((i, name));
                 }
                 i = end;
@@ -457,6 +457,20 @@ fn is_decompiler_local(name: &str) -> bool {
         || (name.starts_with('v') || name.starts_with('a'))
             && name.len() > 1
             && name[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// This crate's shared rule decides which names stand for program
+/// data. This function applies that decision to one bare name:
+/// `DAT_*` spellings, program symbols, and named heap handles
+/// survive; decompiler-minted slots and the body's words do not.
+/// Consumers read it before treating two same-named objects in two
+/// bodies as one object — two bodies acquiring `local_20` hold two
+/// stack slots, never one lock instance (issue #435). The body
+/// reading also rejects names by position: literals, member and
+/// qualified spellings, casts, and declarations. This name-only
+/// rule cannot see position.
+pub fn is_global_name(name: &str) -> bool {
+    !is_body_noise(name) && !is_decompiler_local(name)
 }
 
 /// Whether the global whose name starts at `offset` and ends at
@@ -880,5 +894,40 @@ mod tests {
         let sites = global_sites(body);
         assert_eq!(sites.len(), 1, "the calls name no access, the store does");
         assert_eq!(statement_at(body, sites[0].offset), "DAT_counter = 5");
+    }
+
+    #[test]
+    fn the_shared_rule_reads_a_bare_name_and_rejects_junk() {
+        // The rule that decides which names stand for program data,
+        // read at the level of one bare name: the sync crate's
+        // lock-order pairing gates on it, so two `local_20` acquires
+        // in two bodies read as two stack slots (issue #435). Names
+        // that could stand for one shared object pass; the
+        // decompiler's own spellings and the body's words never do.
+        for name in [
+            "DAT_18004a040",
+            "DAT_counter",
+            "eqmain_counter",
+            "mtx",
+            "hHeap",
+        ] {
+            assert!(is_global_name(name), "{name} could name program data");
+        }
+        for name in [
+            "local_20",
+            "param_1",
+            "uVar1",
+            "pcVar3",
+            "v2",
+            "a0",
+            "eax",
+            "stack_0",
+            "int",
+            "undefined8",
+            "if",
+            "NULL",
+        ] {
+            assert!(!is_global_name(name), "{name} is never program data");
+        }
     }
 }
