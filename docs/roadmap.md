@@ -51,18 +51,16 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-the P53–P56 block — an explicit priority call made on 2026-11-07: a run
-that reads as 17 minutes of silence, a 14 GB scan document, and a wrong
-verification verdict each stand between the operator and a real
+the P54–P56 block — an explicit priority call made on 2026-11-07, whose
+run-visibility half (P53) has since shipped: a 14 GB scan document and a
+wrong verification verdict each still stand between the operator and a real
 end-to-end restitching run, and no older track blocks this block or
-depends on it. P53-before-P56 is the block's one hard internal edge.
-Below it, P27's hypothesis ledger leads the older tracks again; P27–P33
-resolve stuck functions, strengthen evidence, or serve operations; none
-of them blocks another.
+depends on it. Below it, P27's hypothesis ledger leads the older tracks
+again; P27–P33 resolve stuck functions, strengthen evidence, or serve
+operations; none of them blocks another.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P53 | Live runs read legibly in the web view — pre-batch scans, call-graph and xref-index builds, unit state transitions, and what Kuna is working on appear in the web progress panel, not only in log files | pipeline (`calxgloss-translator`) + interface (`calxgloss-web`) + integrations (`calxgloss-kuna`) | — | 🔶 in progress | tracer landed (#428): every registered evidence scan gets a named row in the live view, running with a ticking clock and finished with elapsed seconds and its finding count; #429 landed: failed scans and unreported finding counts read honestly on that panel; #430 landed: the worklist heartbeat's tick line names Kuna's current function beside the in-flight pass, cold call-graph build included; ticketed #429–#431; #431 landed: the queue rows show which unit is being worked, as a live reading kept apart from the persisted review status and updating in place on the existing unit_phase push; frontier: none ticketed yet, #425's remaining scope to decide | [#425](https://github.com/scriptandcompile/calxgloss/issues/425) |
 | P54 | Kill the sync/globalstate scans' false positives at the source — decompiler locals (`v1`, `a0`, `eax`, `stack`, `local_20`) masquerade as shared globals and lock instances in one shared name reading (69% of globalstate's 280K rows, and the fake `v1` rollup's 4,737×5,136 writer×reader pairs drive sync's 43.5M); fix the classification, then aggregate per global/lock-instance and gate on concurrency reachability | evidence (`calxgloss-globalstate`, `calxgloss-sync`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | filed as issue, root cause verified 2026-11-07, not specced | [#426](https://github.com/scriptandcompile/calxgloss/issues/426) |
 | P55 | Honest verdicts when the test runner breaks — "Compilation successful" followed by "Could not parse test results" and "tests never ran" hit every unit of one live run; a runner parse failure is never a compile failure, and the runner's output stays diagnosable from the log | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | filed as issue, not specced | [#427](https://github.com/scriptandcompile/calxgloss/issues/427) |
 | P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
@@ -106,14 +104,17 @@ pre-designed P24's scenario contract (shipped, ADR-0059), and trace-armed
 blame ranking extends P27's send-back decision.
 
 **P53–P56 are the gaps seen during the 2026-11-07 live-run diagnosis**
-(LaunchPad.exe, 7,267 functions, on the everquest workspace): three are
-failures that run witnessed firsthand, each filed as an issue before
-landing here, and the fourth is the surface decision the review raised —
+(LaunchPad.exe, 7,267 functions, on the everquest workspace). P53 — the
+run that read as 17 minutes of silence — has since shipped: spec #425,
+tickets #428–#431, decisions closed in ADR-0061; P54–P56 remain open. Of
+the original four, three were failures that run witnessed firsthand, each
+filed as an issue before landing here, and the fourth is the surface
+decision the review raised —
 terminal-visible reports are not wanted ("17 min of 'it's running' is
-unacceptable"), so the visibility work lands at the web view and the
+unacceptable"), so the visibility work landed at the web view and the
 terminal report half gets removed behind it. The block deliberately
 sits at the front of the table: only P56 waits on anything (P53, inside
-the block), P55 need not wait for P49's named-outcome vocabulary — the
+the block — now shipped, so P56 stands unblocked), P55 need not wait for P49's named-outcome vocabulary — the
 parse fix stands alone and P49 folds it in afterward — and doing P56
 before P31 saves rework, since P31 would deepen `doctor`'s terminal
 report inside the very crate P56 strips; P30, P50 and P52 also touch
@@ -454,29 +455,6 @@ time; nothing here changes pipeline shape. Source:
 [37](research/kraken/37-inference-corpus-eval.md) steal 4, README #12.
 Blocked by (as a runner): P42 (the exit-criterion tests).
 
-## P53 — Live runs read legibly in the web view (pipeline + interface + integrations)
-
-**Seventeen minutes of "it's running" says nothing.** A cold `live` run
-spent ~15 minutes in the pre-batch scans (the sync scan alone:
-`findings=43547588 duration_secs=785`) and then minutes per unit in LLM
-translation, while the web progress panel held `{"units":[]}` and the
-queue panel showed no movement at all. The scan phase is not a unit and
-not a phase the progress store tracks, the cold call-graph build (57 s)
-and Kuna's first xref-index build sit in the same silent window, and the
-default `warn` verbosity hides the scans' own log lines. The fix makes
-the scan phase a first-class progress phase: one entry per scan (name,
-binary, elapsed, finding count or error) into the enhanced progress
-store rendered as a scan panel; unit state transitions (queued →
-translating → verifying → awaiting-review) in the queue panel off the
-existing WS events; optionally Kuna's `tick` heartbeat as a "Kuna
-working: <function>" line. Acceptance: a cold run on a large binary
-answers in the browser what is running, which unit is being worked, and
-what the last completed step was — without tailing a log file. P41's
-Mapping panel (issue #366) is the same product gap found earlier at a
-smaller scale. Filed as
-[#425](https://github.com/scriptandcompile/calxgloss/issues/425) during
-the 2026-11-07 live-run diagnosis. Blocks: P56.
-
 ## P54 — The sync/globalstate scans' false-positive collapse (evidence + pipeline)
 
 **The 43.5M findings are pairwise inflation, not 43.5M sync points —
@@ -519,7 +497,8 @@ reports once per function-relationship (bounded), `callback` and
 time landmine not a size one — and `controlflow`/`consts`/`typeinfer`/
 call-graph are linear and clean. These findings feed the translator's
 evidence bundles, so the win is prompt quality, not just size. Pairs
-with: P53 (the scan's finding count becomes visible output there),
+with: P53 (shipped, ADR-0061 — the scan's finding count is visible
+output there now),
 P51 (the aggregated accessor counts are exactly the evidence-count
 vocabulary that track wants). Filed as
 [#426](https://github.com/scriptandcompile/calxgloss/issues/426) during
@@ -569,11 +548,11 @@ retargeted from rendered strings to model data — they encode what
 conformance rows must mean, so convert rather than delete. Ballpark from
 the 2026-11-07 review: 4–6 focused days, risk concentrated in the tests.
 Deleting the run-close prints and the y/n prompt makes web acceptance the
-only review flow, so this track lands after P53 makes the web view
-trustworthy during a run. One conflict to settle at spec time: P31
+only review flow, so this track lands behind P53, which shipped and made
+the web view trustworthy during a run (ADR-0061). One conflict to settle at spec time: P31
 deepens `doctor`, whose report half (`doctor.rs`) lives in this same
 crate — doing P56 first avoids growing terminal report code P56 would
 then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
 (as rework cost, not design): P30, P31, P50, P52 — each touches
 `calxgloss-reports`, and doing P56 first shrinks the surface they
-touch. Blocked by: P53.
+touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431).
