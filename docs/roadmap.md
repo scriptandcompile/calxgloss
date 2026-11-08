@@ -51,17 +51,16 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-the P54–P56 block — an explicit priority call made on 2026-11-07, whose
-run-visibility half (P53) has since shipped: a 14 GB scan document and a
-wrong verification verdict each still stand between the operator and a real
-end-to-end restitching run, and no older track blocks this block or
-depends on it. Below it, P27's hypothesis ledger leads the older tracks
-again; P27–P33 resolve stuck functions, strengthen evidence, or serve
-operations; none of them blocks another.
+the P55–P56 block — an explicit priority call made on 2026-11-07, whose
+run-visibility half (P53) and scan-explosion half (P54) have since
+shipped: a wrong verification verdict still stands between the operator
+and a real end-to-end restitching run, and no older track blocks this
+block or depends on it. Below it, P27's hypothesis ledger leads the older
+tracks again; P27–P33 resolve stuck functions, strengthen evidence, or
+serve operations; none of them blocks another.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P54 | Kill the sync/globalstate scans' false positives at the source — decompiler locals (`v1`, `a0`, `eax`, `stack`, `local_20`) masquerade as shared globals and lock instances in one shared name reading (69% of globalstate's 280K rows, and the fake `v1` rollup's 4,737×5,136 writer×reader pairs drive sync's 43.5M); fix the classification, then aggregate per global/lock-instance and gate on concurrency reachability | evidence (`calxgloss-globalstate`, `calxgloss-sync`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | filed as issue, root cause verified 2026-11-07, not specced | [#426](https://github.com/scriptandcompile/calxgloss/issues/426) |
 | P55 | Honest verdicts when the test runner breaks — "Compilation successful" followed by "Could not parse test results" and "tests never ran" hit every unit of one live run; a runner parse failure is never a compile failure, and the runner's output stays diagnosable from the log | pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | filed as issue, not specced | [#427](https://github.com/scriptandcompile/calxgloss/issues/427) |
 | P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
@@ -106,7 +105,10 @@ blame ranking extends P27's send-back decision.
 **P53–P56 are the gaps seen during the 2026-11-07 live-run diagnosis**
 (LaunchPad.exe, 7,267 functions, on the everquest workspace). P53 — the
 run that read as 17 minutes of silence — has since shipped: spec #425,
-tickets #428–#431, decisions closed in ADR-0061; P54–P56 remain open. Of
+tickets #428–#431, decisions closed in ADR-0061. P54 — the sync scan that
+logged 43,547,588 findings and wrote a 14 GB document — has since shipped
+too: spec #432, tickets #433–#439, decisions closed in ADR-0062, which
+supersedes ADR-0034 and amends ADR-0033; P55–P56 remain open. Of
 the original four, three were failures that run witnessed firsthand, each
 filed as an issue before landing here, and the fourth is the surface
 decision the review raised —
@@ -454,55 +456,6 @@ time; nothing here changes pipeline shape. Source:
 [36](research/kraken/36-rewrite-pipeline.md) steal 8,
 [37](research/kraken/37-inference-corpus-eval.md) steal 4, README #12.
 Blocked by (as a runner): P42 (the exit-criterion tests).
-
-## P54 — The sync/globalstate scans' false-positive collapse (evidence + pipeline)
-
-**The 43.5M findings are pairwise inflation, not 43.5M sync points —
-and most of the pairs are about fakes.** The root cause was verified in
-code and measured on the workspace 2026-11-07, in two layers.
-*Classification:* the shared global reading
-(`calxgloss-globalstate/src/detector.rs:187-239`) decides what counts
-as program data through `is_decompiler_local` (`:352-359`), which only
-knows `param_*`, `local_*`, and `*Var<digits>` — Kuna names this PE's
-locals `v1..vN`, `a0/a1`, registers, and `stack`, so 69% of
-globalstate's 280,360 rows (192,748) carry just twelve junk names, and
-its rollups advertise fakes as process-wide state (`v1`: 5,136
-readers, 4,737 writers). The sync race pass consumes that same reading
-(`sync/cross_function.rs:252`), and one fake name's 4,737×5,136
-writer×reader cross-product is ~24M rows alone — together the fakes
-match the observed 43,547,588. *Enumeration:* `CrossFunctionAnalyzer::analyze`
-(`sync/cross_function.rs:113-196`) enumerates all 26.4M function pairs
-twice; the lock-order pass keys locks by bare body name (`:206-217`),
-so a `local_20` slot in unrelated functions reads as one shared lock —
-name-collision junk, since deadlock needs the same lock instance — and
-the race pass emits one row per (function, partner, global) without
-ever asking whether the pair can run concurrently. Both passes are
-O(functions²) — where the 785 s and the 14 GB sync doc come from —
-and globalstate's own scan spent 960 s writing 74 MB of the same
-junk. The fix kills the false positives rather than truncating them:
-fix the name classification first (one function, feeding both scans
-and the review rollups), then aggregate per global and per
-lock-instance (one finding with accessor counts and example
-statements, not pairwise rows), compare locks across functions only
-when they name a global/static or named-symbol heap handle, gate the
-pass on thread-entry reachability through the batch's existing call
-graph with the coverage record admitting exclusions, and let
-`Interlocked`/atomic and TLS evidence suppress races the per-body
-detectors already cover. A cap with an explicit *truncated* marker
-stays only as a safety net. The pairwise test pin
-`a_race_lands_once_per_function_pair_and_per_global` retargets to the
-aggregated shape. Surveyed siblings: `algorithm` is 51,557 hints but
-reports once per function-relationship (bounded), `callback` and
-`stringctx` run all-pair loops — O(n²) duration but KB/MB output, a
-time landmine not a size one — and `controlflow`/`consts`/`typeinfer`/
-call-graph are linear and clean. These findings feed the translator's
-evidence bundles, so the win is prompt quality, not just size. Pairs
-with: P53 (shipped, ADR-0061 — the scan's finding count is visible
-output there now),
-P51 (the aggregated accessor counts are exactly the evidence-count
-vocabulary that track wants). Filed as
-[#426](https://github.com/scriptandcompile/calxgloss/issues/426) during
-the 2026-11-07 live-run diagnosis.
 
 ## P55 — Honest verdicts when the test runner breaks (pipeline)
 
