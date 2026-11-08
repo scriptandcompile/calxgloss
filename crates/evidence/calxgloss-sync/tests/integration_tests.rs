@@ -51,6 +51,19 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
+/// The named functions as exports: the entry set of the concurrent-
+/// reachability gate (issue #436).
+fn exported(names: &[&str]) -> Vec<Symbol> {
+    names
+        .iter()
+        .map(|name| Symbol {
+            name: (*name).into(),
+            address: 0x2000,
+            imported: false,
+        })
+        .collect()
+}
+
 /// A canned program implementing [`ScanSource`]. Its first function's
 /// body has an `EnterCriticalSection`/`LeaveCriticalSection` pair, an
 /// `InterlockedIncrement` call, and a `CreateThread`/
@@ -60,6 +73,7 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
     bodies: HashMap<String, DecompiledFunction>,
+    exports: Vec<Symbol>,
 }
 
 impl FakeProgram {
@@ -124,7 +138,7 @@ impl ScanSource for FakeProgram {
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
-        Ok(Vec::new())
+        Ok(self.exports.clone())
     }
 
     async fn image_base(&self) -> Result<u64> {
@@ -439,6 +453,10 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
     // usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    // Both functions are exports: the concurrent-reachability gate
+    // (issue #436) pairs only bodies that could run at the same
+    // moment, and an exported body can.
+    program.exports = exported(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -552,6 +570,9 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     // the usual accessors.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    // The accessors are exports, so the reachability gate keeps the
+    // pair (issue #436).
+    program.exports = exported(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(

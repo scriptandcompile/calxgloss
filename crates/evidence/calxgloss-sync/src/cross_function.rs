@@ -45,6 +45,7 @@
 use std::collections::HashMap;
 
 use crate::mutex::{MutexDetector, lock_object};
+use crate::threading::ThreadingDetector;
 use crate::types::{DataRace, LockOrder, RaceSide, SyncFinding};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_globalstate::{AccessKind, global_sites, is_global_name, statement_at};
@@ -114,10 +115,20 @@ impl CrossFunctionAnalyzer {
     /// same-named slot in another. A full reversal of three locks
     /// therefore reads as three two-lock conflicts, the shape a
     /// deadlock review takes one lock pair at a time. Then the data
-    /// races, in the same pair order: every global two functions both
-    /// name lands one [`SyncFinding::DataRace`] on the earlier one —
-    /// once per pair per global — unless one lock object's span
-    /// covers every access on both sides.
+    /// races: every global named by two or more accessor functions
+    /// lands one [`SyncFinding::DataRace`] — one per shared global
+    /// (issue #434) — unless one lock object's span covers every
+    /// access on every side.
+    ///
+    /// The pass pairs only functions that could run at the same
+    /// moment (issue #436). `exports` names the program's exported
+    /// symbols and `threads` reads the configured spawn spellings:
+    /// from those entries the walk follows the kept bodies' own call
+    /// edges, and a body the walk never reaches shares no lock order
+    /// and no racing global with any other body.
+    /// [`analyze_report`](Self::analyze_report) states which
+    /// bodies the gate excluded, so the scan admits the narrower
+    /// comparison rather than hiding it.
     ///
     /// A function whose body never made it — skipped when its
     /// decompile failed — is simply absent from `functions`, so it
@@ -127,7 +138,24 @@ impl CrossFunctionAnalyzer {
         &self,
         functions: &[DecompiledFunction],
         mutex: &MutexDetector,
+        threads: &ThreadingDetector,
+        exports: &[String],
     ) -> Vec<SyncFinding> {
+        self.analyze_report(functions, mutex, threads, exports)
+            .findings
+    }
+
+    /// [`analyze`](Self::analyze) with the gate's admission report:
+    /// the findings, plus the kept bodies the concurrent-reachability
+    /// gate excluded from the comparison, in listing order.
+    pub(crate) fn analyze_report(
+        &self,
+        functions: &[DecompiledFunction],
+        mutex: &MutexDetector,
+        threads: &ThreadingDetector,
+        exports: &[String],
+    ) -> CrossFunctionReport {
+        let gate = pair_gate(functions, threads, exports);
         let sequences: Vec<Vec<String>> = functions
             .iter()
             .map(|func| lock_sequence(func, mutex))
@@ -135,7 +163,13 @@ impl CrossFunctionAnalyzer {
 
         let mut findings = Vec::new();
         for i in 0..functions.len() {
+            if !gate.pairable[i] {
+                continue;
+            }
             for j in (i + 1)..functions.len() {
+                if !gate.pairable[j] {
+                    continue;
+                }
                 let (seq_i, seq_j) = (&sequences[i], &sequences[j]);
                 for a_pos in 0..seq_i.len() {
                     for b_pos in (a_pos + 1)..seq_i.len() {
@@ -185,6 +219,11 @@ impl CrossFunctionAnalyzer {
         let mut buckets: Vec<GlobalSites> = Vec::new();
         let mut bucket_of: HashMap<String, usize> = HashMap::new();
         for (index, body) in accesses.iter().enumerate() {
+            // A gated body names no bucket: it forms no pair, so its
+            // accesses claim no race (issue #436).
+            if !gate.pairable[index] {
+                continue;
+            }
             for access in body {
                 let slot = match bucket_of.get(&access.name) {
                     Some(slot) => *slot,
@@ -281,7 +320,112 @@ impl CrossFunctionAnalyzer {
                 evidence,
             }));
         }
-        findings
+        CrossFunctionReport {
+            findings,
+            gate_excluded: gate.excluded,
+        }
+    }
+}
+
+/// What one cross-function pass produced, with the concurrent-
+/// reachability gate's admission: the findings, and the kept bodies
+/// the gate excluded from the pairing, in listing order (issue #436).
+/// The scan files the excluded names in its coverage record so a
+/// gated findings list never renders alike with a full-coverage one.
+pub(crate) struct CrossFunctionReport {
+    pub(crate) findings: Vec<SyncFinding>,
+    pub(crate) gate_excluded: Vec<String>,
+}
+
+/// Which kept bodies could share a moment with another kept body.
+struct PairGate {
+    /// One flag per function index: bodies the forward walk from any
+    /// entry reached — an export, or a thread started by a configured
+    /// spawn call.
+    pairable: Vec<bool>,
+    /// The bodies the walk never reached, in listing order.
+    excluded: Vec<String>,
+}
+
+/// The concurrent-reachability gate over the kept bodies (issue
+/// #436). Entries are the kept bodies named by the export listing
+/// and by any kept body's thread-start arguments; from each entry
+/// the walk follows direct call edges whose targets are also kept
+/// bodies — the same call reading the data-race and error-handling
+/// passes use, so no extra analysis-engine reads. A body the walk
+/// never reaches can only run sequentially: it shares no lock order
+/// and no racing global with any other body.
+fn pair_gate(
+    functions: &[DecompiledFunction],
+    threads: &ThreadingDetector,
+    exports: &[String],
+) -> PairGate {
+    let index_of: HashMap<&str, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, func)| (func.name.as_str(), index))
+        .collect();
+
+    // The call map derived purely from the kept bodies: each body's
+    // direct calls, kept to names this scan has a body for — the same
+    // pseudo-C scan this module's own reading uses, so no extra
+    // analysis-engine reads.
+    let edges: Vec<Vec<usize>> = functions
+        .iter()
+        .map(|func| {
+            call_sites(&func.body, &CALL_SCAN)
+                .into_iter()
+                .filter_map(|call| index_of.get(call.callee).copied())
+                .collect()
+        })
+        .collect();
+
+    let mut reached = vec![false; functions.len()];
+    let mut queue: Vec<usize> = Vec::new();
+    let enter = |name: &str, reached: &mut Vec<bool>, queue: &mut Vec<usize>| {
+        if let Some(&index) = index_of.get(name)
+            && !reached[index]
+        {
+            reached[index] = true;
+            queue.push(index);
+        }
+    };
+    // The entries: the exported names, and every kept body's
+    // thread-start arguments — the functions a thread could start.
+    // The gate does not chase whether the spawning body itself runs:
+    // the call map never resolves liveness either, and a body named
+    // as a thread's routine gets the same benefit of the doubt as an
+    // export does. From the entries, one forward walk over the call
+    // edges closes the pairable set.
+    for export in exports {
+        enter(export, &mut reached, &mut queue);
+    }
+    for func in functions {
+        for candidate in threads.spawn_start_candidates(func) {
+            enter(&candidate, &mut reached, &mut queue);
+        }
+    }
+    let mut head = 0;
+    while head < queue.len() {
+        let here = queue[head];
+        head += 1;
+        for &next in &edges[here] {
+            if !reached[next] {
+                reached[next] = true;
+                queue.push(next);
+            }
+        }
+    }
+
+    let excluded: Vec<String> = functions
+        .iter()
+        .zip(&reached)
+        .filter(|(_, reached)| !**reached)
+        .map(|(func, _)| func.name.clone())
+        .collect();
+    PairGate {
+        pairable: reached,
+        excluded,
     }
 }
 
@@ -468,7 +612,22 @@ mod tests {
             .iter()
             .map(|(name, body)| function(name, body))
             .collect();
-        CrossFunctionAnalyzer::new().analyze(&functions, &MutexDetector::with_default_names())
+        // These pins are about pairing, not reachability: every body
+        // is an export, so the concurrent-reachability gate lets every
+        // pair through. The gate has its own pins below.
+        let exports: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
+        CrossFunctionAnalyzer::new().analyze(
+            &functions,
+            &MutexDetector::with_default_names(),
+            &ThreadingDetector::with_default_names(),
+            &exports,
+        )
+    }
+
+    /// Every function's name as an export: the entry set that lets a
+    /// pairing pin reach the comparison itself, gate out of the way.
+    fn all_exports(functions: &[DecompiledFunction]) -> Vec<String> {
+        functions.iter().map(|func| func.name.clone()).collect()
     }
 
     #[test]
@@ -753,7 +912,12 @@ mod tests {
             )],
             ["my_unlock"],
         );
-        let findings = CrossFunctionAnalyzer::new().analyze(&functions, &custom);
+        let findings = CrossFunctionAnalyzer::new().analyze(
+            &functions,
+            &custom,
+            &ThreadingDetector::with_default_names(),
+            &all_exports(&functions),
+        );
         assert_eq!(findings.len(), 1);
 
         let standard_only = [
@@ -768,7 +932,12 @@ mod tests {
         ];
         assert!(
             CrossFunctionAnalyzer::new()
-                .analyze(&standard_only, &custom)
+                .analyze(
+                    &standard_only,
+                    &custom,
+                    &ThreadingDetector::with_default_names(),
+                    &all_exports(&standard_only),
+                )
                 .is_empty(),
             "the replaced standard names match nothing once swapped out"
         );
@@ -786,7 +955,12 @@ mod tests {
                 "EnterCriticalSection(&b); EnterCriticalSection(&a);",
             ),
         ];
-        let findings = CrossFunctionAnalyzer::new().analyze(&functions, &MutexDetector::new());
+        let findings = CrossFunctionAnalyzer::new().analyze(
+            &functions,
+            &MutexDetector::new(),
+            &ThreadingDetector::with_default_names(),
+            &all_exports(&functions),
+        );
         assert!(findings.is_empty());
     }
 
@@ -1167,13 +1341,23 @@ mod tests {
         );
         assert!(
             CrossFunctionAnalyzer::new()
-                .analyze(&bodies, &custom)
+                .analyze(
+                    &bodies,
+                    &custom,
+                    &ThreadingDetector::with_default_names(),
+                    &all_exports(&bodies),
+                )
                 .is_empty(),
             "the configured spellings close the span and suppress the race"
         );
         assert_eq!(
             CrossFunctionAnalyzer::new()
-                .analyze(&bodies, &MutexDetector::with_default_names())
+                .analyze(
+                    &bodies,
+                    &MutexDetector::with_default_names(),
+                    &ThreadingDetector::with_default_names(),
+                    &all_exports(&bodies),
+                )
                 .len(),
             1,
             "the replaced standard names see no span, so the access stands unprotected"

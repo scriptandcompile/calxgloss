@@ -51,63 +51,100 @@ pub use calxgloss_decomp::ScanSource;
 const MAX_NAMED_UNREACHED: usize = 5;
 
 /// The facets a concurrency scan declares, in order — the roster the
-/// record must name exactly once each. The concurrency scan reads one
-/// facet: the decompiled bodies every per-body detector shares.
-pub const DECLARED_FACETS: &[&str] = &["function-bodies"];
+/// record must name exactly once each. The concurrency scan reads two:
+/// the decompiled bodies every per-body detector shares, and the
+/// cross-function pairing the concurrent-reachability gate narrows
+/// (issue #436).
+pub const DECLARED_FACETS: &[&str] = &["function-bodies", "cross-function-pairs"];
 
 /// The coverage record every concurrency scan stamps about itself
 /// (issue #349), beside the provenance and the timing.
 ///
-/// The concurrency scan has one facet: `function-bodies` — the
-/// decompiled bodies every per-body detector reads. The function
-/// listing is always read end to end. A failed listing aborts the
-/// run, and more than half failing to decompile trips the skip-rate
-/// breaker in the scan below. So what a finished scan could not have
-/// read is exactly the bodies it skipped along the way: a nameless
-/// listing entry, or a decompile that failed.
+/// The first facet is `function-bodies` — the decompiled bodies every
+/// per-body detector reads. The function listing is always read end to
+/// end. A failed listing aborts the run, and more than half failing to
+/// decompile trips the skip-rate breaker in the scan below. So what a
+/// finished scan could not have read is exactly the bodies it skipped
+/// along the way: a nameless listing entry, or a decompile that failed.
 ///
-/// The cross-function pass reads only bodies this walk already kept,
-/// so it adds no coverage border of its own.
+/// The second facet is `cross-function-pairs`. The cross-function pass
+/// reads only kept bodies, but pairs only the ones that could run at
+/// the same moment (issue #436), so a kept body the walk never reached
+/// was still read by every detector while standing outside every
+/// pairing. When the gate excluded any body, that facet is `partial`
+/// and its admission line names the excluded count — function names up
+/// to [`MAX_NAMED_UNREACHED`], a count beyond. A gated findings list
+/// then never renders alike with a full-coverage one.
 ///
-/// With nothing skipped, the facet is `complete`. That is the
-/// admission's point: a function no finding mentions was examined and
-/// clean, never silently unchecked. With any skips, the facet is
-/// `partial` and the limitation line names the unreached bodies
-/// (bounded at [`MAX_NAMED_UNREACHED`]), so silence and never-reaching
-/// are distinguishable in the filed record itself. The whole picture
-/// mirrors the single facet: the sync scan reads nothing else.
-fn coverage_stamp(unreached: &[String], nameless: usize) -> ScanCoverage {
+/// With nothing skipped and nothing excluded, both facets are
+/// `complete`. That is the admission's point: a function no finding
+/// mentions was examined and clean, never silently unchecked. With any
+/// skips or any exclusions the record is `partial`, so silence and
+/// never-reaching are distinguishable in the filed record itself.
+fn coverage_stamp(unreached: &[String], nameless: usize, gate_excluded: &[String]) -> ScanCoverage {
+    // One bounded name list per facet: names up to the cap inline,
+    // everything else — counted leftovers and nameless entries
+    // alike — folded into a trailing count.
+    let bounded = |names: &[String], extra_hidden: usize| -> String {
+        let mut kept = names
+            .iter()
+            .take(MAX_NAMED_UNREACHED)
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden = names.len().saturating_sub(kept.len()) + extra_hidden;
+        if hidden > 0 {
+            kept.push(format!("+{hidden} more"));
+        }
+        kept.join(", ")
+    };
     let total = unreached.len() + nameless;
-    if total == 0 {
-        return ScanCoverage {
+    let bodies = if total == 0 {
+        FacetCoverage {
+            id: "function-bodies".to_string(),
             status: CoverageStatus::Complete,
-            facets: vec![FacetCoverage {
-                id: "function-bodies".to_string(),
-                status: CoverageStatus::Complete,
-                limitation: None,
-            }],
-        };
-    }
-    let mut names = unreached
-        .iter()
-        .take(MAX_NAMED_UNREACHED)
-        .cloned()
-        .collect::<Vec<_>>();
-    let hidden = unreached.len().saturating_sub(names.len()) + nameless;
-    if hidden > 0 {
-        names.push(format!("+{hidden} more"));
-    }
-    let body = if total == 1 { "body" } else { "bodies" };
-    ScanCoverage {
-        status: CoverageStatus::Partial,
-        facets: vec![FacetCoverage {
+            limitation: None,
+        }
+    } else {
+        let body = if total == 1 { "body" } else { "bodies" };
+        FacetCoverage {
             id: "function-bodies".to_string(),
             status: CoverageStatus::Partial,
             limitation: Some(format!(
                 "{total} function {body} unreached: {}",
-                names.join(", ")
+                bounded(unreached, nameless)
             )),
-        }],
+        }
+    };
+    let pairs = if gate_excluded.is_empty() {
+        FacetCoverage {
+            id: "cross-function-pairs".to_string(),
+            status: CoverageStatus::Complete,
+            limitation: None,
+        }
+    } else {
+        let noun = if gate_excluded.len() == 1 {
+            "function"
+        } else {
+            "functions"
+        };
+        FacetCoverage {
+            id: "cross-function-pairs".to_string(),
+            status: CoverageStatus::Partial,
+            limitation: Some(format!(
+                "{} {noun} excluded from cross-function pairing: {}",
+                gate_excluded.len(),
+                bounded(gate_excluded, 0)
+            )),
+        }
+    };
+    let status = if total == 0 && gate_excluded.is_empty() {
+        CoverageStatus::Complete
+    } else {
+        CoverageStatus::Partial
+    };
+    ScanCoverage {
+        status,
+        facets: vec![bodies, pairs],
     }
 }
 
@@ -283,6 +320,19 @@ impl<S> SyncEngine<S> {
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
+        // The concurrent-reachability gate's entry set (issue #436):
+        // the export listing, read once per scan exactly like the
+        // function listing. A failure of the export listing aborts
+        // the run the same way a listing failure does — pairing every
+        // body against none, and reporting a clean look, is worse
+        // than failing.
+        let exports: Vec<String> = self
+            .source
+            .exports()
+            .await?
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect();
 
         let mut findings = Vec::new();
         let mut bodies: Vec<DecompiledFunction> = Vec::new();
@@ -376,9 +426,13 @@ impl<S> SyncEngine<S> {
 
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
-        // calls to the analysis engine. Its findings append in
-        // listing order, after the per-function findings.
-        findings.extend(self.cross_function.analyze(&bodies, &self.mutex));
+        // calls to the analysis engine. It pairs only bodies that
+        // could run at the same moment (issue #436), and its findings
+        // append in listing order, after the per-function findings.
+        let cross =
+            self.cross_function
+                .analyze_report(&bodies, &self.mutex, &self.threads, &exports);
+        findings.extend(cross.findings);
 
         let mut metadata = ScanMetadata::new(binary);
         // The scan source names the analysis engine behind it, with
@@ -390,7 +444,7 @@ impl<S> SyncEngine<S> {
         // unless the record says which bodies the scan could not
         // reach. The batch scan phase and the CLI's force-rescan file
         // the same admission through this one definition.
-        metadata.coverage = Some(coverage_stamp(&unreached, nameless));
+        metadata.coverage = Some(coverage_stamp(&unreached, nameless, &cross.gate_excluded));
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,

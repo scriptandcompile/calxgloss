@@ -179,6 +179,37 @@ impl ThreadingDetector {
         &self.joins
     }
 
+    /// The functions this body starts threads with: the arguments of
+    /// configured spawn calls that read as one plain name —
+    /// `CreateThread(NULL, 0, worker, ...)` starts `worker`. The entry
+    /// point arrives through any argument position: `CreateThread`
+    /// spells it second, `pthread_create` third, `std::thread::spawn`
+    /// first. A spawn through a cast function pointer, an address, or
+    /// a computed target fails the plain-name rule, so no per-spelling
+    /// positional table is needed.
+    ///
+    /// The cross-function pass reads this to know which bodies a
+    /// thread can actually run (issue #436). A name the program never
+    /// defines — a local handle like `local_18`, an import — is still
+    /// returned here; the caller's intersection with the kept bodies
+    /// drops it.
+    pub(crate) fn spawn_start_candidates(&self, func: &DecompiledFunction) -> Vec<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        for call in direct_calls(&func.body) {
+            if !self.spawns.iter().any(|spawn| spawn.name == call.callee) {
+                continue;
+            }
+            for arg in call.args {
+                if let Some(name) = lock_object(arg)
+                    && !candidates.contains(&name)
+                {
+                    candidates.push(name);
+                }
+            }
+        }
+        candidates
+    }
+
     /// The thread spawn sites found in one function's body.
     ///
     /// The reading walks the body's direct calls in source order —
@@ -784,5 +815,44 @@ undefined FUN_18003ab00(void) {
         assert_eq!(spawns.len(), 1);
         assert_eq!(spawns[0].join.as_deref(), Some("my_join"));
         assert_eq!(spawns[0].suggestion, "std::thread::spawn");
+    }
+
+    #[test]
+    fn thread_start_arguments_name_the_functions_a_thread_can_run() {
+        // The entry point position differs per spelling — `CreateThread`
+        // spells it second, `pthread_create` third, `std::thread::spawn`
+        // first — and one plain-name rule covers them all: each
+        // spelling's entry-point argument reads as `worker`. The
+        // handle argument (`local_18`) also reads as a plain name; the
+        // caller's intersection with the program's function list drops
+        // it. A cast function pointer names nothing.
+        let detector = ThreadingDetector::with_default_names();
+        let candidates = detector.spawn_start_candidates(&function(
+            "\
+  CreateThread(NULL, 0, worker, NULL, 0, NULL);
+  pthread_create(&local_18, NULL, reader, NULL);
+  std::thread::spawn(writer);
+  CreateThread(NULL, 0, *(LPTHREAD_START_ROUTINE)&thunk_1000, NULL, 0, NULL);",
+        ));
+        assert_eq!(
+            candidates,
+            ["NULL", "worker", "local_18", "reader", "writer"],
+            "every plain-name argument arrives, `NULL` included — no function \
+             shares those names; the cast target does not arrive"
+        );
+    }
+
+    #[test]
+    fn custom_spawn_spellings_reach_the_thread_start_arguments() {
+        // The candidates come from the detector's configured set, like
+        // every other threading reading: a program's own wrapper names
+        // its entry point too.
+        let mut detector = ThreadingDetector::new();
+        detector.add_spawn(ThreadSpawnSignature::new(
+            "my_spawn",
+            SpawnBinding::ReturnValue,
+        ));
+        let candidates = detector.spawn_start_candidates(&function("  h = my_spawn(worker);\n"));
+        assert_eq!(candidates, ["worker"]);
     }
 }

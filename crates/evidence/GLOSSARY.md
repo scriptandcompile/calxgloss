@@ -98,6 +98,10 @@ The program-level who-calls-whom structure — roots, leaves, translation order 
 A pass after the per-function loop that relates two or more functions, over kept bodies and the call map, with no new engine reads.
 _Avoid_: post-loop pass.
 
+**Concurrent-reachability gate**:
+The sync cross-function pass's input rule: pair only functions that could run at the same moment. Entries are the export listing and kept bodies' thread-start arguments; from them the walk follows call edges forward through kept bodies. A kept body the walk never reaches pairs nothing, and the `cross-function-pairs` coverage facet admits the exclusion by name and count.
+_Avoid_: reachability filter — it drops findings from the scan record, not just from display.
+
 **Post-inline pass**:
 A pass that runs after inline resolution. Its inputs are therefore surviving readings, not raw detector output.
 

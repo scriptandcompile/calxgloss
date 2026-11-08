@@ -33,6 +33,7 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 #[derive(Debug, Default)]
 struct Stats {
     decompiles: Mutex<Vec<String>>,
+    exports_reads: Mutex<usize>,
 }
 
 /// A canned program implementing [`ScanSource`], so the whole
@@ -43,6 +44,8 @@ struct FakeProgram {
     bodies: HashMap<String, DecompiledFunction>,
     fail_decompiles: Vec<String>,
     fail_listing: bool,
+    fail_exports: bool,
+    exports: Vec<Symbol>,
     stats: Arc<Stats>,
 }
 
@@ -53,12 +56,33 @@ impl FakeProgram {
             bodies: HashMap::new(),
             fail_decompiles: Vec::new(),
             fail_listing: false,
+            fail_exports: false,
+            exports: Vec::new(),
             stats: Arc::new(Stats::default()),
         }
     }
 
+    /// Every named listing entry stands as an export, so the
+    /// scan's reachability gate admits the whole program and the
+    /// test reads as an ungated scan would.
+    fn exporting(mut self, names: &[&str]) -> Self {
+        self.exports = names
+            .iter()
+            .map(|name| Symbol {
+                name: (*name).to_string(),
+                address: 0x1800_3ab00,
+                imported: false,
+            })
+            .collect();
+        self
+    }
+
     fn decompiled(&self) -> Vec<String> {
         self.stats.decompiles.lock().unwrap().clone()
+    }
+
+    fn exports_reads(&self) -> usize {
+        *self.stats.exports_reads.lock().unwrap()
     }
 }
 
@@ -130,7 +154,13 @@ impl ScanSource for FakeProgram {
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
-        Ok(Vec::new())
+        *self.stats.exports_reads.lock().unwrap() += 1;
+        if self.fail_exports {
+            return Err(EngineError::Reported {
+                message: "the engine is busy".into(),
+            });
+        }
+        Ok(self.exports.clone())
     }
 
     async fn image_base(&self) -> Result<u64> {
@@ -168,6 +198,10 @@ const EVERY_SHAPE_BODY: &str = "\
 fn program() -> FakeProgram {
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    // The shared fixture exports its two functions: they stand in the
+    // concurrent-reachability gate's entry set (issue #436), so pins
+    // built on this fixture reach the cross-function comparison too.
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -192,6 +226,17 @@ async fn scan(program: FakeProgram) -> SyncResult {
         .scan("eqmain.dll")
         .await
         .expect("scan")
+}
+
+fn export_symbols(names: &[&str]) -> Vec<Symbol> {
+    names
+        .iter()
+        .map(|name| Symbol {
+            name: (*name).into(),
+            address: 0x2000,
+            imported: false,
+        })
+        .collect()
 }
 
 fn kinds(result: &SyncResult, function: &str) -> Vec<&'static str> {
@@ -313,9 +358,11 @@ async fn tls_findings_slot_after_the_thread_spawns() {
 async fn two_functions_that_lock_the_same_objects_in_opposite_orders_land_a_lock_order_finding() {
     // The classic deadlock shape, invisible to either body read
     // on its own: one function takes `DAT_guard` before
-    // `DAT_monitor`, the other the other way round.
+    // `DAT_monitor`, the other the other way round. Both are exports,
+    // so the reachability gate lets the pair through (issue #436).
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -375,6 +422,7 @@ async fn two_functions_reversing_same_named_stack_slot_locks_file_no_lock_order_
     // both functions' lock pairs — only the cross-function claim goes.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -425,6 +473,7 @@ async fn functions_that_lock_shared_objects_in_a_consistent_order_claim_nothing(
     // before `DAT_monitor`, so there is no order to disagree about.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -469,6 +518,7 @@ async fn custom_acquire_names_reach_the_lock_order_pass() {
     // the configured acquires.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -522,6 +572,7 @@ async fn a_function_that_will_not_decompile_fabricates_no_cross_function_claim()
     // nothing about the function whose body never arrived.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -554,6 +605,7 @@ async fn lock_order_findings_append_after_the_per_function_findings() {
     // findings.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -598,6 +650,7 @@ async fn two_functions_sharing_an_unprotected_global_land_a_data_race_finding() 
     // global, and nothing guards either side.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -652,6 +705,7 @@ async fn the_same_lock_object_held_by_both_functions_suppresses_the_race() {
     // pairs the locks in-body and the race claim is withdrawn.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
             "FUN_18003ab00".into(),
             function(
@@ -695,6 +749,7 @@ async fn a_function_that_will_not_decompile_contributes_no_race() {
     // claims no race against the function whose body never arrived.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -733,6 +788,7 @@ async fn the_race_reading_runs_without_a_global_state_document() {
     // order.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
         "FUN_18003ab00".into(),
         function(
@@ -768,6 +824,7 @@ async fn data_race_findings_append_after_the_per_function_findings() {
     // function's own findings.
     let mut program = FakeProgram::empty();
     program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
     program.bodies.insert(
             "FUN_18003ab00".into(),
             function(
@@ -821,6 +878,16 @@ async fn many_bodies_sharing_a_decompiler_junk_name_form_no_cross_function_findi
         .map(|(name, _)| summary(name))
         .chain([summary("FUN_18003ab00"), summary("FUN_18003e750")])
         .collect();
+    program.exports = export_symbols(&[
+        "FUN_180010000",
+        "FUN_180010010",
+        "FUN_180010020",
+        "FUN_180010030",
+        "FUN_180010040",
+        "FUN_180010050",
+        "FUN_18003ab00",
+        "FUN_18003e750",
+    ]);
     for (name, body) in junk {
         program
             .bodies
@@ -855,6 +922,318 @@ async fn many_bodies_sharing_a_decompiler_junk_name_form_no_cross_function_findi
         // function — the rollup shape (issue #434).
         vec![("", "data_race")],
         "eight bodies sharing junk names, and only the real global reads into one finding"
+    );
+}
+
+// ============================================================
+// The concurrent-reachability gate (issue #436)
+// ============================================================
+
+#[tokio::test]
+async fn functions_reachable_from_no_thread_entry_or_export_pair_nothing() {
+    // Two bodies share a real global — a write in one, a read in
+    // the other — but no export, no thread start, and no caller
+    // reaches either, so they can never be running at the same
+    // time and the scan claims no race. Before the gate this pair
+    // enumerated: real programs claimed races between functions
+    // that never run at the same time.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  DAT_counter = iVar1 + 1;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar1 = DAT_counter;\n",
+        ),
+    );
+    let result = scan(program).await;
+
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| finding.kind() != "data_race"),
+        "no thread entry and no export reaches the pair, so it forms no cross-function finding"
+    );
+}
+
+#[tokio::test]
+async fn reversed_lock_orders_claim_no_conflict_when_the_pair_cannot_run_at_once() {
+    // The same gate stands over the lock-order reading: two bodies
+    // acquire `DAT_guard` and `DAT_monitor` in opposite orders,
+    // but nothing exported or spawned reaches either, so the two
+    // are never live at once and the scan files no deadlock claim.
+    // The in-body pairings, which read every kept body regardless,
+    // keep filing.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "\
+  EnterCriticalSection(&DAT_guard);
+  EnterCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_monitor);
+  LeaveCriticalSection(&DAT_guard);",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "\
+  EnterCriticalSection(&DAT_monitor);
+  EnterCriticalSection(&DAT_guard);
+  LeaveCriticalSection(&DAT_guard);
+  LeaveCriticalSection(&DAT_monitor);",
+        ),
+    );
+    let result = scan(program).await;
+
+    assert!(
+        result
+            .findings
+            .iter()
+            .all(|finding| finding.kind() != "lock_order"),
+        "a pair that can never run at once invents no deadlock"
+    );
+    assert_eq!(
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "mutex")
+            .count(),
+        4,
+        "the per-body walk still covers every kept body"
+    );
+}
+
+#[tokio::test]
+async fn an_exported_function_pairs_with_a_transitively_reachable_callee() {
+    // Reachability walks forward over the call map the kept bodies
+    // spell: the exported function calls a second body, which
+    // calls a third. The second writes a global the third reads —
+    // one call chain, so both frames can be live at once, and the
+    // race stands.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_18003ab00"),
+        summary("FUN_18003e750"),
+        summary("FUN_180041230"),
+    ];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  FUN_18003e750();\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  DAT_counter = iVar1 + 1;\n  FUN_180041230();\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180041230".into(),
+        function(
+            "FUN_180041230",
+            "undefined FUN_180041230(void)",
+            "  uVar1 = DAT_counter;\n",
+        ),
+    );
+    let program = program.exporting(&["FUN_18003ab00"]);
+    let result = scan(program).await;
+
+    let race = result
+        .findings
+        .iter()
+        .find(|finding| finding.kind() == "data_race")
+        .expect("two callees down one exported chain can still pair");
+    let SyncFinding::DataRace(record) = race else {
+        unreachable!("the shared global reads as a data race");
+    };
+    assert_eq!(record.writers, ["FUN_18003e750".to_string()]);
+    assert_eq!(record.readers, ["FUN_180041230".to_string()]);
+}
+
+#[tokio::test]
+async fn a_thread_start_argument_names_the_pair_and_the_spawner_names_no_global() {
+    // `CreateThread` names a kept body as its start routine: that
+    // routine and what it reaches run on a thread and pair. The
+    // spawning body writes the same global but stands outside
+    // every entry's closure — no export, no thread starts it, no
+    // caller reaches it — so it forms no pair and names no race
+    // global: the aggregate's lists, sides, and counts carry only
+    // the bodies that could actually run at the same time.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_18003ab00"),
+        summary("FUN_18003e750"),
+        summary("FUN_180041230"),
+    ];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "\
+  DAT_counter = 0;
+  hThread = CreateThread((LPSECURITY_ATTRIBUTES)0x0,0,FUN_18003e750,0x0,0,&local_14);
+  WaitForSingleObject(hThread,0xffffffff);",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  DAT_counter = iVar1 + 1;\n  FUN_180041230();\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180041230".into(),
+        function(
+            "FUN_180041230",
+            "undefined FUN_180041230(void)",
+            "  uVar1 = DAT_counter;\n",
+        ),
+    );
+    let result = scan(program).await;
+
+    let race = result
+        .findings
+        .iter()
+        .find(|finding| finding.kind() == "data_race")
+        .expect("a thread's routine and its callee could run at the same time");
+    let SyncFinding::DataRace(record) = race else {
+        unreachable!("the shared global reads as a data race");
+    };
+    assert_eq!(record.writers, ["FUN_18003e750".to_string()]);
+    assert_eq!(record.readers, ["FUN_180041230".to_string()]);
+    assert_eq!(record.unguarded_writes, 1);
+    assert_eq!(record.unguarded_reads, 1);
+    assert_eq!(
+        record.sides.len(),
+        2,
+        "the gated-out spawner stands in no reader list, writer list, side, or count"
+    );
+}
+
+#[tokio::test]
+async fn the_gate_reads_the_export_listing_exactly_once_per_scan() {
+    // The gate's entry set costs one program-level read — the
+    // export listing, once per scan — beside the one decompile per
+    // function. The exactly-once decompile contract stands.
+    let program = program();
+    let result = scan(program.clone()).await;
+    assert!(!result.is_empty());
+    assert_eq!(
+        program.exports_reads(),
+        1,
+        "one export listing read per scan"
+    );
+    assert_eq!(
+        program.decompiled(),
+        vec!["FUN_18003ab00", "FUN_18003e750"],
+        "the gate adds no extra decompiles"
+    );
+}
+
+#[tokio::test]
+async fn a_thread_started_by_a_custom_spawn_spelling_pairs_at_the_scan_seam() {
+    // The gate reads the scan's configured spawn names, not a
+    // private default: a program's own wrapper starts the thread,
+    // and the started function still pairs with its transitive
+    // callee through the scan.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_18003ab00"),
+        summary("FUN_18003e750"),
+        summary("FUN_180041230"),
+    ];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  hThread = my_spawn(FUN_18003e750);\n  my_join(hThread);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  DAT_counter = 1;\n  FUN_180041230();\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180041230".into(),
+        function(
+            "FUN_180041230",
+            "undefined FUN_180041230(void)",
+            "  uVar1 = DAT_counter;\n",
+        ),
+    );
+    let mut threads = ThreadingDetector::new();
+    threads.add_spawn(ThreadSpawnSignature::new(
+        "my_spawn",
+        SpawnBinding::ReturnValue,
+    ));
+    threads.add_join("my_join");
+    let result = SyncEngine::with_source(program)
+        .with_threads(threads)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let race = result
+        .findings
+        .iter()
+        .find(|finding| finding.kind() == "data_race")
+        .expect("the wrapper's routine and its callee pair at the scan seam");
+    let SyncFinding::DataRace(record) = race else {
+        unreachable!("the shared global reads as a data race");
+    };
+    assert_eq!(record.writers, ["FUN_18003e750".to_string()]);
+    assert_eq!(record.readers, ["FUN_180041230".to_string()]);
+}
+
+#[tokio::test]
+async fn a_failed_export_listing_aborts_the_scan() {
+    // The gate's entry set rides on a program-level listing, like
+    // the function listing: when it fails, nothing can be said
+    // about which pairs could run, and pairing everything — or
+    // nothing — would persist a record that looks clean but is not.
+    // The run aborts with the engine's own words.
+    let mut program = program();
+    program.fail_exports = true;
+    let error = SyncEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect_err("a failed export listing aborts the run");
+    assert!(
+        matches!(
+            error,
+            crate::SyncError::Engine(EngineError::Reported { .. })
+        ),
+        "the listing failure rides through as the engine's own error: {error:?}"
     );
 }
 
@@ -1144,6 +1523,16 @@ async fn a_decompiled_failure_is_admitted_by_name_on_the_coverage_record() {
         Some("1 function body unreached: FUN_18003e750"),
         "the unreached body is named, and only the unreached body"
     );
+    // The pairs facet is unaffected: a body the decompiler never
+    // produced is no kept body, so the reachability gate excluded
+    // none of the bodies it had (issue #436).
+    let pairs = coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(pairs.status, CoverageStatus::Complete);
+    assert_eq!(pairs.limitation, None);
 }
 
 #[tokio::test]
@@ -1189,9 +1578,120 @@ async fn the_coverage_line_is_capped_at_five_names_and_counts_the_nameless() {
     );
 }
 
+#[tokio::test]
+async fn the_gate_admits_excluded_bodies_naming_five_and_counting_the_rest() {
+    // Seven kept bodies the gate never reaches — read by every
+    // per-body detector, excluded from every pairing. The pairs
+    // facet names five inline and counts the rest, while the bodies
+    // facet stays complete: nothing was skipped (issue #436).
+    let names: Vec<String> = (0..7).map(|i| format!("FUN_body_{i:04}")).collect();
+    let mut program = FakeProgram::empty();
+    for (index, name) in names.iter().enumerate() {
+        program.listing.push(FunctionSummary {
+            name: name.clone(),
+            address: 0x1800_0000 + index as u64,
+        });
+        program.bodies.insert(
+            name.clone(),
+            function(name, "undefined FUN_body_x(void)", "  return;\n"),
+        );
+    }
+    let result = scan(program).await;
+    let coverage = result
+        .metadata
+        .coverage
+        .expect("a gated scan states its coverage too");
+    assert!(
+        roster_faults(&coverage).is_empty(),
+        "the roster now carries two facets and names both exactly once"
+    );
+    assert_eq!(coverage.status, CoverageStatus::Partial);
+    let bodies = coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == "function-bodies")
+        .expect("function-bodies is named");
+    assert_eq!(
+        bodies.status,
+        CoverageStatus::Complete,
+        "every body was decompiled and read — the gate excluded none of that"
+    );
+    let pairs = coverage
+        .facets
+        .iter()
+        .find(|facet| facet.id == "cross-function-pairs")
+        .expect("cross-function-pairs is named");
+    assert_eq!(pairs.status, CoverageStatus::Partial);
+    assert_eq!(
+        pairs.limitation.as_deref(),
+        Some(
+            "7 functions excluded from cross-function pairing: FUN_body_0000, \
+             FUN_body_0001, FUN_body_0002, FUN_body_0003, FUN_body_0004, +2 more"
+        ),
+        "five names, the rest counted — the existing cap, reused"
+    );
+}
+
+#[tokio::test]
+async fn a_gated_findings_list_and_a_full_coverage_list_never_render_alike() {
+    // The coverage-honesty rule, pinned at the sync seam: two scans
+    // whose findings lists are both empty must not read alike. The
+    // exported program paired everything it kept, so it admits
+    // nothing; the unexported one paired nothing, and its admission
+    // line says so beside the empty list.
+    let bodies = [
+        ("FUN_18003ab00", "  DAT_counter = 5;\n"),
+        ("FUN_18003e750", "  uVar1 = DAT_counter;\n"),
+    ];
+    let build = |exported: bool| {
+        let mut program = FakeProgram::empty();
+        for (name, body) in bodies {
+            program.listing.push(summary(name));
+            program.bodies.insert(
+                name.to_string(),
+                function(name, "undefined FUN_x(void)", body),
+            );
+        }
+        if exported {
+            program.exports = export_symbols(&["FUN_18003ab00", "FUN_18003e750"]);
+        }
+        program
+    };
+    let gated = scan(build(false)).await;
+    let full = scan(build(true)).await;
+
+    // The findings lists could easily match — and beside them one
+    // record admits its gate and the other admits nothing.
+    let gated_admission = gated
+        .metadata
+        .coverage
+        .as_ref()
+        .and_then(|coverage| coverage.admission())
+        .expect("the gated scan states an admission");
+    assert_eq!(
+        gated_admission,
+        "partial — 2 functions excluded from cross-function pairing: \
+         FUN_18003ab00, FUN_18003e750"
+    );
+    assert!(
+        gated.findings.is_empty(),
+        "the gated bodies form no pair, so they claim no race"
+    );
+    assert_eq!(full.findings.len(), 1, "the exported pair claims the race");
+    assert_eq!(
+        full.metadata
+            .coverage
+            .as_ref()
+            .and_then(|coverage| coverage.admission()),
+        None,
+        "a full-coverage scan admits nothing — and reads nothing like \
+         the gated one beside its findings"
+    );
+}
+
 #[test]
 fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
-    let mut coverage = coverage_stamp(&[], 0);
+    let mut coverage = coverage_stamp(&[], 0, &[]);
     coverage
         .facets
         .retain(|facet| facet.id != "function-bodies");
@@ -1204,7 +1704,7 @@ fn the_roster_pin_fails_when_a_declared_facet_goes_missing() {
 
 #[test]
 fn the_roster_pin_fails_when_a_facet_is_doubled() {
-    let mut coverage = coverage_stamp(&["FUN_18003e750".to_string()], 0);
+    let mut coverage = coverage_stamp(&["FUN_18003e750".to_string()], 0, &[]);
     coverage.facets.push(coverage.facets[0].clone());
     assert_eq!(
         roster_faults(&coverage),
@@ -1215,7 +1715,7 @@ fn the_roster_pin_fails_when_a_facet_is_doubled() {
 
 #[test]
 fn the_roster_pin_fails_when_coverage_names_an_orphan_facet() {
-    let mut coverage = coverage_stamp(&[], 0);
+    let mut coverage = coverage_stamp(&[], 0, &[]);
     coverage.facets.push(FacetCoverage {
         id: "lock-ordering".to_string(),
         status: CoverageStatus::Unexamined,
