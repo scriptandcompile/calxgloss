@@ -237,9 +237,30 @@ An opener/closer pair over a non-memory resource. The type comes from the body's
 
 **Lock order** *(sync)*:
 Two functions acquiring the same two locks in opposite relative orders. This makes a deadlock claim — one claim per conflicting pair.
+*Rules:*
+- The compared locks must pass the *single-lock-instance rule*, and the two functions must pass the *concurrent-reachability gate*, before either comparison.
+
+**Single-lock-instance rule** *(sync)*:
+The lock-order pass's input rule: compare only lock names that could stand for the same object in both bodies.
+*Rules:*
+- The global-state crate's shared name rule decides, implemented once there.
+- Names the decompiler mints for its own frames never qualify; program symbols and named heap handles do.
+- The tie between bodies stays name-based, not resolved data flow: same-named heap handles in two frames still pair.
+
+**Per-global race claim** *(sync)*:
+The sync race reading's output rule: one claim per shared global and its whole accessor set, never one per function pair.
+*Rules:*
+- A global named by two or more bodies qualifies when at least one access reads and one writes.
+- The record lists readers and writers in listing order, each function named once per list.
+- It counts the accesses no guard covers.
+- It quotes one example access statement per accessor.
+- The claim attaches to no single function: its `function` answers `""`, like the global-state rollup entry.
+_Avoid_: pair restatement — the retired per-(function, partner, global) row.
 
 **Protected span** *(sync)*:
-A recognized acquire→release pairing over one lock. The *same-lock rule* is the data race's false-positive gate: if one lock covers every access in both bodies, the claim is suppressed.
+A recognized acquire→release pairing over one lock.
+*Rules:*
+- The *same-lock rule* is the data race's false-positive gate: if one lock covers every access to the global across its accessors, the claim is suppressed.
 
 **Direct guard** *(sync)*:
 Guard evidence sitting on the access itself, beside the lock spans: a recognized atomic call naming that global, or a recognized TLS call reaching it through a TLS index. When every cross-body access of a qualifying global carries the same kind of direct guard, the aggregate race claim is dropped while the per-body atomic and TLS findings stay filed. A guarded call inside a protected span carries that span's lock too.

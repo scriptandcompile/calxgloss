@@ -3,6 +3,12 @@
 - **Status:** Accepted
 - **Date:** 2026-10-14
 - **Deciders:** Arthur (solo project)
+- **Amended:** 2026-11-07 (issue #439) — the lock objects this pass compares
+  across functions now key on one lock instance: only names that could stand
+  for the same object in both bodies enter the comparison (issue #435). The
+  kept-bodies rule below is unchanged, and the pair output shape below is
+  unchanged — the concurrent-reachability gate and the race reading's
+  per-global aggregation are recorded in ADR-0062.
 
 ## Context
 
@@ -37,7 +43,13 @@ Mirror ADR-0027 in the sync crate:
   and it links calls to lock objects through the pairing detector's
   own `lock_object` extraction (made `pub(crate)`), so the two
   readings cannot disagree about which lock object an acquire
-  identifies.
+  identifies. Since the 2026-11-07 amendment the sequence then keeps
+  only acquisitions whose lock name could stand for one shared object
+  in both bodies. One shared rule decides which names qualify — the
+  global-state crate's name rule, implemented once there — so no two
+  crates can disagree about the same identifier. A `local_20` lock
+  never leaves its own frame, so it forms no pair with a same-named
+  slot in another body (issue #435).
 - When two functions' sequences hold the same two locks in opposite
   relative orders, the pass reports one `SyncFinding::LockOrder` **per
   conflicting lock pair**. The finding is attached to the earlier

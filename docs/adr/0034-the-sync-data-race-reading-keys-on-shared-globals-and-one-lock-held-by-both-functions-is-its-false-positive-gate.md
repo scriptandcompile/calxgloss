@@ -1,6 +1,8 @@
 # ADR-0034: The sync data-race reading keys on shared globals
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0062 (2026-11-07, issue #439 — the per-pair output
+  shape multiplied to 43.5M findings on a real binary; ADR-0062 records the
+  shipped per-global aggregation, lock-instance keying, and the concurrent-reachability gate)
 - **Date:** 2026-10-14
 - **Deciders:** Arthur (solo project)
 - **Amended:** 2026-10-19 (issue #255) — the global-identification rule is no longer restated inside the sync crate: the data-race pass consumes the `calxgloss-globalstate` crate's pure access-site reading and keeps only its lock-span attribution on top, so the restated-rule caveat below is retired in favor of one implementation.
