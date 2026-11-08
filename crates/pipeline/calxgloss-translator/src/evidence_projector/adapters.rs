@@ -150,13 +150,21 @@ impl AnalysisDoc for MemoryDoc {
 /// The concurrency document, `re/analysis/sync/{binary}.json`: the lock
 /// pairings, atomic calls, and thread spawns whose calls live in the
 /// function's body, filling `concurrency_findings`.
+///
+/// Rows arrive already spelled as prompt data, because two kinds of
+/// finding reach them differently: a per-function finding converts
+/// as-is, while an aggregated data race is about a global and names
+/// no single function, so the sync crate's projection seam answers it
+/// with one row per accessor function — that function's own access
+/// statement quoted, the global and the counts carrying the rest
+/// (issue #434).
 pub struct SyncDoc;
 
 impl AnalysisDoc for SyncDoc {
     const KIND: &'static str = "concurrency result";
 
     type Doc = calxgloss_sync::types::SyncResult;
-    type Record<'a> = &'a calxgloss_sync::types::SyncFinding;
+    type Record<'a> = calxgloss_prompts::ConcurrencyInfo;
 
     fn load(workspace: &Path, binary: &str) -> Result<Self::Doc, DocLoadError> {
         calxgloss_sync::persist::SyncPersistor::new(workspace)
@@ -173,13 +181,13 @@ impl AnalysisDoc for SyncDoc {
         doc: &'a Self::Doc,
         function: &str,
     ) -> impl Iterator<Item = Self::Record<'a>> {
-        doc.for_function(function)
+        doc.findings
+            .iter()
+            .flat_map(move |finding| finding.prompt_rows_for(function))
     }
 
     fn fill(record: Self::Record<'_>, bundle: &mut EvidenceBundle) {
-        bundle
-            .concurrency_findings
-            .push(calxgloss_prompts::ConcurrencyInfo::from(record));
+        bundle.concurrency_findings.push(record);
     }
 
     fn coverage(doc: &Self::Doc) -> Option<&calxgloss_types::ScanCoverage> {

@@ -1,6 +1,8 @@
 // Tests for the module above, split out of the file they test.
 use super::*;
-use crate::scan_registry::{CompletionLatch, ScanDescriptor, ScanMessages, ScanRow, ScanRunOptions};
+use crate::scan_registry::{
+    CompletionLatch, ScanDescriptor, ScanMessages, ScanRow, ScanRunOptions,
+};
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_callback::persist::CallbackPersistor;
@@ -1740,7 +1742,10 @@ async fn a_failing_type_inference_scan_degrades_callback_detection_never_blocks_
     )
     .await
     .expect("a failing inference scan still returns");
-    assert!(!inferred.filed, "the failed save degrades the inference row");
+    assert!(
+        !inferred.filed,
+        "the failed save degrades the inference row"
+    );
     assert!(
         edge.is_set(),
         "the failing run still published its latch on the way out"
@@ -3785,9 +3790,7 @@ fn assert_scan_pairs(pairs: &[ProgressEvent], names: &[&'static str]) {
                 );
             }
             ProgressEvent::EvidenceScanCompleted {
-                scan,
-                elapsed_secs,
-                ..
+                scan, elapsed_secs, ..
             } => {
                 assert!(
                     elapsed_secs.is_finite() && *elapsed_secs >= 0.0,
@@ -3818,15 +3821,10 @@ fn assert_scan_pairs(pairs: &[ProgressEvent], names: &[&'static str]) {
 }
 
 /// One named row's completed event from a drained pair list.
-fn completed_scan<'a>(
-    pairs: &'a [ProgressEvent],
-    name: &str,
-) -> &'a ProgressEvent {
+fn completed_scan<'a>(pairs: &'a [ProgressEvent], name: &str) -> &'a ProgressEvent {
     pairs
         .iter()
-        .find(|ev| {
-            matches!(ev, ProgressEvent::EvidenceScanCompleted { scan, .. } if scan == name)
-        })
+        .find(|ev| matches!(ev, ProgressEvent::EvidenceScanCompleted { scan, .. } if scan == name))
         .unwrap_or_else(|| panic!("the {name} row's completed event is in the drain"))
 }
 
@@ -3877,8 +3875,7 @@ async fn every_registered_scan_gets_a_named_pair_cold_and_warm() {
     let cold_db = completed_scan(&cold, "type-database");
     match cold_db {
         ProgressEvent::EvidenceScanCompleted { findings, .. } => assert_eq!(
-            *findings,
-            None,
+            *findings, None,
             "the type-database row files three separate counts, so it reports none: {cold_db}"
         ),
         other => unreachable!("completed_scan found a completed event, got {other:?}"),
@@ -3914,8 +3911,7 @@ async fn every_registered_scan_gets_a_named_pair_cold_and_warm() {
     let warm_db = completed_scan(&warm, "type-database");
     match warm_db {
         ProgressEvent::EvidenceScanCompleted { findings, .. } => assert_eq!(
-            *findings,
-            None,
+            *findings, None,
             "the warm re-run still files three separate counts and reports none: {warm_db}"
         ),
         other => unreachable!("completed_scan found a completed event, got {other:?}"),
@@ -3953,7 +3949,7 @@ fn make_broken_row(name: &'static str, panic_words: Option<&'static str>) -> Sca
                 match panic_words {
                     Some(words) => panic!("{words}"),
                     None => Err::<(), String>(
-                        "the synthetic evidence engine refused the scan".to_string()
+                        "the synthetic evidence engine refused the scan".to_string(),
                     ),
                 }
             })
@@ -5521,7 +5517,8 @@ async fn a_set_override_file_replaces_the_built_in_set_inside_the_row_build() {
                     ..ScanRunOptions::default()
                 },
             )
-            .await.filed,
+            .await
+            .filed,
         "the algorithm row scans the fixture from the override file's set"
     );
     let document = AlgorithmPersistor::new(dir.path())
@@ -5551,7 +5548,8 @@ async fn a_set_override_file_replaces_the_built_in_set_inside_the_row_build() {
                     ..ScanRunOptions::default()
                 },
             )
-            .await.filed,
+            .await
+            .filed,
         "the known-library row scans the fixture from the override file's set"
     );
     let document = calxgloss_libmatch::persist::LibmatchPersistor::new(dir.path())
@@ -5606,7 +5604,8 @@ async fn a_malformed_set_override_file_fails_the_override_capable_rows_naming_th
                     ..ScanRunOptions::default()
                 },
             )
-            .await.filed,
+            .await
+            .filed,
             "the {row_name} row's scan fails on its malformed override file"
         );
         assert!(
@@ -5670,7 +5669,8 @@ async fn the_write_suppression_option_holds_the_type_database_row_to_its_reads()
                 ..ScanRunOptions::default()
             },
         )
-        .await.filed,
+        .await
+        .filed,
         "the type-database row scans the fixture with the write suppression set"
     );
     assert_eq!(
@@ -5738,7 +5738,8 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await.filed,
+        .await
+        .filed,
         "the default policy answers a filed document from the short-circuit"
     );
     let short_circuited = persistor.load(PROGRAM).expect("document still filed");
@@ -5757,7 +5758,8 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await.filed,
+        .await
+        .filed,
         "the overwrite policy re-runs a row whose document is already filed"
     );
     let replaced = persistor.load(PROGRAM).expect("the forced re-scan saved");
@@ -5785,7 +5787,8 @@ async fn the_overwrite_policy_bypasses_the_short_circuit_without_losing_a_failed
                 ..ScanRunOptions::default()
             },
         )
-        .await.filed,
+        .await
+        .filed,
         "a forced re-scan on a malformed override file answers false"
     );
     let survived = persistor

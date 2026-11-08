@@ -584,16 +584,22 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
         .iter()
         .filter(|finding| finding.kind() == "data_race")
         .collect();
-    assert_eq!(races.len(), 1, "one race per function pair and global");
+    assert_eq!(races.len(), 1, "one race per shared global (issue #434)");
 
-    // The record keeps both functions and the shared variable through
-    // the round trip. It scores one band below the evidence-based kinds.
+    // The aggregate keeps every accessor, its side of the read/write
+    // split, and the unguarded counts through the round trip. The
+    // reader under its own lock guards its access — only the store
+    // stands unguarded. It scores one band below the evidence-based
+    // kinds.
     let SyncFinding::DataRace(record) = races[0] else {
         unreachable!("the shared global reads as a data race");
     };
-    assert_eq!(record.function, "FUN_18003ab00");
-    assert_eq!(record.partner, "FUN_18003e750");
     assert_eq!(record.variable, "DAT_counter");
+    assert_eq!(record.writers, ["FUN_18003ab00"]);
+    assert_eq!(record.readers, ["FUN_18003e750"]);
+    assert_eq!(record.unguarded_writes, 1);
+    assert_eq!(record.unguarded_reads, 0, "the read sits under local_20");
+    assert_eq!(record.sides.len(), 2);
     assert_eq!(record.confidence, 60);
     assert_eq!(
         record.evidence,
@@ -602,23 +608,22 @@ async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
     assert!(races[0].target().contains("DAT_counter"));
 
     // The cross-function finding comes after the per-function
-    // findings, so the persisted document stays easy to diff.
+    // findings, and the aggregate names no single function, so the
+    // persisted document stays easy to diff.
     let order: Vec<(&str, &str)> = loaded
         .findings
         .iter()
         .map(|finding| (finding.function(), finding.kind()))
         .collect();
-    assert_eq!(
-        order,
-        vec![("FUN_18003e750", "mutex"), ("FUN_18003ab00", "data_race"),]
-    );
+    assert_eq!(order, vec![("FUN_18003e750", "mutex"), ("", "data_race"),]);
 
     // The escalate prompt describes the race with its kind and
-    // evidence confidence, like every other detector's records.
+    // evidence confidence, like every other detector's records, and
+    // each accessor's prompt quotes the race through its own side.
     let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
         .findings
         .iter()
-        .map(calxgloss_prompts::ConcurrencyInfo::from)
+        .flat_map(|finding| finding.prompt_rows_for("FUN_18003ab00"))
         .collect();
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),

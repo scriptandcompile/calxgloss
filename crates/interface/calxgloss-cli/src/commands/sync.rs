@@ -91,35 +91,11 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     println!();
 
     // Findings, broken down by the kind of each finding.
-    let kind_breakdown: Vec<String> = [
-        "mutex",
-        "atomic",
-        "thread",
-        "tls",
-        "async_runtime",
-        "futex",
-        "lock_order",
-        "data_race",
-    ]
-    .into_iter()
-    .map(|kind| {
-        (
-            kind,
-            result
-                .findings
-                .iter()
-                .filter(|finding| finding.kind() == kind)
-                .count(),
-        )
-    })
-    .filter(|(_, count)| *count > 0)
-    .map(|(kind, count)| format!("{kind} {count}"))
-    .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
         result.findings.len(),
-        dim(&kind_breakdown.join(", "))
+        dim(&kind_breakdown(result).join(", "))
     ));
 
     let top_confidence = result
@@ -191,6 +167,41 @@ fn confidence_color(confidence: u8) -> fn(&str) -> String {
     }
 }
 
+/// The findings-per-kind counts the report prints beside the total.
+/// The helper counts this result and lists every kind with at least
+/// one finding, in report order. Kinds with no findings drop out.
+/// This list must hold
+/// the finding type's full kind set — a kind missing from it would
+/// print nothing no matter how many findings of it the scan made. An
+/// aggregated data race is one finding of the `data_race` kind, so
+/// the line counts globals, not accessor pairs (issue #434).
+fn kind_breakdown(result: &SyncResult) -> Vec<String> {
+    [
+        "mutex",
+        "atomic",
+        "thread",
+        "tls",
+        "async_runtime",
+        "futex",
+        "lock_order",
+        "data_race",
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == kind)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect()
+}
+
 /// The "…and N more" line a detail section ends with when it hides some
 /// entries.
 fn print_hidden_count(noun: &str, total: usize) {
@@ -200,5 +211,168 @@ fn print_hidden_count(noun: &str, total: usize) {
             dim("●"),
             total - DETAIL_LIMIT
         ));
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_sync::types::{
+        AsyncRuntime, AtomicOperation, ConcurrencyHint, Confidence, DataRace, Futex, LockOrder,
+        RaceSide, ScanMetadata, SyncFinding, SyncType, ThreadSpawn, TlsUsage,
+    };
+
+    fn result_of(findings: Vec<SyncFinding>) -> SyncResult {
+        SyncResult {
+            metadata: ScanMetadata::new("eqmain.dll"),
+            findings,
+        }
+    }
+
+    fn one_of_every_kind() -> Vec<SyncFinding> {
+        vec![
+            SyncFinding::Mutex(ConcurrencyHint {
+                function: "FUN_a".into(),
+                sync_type: SyncType::StdMutex,
+                acquire: "EnterCriticalSection".into(),
+                release: "LeaveCriticalSection".into(),
+                suggestion: "std::sync::Mutex<T>".into(),
+                confidence: Confidence::new(70),
+                evidence: "EnterCriticalSection(&l);".into(),
+            }),
+            SyncFinding::Atomic(AtomicOperation {
+                function: "FUN_a".into(),
+                operation: "InterlockedIncrement".into(),
+                suggestion: "std::sync::atomic::AtomicU32".into(),
+                confidence: Confidence::new(70),
+                evidence: "InterlockedIncrement(&l);".into(),
+            }),
+            SyncFinding::Thread(ThreadSpawn {
+                function: "FUN_a".into(),
+                spawn: "CreateThread".into(),
+                join: None,
+                suggestion: "std::thread::spawn".into(),
+                confidence: Confidence::new(70),
+                evidence: "CreateThread(...);".into(),
+            }),
+            SyncFinding::Tls(TlsUsage {
+                function: "FUN_a".into(),
+                creation: Some("TlsAlloc".into()),
+                access: "TlsGetValue".into(),
+                suggestion: "thread_local!".into(),
+                confidence: Confidence::new(70),
+                evidence: "local_4 = TlsAlloc();".into(),
+            }),
+            SyncFinding::AsyncRuntime(AsyncRuntime {
+                function: "FUN_a".into(),
+                operation: "GetQueuedCompletionStatus".into(),
+                suggestion: "tokio".into(),
+                confidence: Confidence::new(60),
+                evidence: "GetQueuedCompletionStatus(...);".into(),
+            }),
+            SyncFinding::Futex(Futex {
+                function: "FUN_a".into(),
+                operation: "FUTEX_WAIT".into(),
+                suggestion: "std::sync::Mutex/Condvar".into(),
+                confidence: Confidence::new(60),
+                evidence: "syscall(61, ...);".into(),
+            }),
+            SyncFinding::LockOrder(LockOrder {
+                function: "FUN_a".into(),
+                partner: "FUN_b".into(),
+                first_lock: "local_20".into(),
+                second_lock: "local_40".into(),
+                suggestion: "pick one consistent lock acquisition order".into(),
+                confidence: Confidence::new(70),
+                evidence: "FUN_a: local_20 -> local_40; FUN_b: local_40 -> local_20".into(),
+            }),
+            SyncFinding::DataRace(DataRace {
+                variable: "DAT_counter".into(),
+                readers: vec!["FUN_b".into(), "FUN_c".into()],
+                writers: vec!["FUN_a".into()],
+                unguarded_reads: 2,
+                unguarded_writes: 1,
+                sides: vec![
+                    RaceSide {
+                        function: "FUN_a".into(),
+                        statement: "DAT_counter = 1".into(),
+                    },
+                    RaceSide {
+                        function: "FUN_b".into(),
+                        statement: "uVar1 = DAT_counter".into(),
+                    },
+                    RaceSide {
+                        function: "FUN_c".into(),
+                        statement: "uVar2 = DAT_counter".into(),
+                    },
+                ],
+                suggestion: "guard the shared global with one lock held by both functions".into(),
+                confidence: Confidence::new(60),
+                evidence: "FUN_a: DAT_counter = 1; FUN_b: uVar1 = DAT_counter;".into(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn the_report_breakdown_names_every_kind_the_union_can_carry() {
+        // The breakdown line is the report's kind index: every kind
+        // tag the finding union carries must show up with its count,
+        // or a scan full of that kind prints as though it found
+        // nothing of it.
+        let result = result_of(one_of_every_kind());
+        let breakdown = kind_breakdown(&result);
+        assert_eq!(
+            breakdown,
+            vec![
+                "mutex 1",
+                "atomic 1",
+                "thread 1",
+                "tls 1",
+                "async_runtime 1",
+                "futex 1",
+                "lock_order 1",
+                "data_race 1",
+            ],
+            "every kind the union carries is named"
+        );
+        assert_eq!(
+            breakdown.len(),
+            result.findings.len(),
+            "every finding is counted — a union variant missing from the breakdown list fails here"
+        );
+    }
+
+    #[test]
+    fn the_breakdown_counts_an_aggregated_race_as_one_data_race_whatever_its_accessor_count() {
+        // A rescan of the case that used to print `data_race 3` — the
+        // same global claimed once per function pair — now prints one
+        // count, because the finding is per global (issue #434).
+        let mut findings = one_of_every_kind();
+        findings.retain(|finding| finding.kind() == "data_race");
+        findings.push(SyncFinding::DataRace(DataRace {
+            variable: "DAT_flag".into(),
+            readers: vec!["FUN_d".into()],
+            writers: vec!["FUN_e".into()],
+            unguarded_reads: 1,
+            unguarded_writes: 1,
+            sides: vec![
+                RaceSide {
+                    function: "FUN_e".into(),
+                    statement: "DAT_flag = 2".into(),
+                },
+                RaceSide {
+                    function: "FUN_d".into(),
+                    statement: "uVar3 = DAT_flag".into(),
+                },
+            ],
+            suggestion: "guard the shared global with one lock held by both functions".into(),
+            confidence: Confidence::new(60),
+            evidence: "FUN_e: DAT_flag = 2; FUN_d: uVar3 = DAT_flag;".into(),
+        }));
+        assert_eq!(kind_breakdown(&result_of(findings)), vec!["data_race 2"]);
     }
 }

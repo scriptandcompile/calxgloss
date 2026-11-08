@@ -295,6 +295,34 @@ fn thread_record(function: &str) -> calxgloss_sync::types::ThreadSpawn {
     }
 }
 
+/// One shared global, one writer and one reader: the aggregate shape
+/// the concurrency crate records since issue #434 — the finding names
+/// no single function, so it selects no document by function itself,
+/// and only the projection seam spells it into an accessor's rows.
+fn aggregated_race() -> calxgloss_sync::types::DataRace {
+    calxgloss_sync::types::DataRace {
+        variable: "DAT_counter".into(),
+        readers: vec!["FUN_18003e750".into()],
+        writers: vec!["FUN_18003ab00".into()],
+        unguarded_reads: 1,
+        unguarded_writes: 1,
+        sides: vec![
+            calxgloss_sync::types::RaceSide {
+                function: "FUN_18003ab00".into(),
+                statement: "DAT_counter = iVar1 + 1".into(),
+            },
+            calxgloss_sync::types::RaceSide {
+                function: "FUN_18003e750".into(),
+                statement: "uVar1 = DAT_counter".into(),
+            },
+        ],
+        suggestion: "guard the shared global with one lock held by both functions".into(),
+        confidence: calxgloss_sync::types::Confidence::new(60),
+        evidence: "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
+            .into(),
+    }
+}
+
 fn persist_sync_findings(dir: &TempDir, findings: Vec<calxgloss_sync::types::SyncFinding>) {
     let mut result = calxgloss_sync::types::SyncResult::new(ScanMetadata::new("eqmain.dll"));
     result.findings = findings;
@@ -1276,6 +1304,11 @@ const ROW_KITS: &[RowKit] = &[
                     calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_zzz")),
                     calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_18003ab00")),
                     calxgloss_sync::types::SyncFinding::Thread(thread_record("FUN_18003ab00")),
+                    // The aggregate lands one row for the function
+                    // under translation — its own side of the claim —
+                    // even though it names no single function itself
+                    // (issue #434).
+                    calxgloss_sync::types::SyncFinding::DataRace(aggregated_race()),
                 ],
             );
         },
@@ -1291,7 +1324,7 @@ const ROW_KITS: &[RowKit] = &[
                 .map(|f| f.kind.clone())
                 .collect()
         },
-        expected: &["mutex", "atomic", "thread"],
+        expected: &["mutex", "atomic", "thread", "data_race"],
     },
     RowKit {
         kind: "string context result",

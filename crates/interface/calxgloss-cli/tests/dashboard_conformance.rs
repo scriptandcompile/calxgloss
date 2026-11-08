@@ -283,8 +283,11 @@ fn a_join_derived_un_reviewed_unit_prints_counted_apart_from_verified() {
     // comes from the read seam's join — a merged branch with no standing
     // Accept record — and the terminal counts it apart from the verified.
     let ws = fully_evidenced_workspace(Vec::new());
-    std::fs::remove_file(ws.path().join("re/accepts/game_logic.dll/DrawPrimitive/v1.json"))
-        .expect("withdraw the Accept record");
+    std::fs::remove_file(
+        ws.path()
+            .join("re/accepts/game_logic.dll/DrawPrimitive/v1.json"),
+    )
+    .expect("withdraw the Accept record");
 
     let (ok, stdout, stderr) = run(
         cli(ws.path()).args(["--target-dir", ".", "dashboard"]),

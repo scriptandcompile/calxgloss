@@ -355,41 +355,66 @@ pub type CrossFunctionLockOrder = LockOrder;
 // Data races
 // ============================================================
 
-/// One data-race observation spanning two functions, with the evidence
-/// behind it.
+/// One aggregated data-race observation: one shared global, and every
+/// function that accesses it, with the evidence behind the claim.
 ///
-/// A record says two functions access the same global:
-/// [`function`](Self::function) and [`partner`](Self::partner) both
-/// name [`variable`](Self::variable) in their bodies. And no single
-/// lock object covers the accesses: at least one side sits outside
-/// every recognized acquire→release span, or the two sides protect
-/// their accesses with different locks. That is the shape a data race
-/// takes when both run at once — neither body reveals it on its own.
-/// It reads as [`suggestion`](Self::suggestion): one lock guarding the
-/// global, held on both sides. The unprotected side is
-/// absence-of-evidence — the body shows no lock, not proof none exists
-/// — so the claim sits one band below the evidence-based kinds: 60
-/// against the pairing-level 70. Both access lines are kept as
-/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
-/// can check the reasoning.
+/// A record says the functions named in its [`sides`](Self::sides) all
+/// access [`variable`](Self::variable) in their bodies, somewhere
+/// among them reading the value and somewhere storing through it, and
+/// no single lock object covers every access: at least one access
+/// stands outside every recognized acquire→release span, or the
+/// accesses are guarded by locks no one object holds across them all.
+/// That is the shape a data race takes when the accessors run at once
+/// — no single body reveals it on its own. The claim is about the
+/// global, not about one pair of functions: any number of accessors
+/// yields exactly one record, and each accessor is named once no
+/// matter how often it touches the value. It reads as
+/// [`suggestion`](Self::suggestion): one lock guarding the global,
+/// held by every accessor. The unprotected accesses are
+/// absence-of-evidence — the bodies show no lock, not proof none
+/// exists — so the claim sits one band below the evidence-based kinds:
+/// 60 against the pairing-level 70.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataRace {
-    /// The function the record is about — the earlier one in listing
-    /// order, the one whose access line the evidence lists first.
-    pub function: String,
-    /// The other function accessing the same global, the later one in
-    /// listing order.
-    pub partner: String,
-    /// The shared global both bodies name.
+    /// The shared global the accessors name.
     pub variable: String,
+    /// The functions whose bodies read the global, in listing order,
+    /// each named once however often it loaded the value.
+    pub readers: Vec<String>,
+    /// The functions whose bodies stored through the global, in
+    /// listing order, each named once however often it wrote.
+    pub writers: Vec<String>,
+    /// How many read accesses to the global no recognized acquire→
+    /// release span covers.
+    pub unguarded_reads: usize,
+    /// How many write accesses to the global no recognized acquire→
+    /// release span covers.
+    pub unguarded_writes: usize,
+    /// One entry per accessor function, in listing order: the
+    /// function, and one example access statement from its body — an
+    /// access outside every span when there is one, since the
+    /// unprotected access is the claim, and the first access
+    /// otherwise.
+    pub sides: Vec<RaceSide>,
     /// The Rust pattern the race suggests, e.g. one lock guarding the
-    /// global with both functions holding it.
+    /// global with every accessor holding it.
     pub suggestion: String,
     /// Evidence confidence that the record is right, 0–100.
     pub confidence: Confidence,
-    /// The two functions' access lines, kept so a reviewer (or a
-    /// translation prompt) can check the reasoning.
+    /// The sides' access statements spelled out, so a reviewer (or a
+    /// translation prompt) can check the reasoning against the bodies.
     pub evidence: String,
+}
+
+/// One accessor function's side of an aggregated data race, and the
+/// example access statement the claim quotes from its body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceSide {
+    /// The accessor function, spelled as the listing names it.
+    pub function: String,
+    /// The example access statement quoted from the function's body,
+    /// without its trailing semicolon.
+    pub statement: String,
 }
 
 // Compatibility aliases for the data-race record's spelling.
@@ -434,12 +459,18 @@ pub enum SyncFinding {
     Futex(Futex),
     /// A lock-order conflict spanning two functions.
     LockOrder(LockOrder),
-    /// Two functions accessing one global with no lock both sides hold.
+    /// One global several functions read and write with no lock every
+    /// access sits under.
     DataRace(DataRace),
 }
 
 impl SyncFinding {
     /// The function the finding is about.
+    ///
+    /// An aggregated data-race record is about a global, not a
+    /// function, so it names no single function and answers with the
+    /// empty string — a name no listing entry ever spells. This keeps
+    /// aggregate records out of every by-function lookup.
     pub fn function(&self) -> &str {
         match self {
             SyncFinding::Mutex(record) => &record.function,
@@ -449,7 +480,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(record) => &record.function,
             SyncFinding::Futex(record) => &record.function,
             SyncFinding::LockOrder(record) => &record.function,
-            SyncFinding::DataRace(record) => &record.function,
+            SyncFinding::DataRace(_) => "",
         }
     }
 
@@ -536,6 +567,62 @@ impl SyncFinding {
             SyncFinding::DataRace(record) => record.variable.clone(),
         }
     }
+
+    /// The typed payload for the `data_race` kind, as the whole
+    /// aggregate: the global, both accessor lists, the unguarded
+    /// counts, and the sides. A consumer that wants the aggregate —
+    /// a report, a reviewer reading the filed document — reaches the
+    /// parts through here instead of matching on the union itself.
+    /// The global-state crate's shared-globals rollup set the same
+    /// typed-payload pattern (ADR-0032, issue #434).
+    pub fn data_race(&self) -> Option<&DataRace> {
+        match self {
+            SyncFinding::DataRace(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    /// The finding's rows in one function's prompt, spelled as
+    /// [`calxgloss_prompts::ConcurrencyInfo`]. A per-function finding
+    /// answers with its one row to its own function and nothing to
+    /// any other. An aggregated data race answers to every accessor
+    /// function with one row each: the global as the claim's subject,
+    /// the accessor's own access statement as the quoted evidence,
+    /// and the accessor and unguarded-access counts carrying the
+    /// rest of the aggregate — so a function's prompt says what its
+    /// body does to the shared global without repeating the other
+    /// accessors' statements (issue #434). A function outside the
+    /// aggregate gets nothing.
+    pub fn prompt_rows_for(&self, function: &str) -> Vec<calxgloss_prompts::ConcurrencyInfo> {
+        let aggregate = match self {
+            SyncFinding::DataRace(record) => record,
+            other if other.function() == function => {
+                return vec![calxgloss_prompts::ConcurrencyInfo::from(other)];
+            }
+            _ => return Vec::new(),
+        };
+        let Some(side) = aggregate
+            .sides
+            .iter()
+            .find(|side| side.function == function)
+        else {
+            return Vec::new();
+        };
+        vec![calxgloss_prompts::ConcurrencyInfo {
+            function: function.to_string(),
+            kind: "data_race".to_string(),
+            suggestion: aggregate.suggestion.clone(),
+            confidence: aggregate.confidence.value(),
+            evidence: format!(
+                "{}: {}; shared global {}, {} accessors, {} unguarded accesses",
+                function,
+                side.statement,
+                aggregate.variable,
+                aggregate.sides.len(),
+                aggregate.unguarded_reads + aggregate.unguarded_writes,
+            ),
+        }]
+    }
 }
 
 // ============================================================
@@ -572,10 +659,12 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 /// order; within one function come the mutex pairings, then the atomic
 /// calls, then the thread spawns, then the TLS records, then the
 /// async-runtime shapes, then the futex calls. The cross-function
-/// findings come after the whole per-function walk, in listing order,
-/// with the lock-order conflicts before the data races. The detectors
-/// read disjoint body shapes, so one function can have findings of
-/// every kind at once and no finding competes with another. The stable
+/// findings come after the whole per-function walk: first the
+/// lock-order conflicts, in listing order, then one aggregated data
+/// race per shared global, in the order the scan first sighted each
+/// global. The detectors read disjoint body shapes, so one function
+/// can have findings of every kind at once and no finding competes
+/// with another. The stable
 /// order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncResult {
@@ -911,15 +1000,83 @@ mod tests {
 
     fn data_race() -> DataRace {
         DataRace {
-            function: "FUN_18003ab00".into(),
-            partner: "FUN_18003e750".into(),
             variable: "DAT_counter".into(),
+            readers: vec!["FUN_18003e750".into()],
+            writers: vec!["FUN_18003ab00".into()],
+            unguarded_reads: 1,
+            unguarded_writes: 1,
+            sides: vec![
+                RaceSide {
+                    function: "FUN_18003ab00".into(),
+                    statement: "DAT_counter = iVar1 + 1".into(),
+                },
+                RaceSide {
+                    function: "FUN_18003e750".into(),
+                    statement: "uVar1 = DAT_counter".into(),
+                },
+            ],
             suggestion: "guard the shared global with one lock held by both functions".into(),
             confidence: Confidence::new(60),
             evidence: "FUN_18003ab00: DAT_counter = iVar1 + 1; \
                        FUN_18003e750: uVar1 = DAT_counter;"
                 .into(),
         }
+    }
+
+    #[test]
+    fn an_aggregate_projects_a_row_for_each_of_its_accessors() {
+        // One aggregate, three accessors: each accessor's function
+        // document gets exactly one row, targeting the global, quoting
+        // that accessor's own statement, and counting the rest.
+        let mut record = data_race();
+        record.readers.push("FUN_180041230".into());
+        record.sides.push(RaceSide {
+            function: "FUN_180041230".into(),
+            statement: "uVar2 = DAT_counter".into(),
+        });
+        record.unguarded_reads = 2;
+        let finding = SyncFinding::DataRace(record);
+
+        let rows = finding.prompt_rows_for("FUN_18003e750");
+        assert_eq!(rows.len(), 1, "one concurrency row per accessor");
+        assert_eq!(rows[0].function, "FUN_18003e750");
+        assert_eq!(rows[0].kind, "data_race");
+        assert_eq!(rows[0].confidence, 60);
+        assert_eq!(
+            rows[0].evidence,
+            "FUN_18003e750: uVar1 = DAT_counter; shared global DAT_counter, \
+             3 accessors, 3 unguarded accesses"
+        );
+
+        let other = finding.prompt_rows_for("FUN_180041230");
+        assert_eq!(other.len(), 1);
+        assert_eq!(
+            other[0].evidence,
+            "FUN_180041230: uVar2 = DAT_counter; shared global DAT_counter, \
+             3 accessors, 3 unguarded accesses"
+        );
+
+        // A function that never touches the global gets nothing.
+        assert!(finding.prompt_rows_for("FUN_180099999").is_empty());
+
+        // A per-function finding answers through the same seam: one
+        // row for its own function, none for any other.
+        let mutex = SyncFinding::Mutex(mutex_hint());
+        assert_eq!(mutex.prompt_rows_for("FUN_18003ab00").len(), 1);
+        assert!(mutex.prompt_rows_for("FUN_18003e750").is_empty());
+    }
+
+    #[test]
+    fn an_aggregated_race_answers_its_record_and_names_no_single_function() {
+        // The rollup shape of the global-state crate's shared reading
+        // (ADR-0032): the claim belongs to the global, so no accessor
+        // owns it and the per-function document lookups skip it.
+        let finding = SyncFinding::DataRace(data_race());
+        let record = finding.data_race().expect("a data race carries its record");
+        assert_eq!(record.variable, "DAT_counter");
+        assert_eq!(record.readers.len(), 1);
+        assert_eq!(record.writers.len(), 1);
+        assert_eq!(finding.function(), "");
     }
 
     #[test]
@@ -936,7 +1093,7 @@ mod tests {
         let finding = SyncFinding::DataRace(data_race());
         let json = serde_json::to_string(&finding).expect("data-race finding should serialize");
         assert!(json.contains("\"kind\":\"data_race\""));
-        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        assert!(json.contains("\"readers\":[\"FUN_18003e750\"]"));
         assert!(json.contains("\"variable\":\"DAT_counter\""));
         let back: SyncFinding =
             serde_json::from_str(&json).expect("data-race finding should read back");
@@ -1059,6 +1216,29 @@ mod tests {
     }
 
     #[test]
+    fn an_aggregate_stays_out_of_every_per_function_lookup() {
+        // The rollup rule the global-state crate set (ADR-0032): the
+        // finding belongs to the global, so no accessor's document
+        // claims it and no listing entry ever names it by function.
+        let result = SyncResult {
+            metadata: ScanMetadata::new("eqmain.dll"),
+            findings: vec![
+                SyncFinding::DataRace(data_race()),
+                SyncFinding::Mutex(mutex_hint()),
+            ],
+        };
+        // mutex_hint's own finding belongs to FUN_18003ab00; the
+        // aggregate names neither accessor.
+        let found: Vec<&SyncFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(found, vec![&result.findings[1]]);
+        assert!(
+            result.for_function("FUN_18003e750").next().is_none(),
+            "the accessor reads nothing from the aggregate",
+        );
+        assert_eq!(result.findings.len(), 2, "the document still holds it");
+    }
+
+    #[test]
     fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
         // The prompt conversion reaches through the union, so every
         // kind passes its label, suggestion, evidence confidence, and
@@ -1112,7 +1292,10 @@ mod tests {
 
         let data_race = SyncFinding::DataRace(data_race());
         let info = calxgloss_prompts::ConcurrencyInfo::from(&data_race);
-        assert_eq!(info.function, "FUN_18003ab00");
+        // The raw conversion spells the global's claim, not an
+        // accessor's row — the per-accessor prompt rows come from the
+        // projection seam, not from here (issue #434).
+        assert_eq!(info.function, "");
         assert_eq!(info.kind, "data_race");
         assert_eq!(
             info.suggestion,

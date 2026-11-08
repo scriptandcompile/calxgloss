@@ -738,6 +738,85 @@ fn the_sync_report_prints_the_documents_admission_line_only_when_there_is_one() 
 }
 
 #[test]
+fn the_sync_show_report_names_the_aggregated_race_by_kind_and_repeats_itself_exactly() {
+    // One shared global read by two functions and written by a third
+    // lands one `data_race` finding, not three (issue #434). The
+    // report's kind line keeps the kind name, the finding row names
+    // the global as its target, and a second `--show` of the same
+    // document is byte-identical to the first — the report is just a
+    // read of the document.
+    let ws = fixture_workspace();
+    let mut result = calxgloss_sync::types::SyncResult::new(calxgloss_types::ScanMetadata::new(
+        "fixture-target",
+    ));
+    result
+        .findings
+        .push(calxgloss_sync::types::SyncFinding::DataRace(
+            calxgloss_sync::types::DataRace {
+                variable: "DAT_pin_shared".to_string(),
+                readers: vec!["FUN_18003e750".to_string(), "FUN_180041230".to_string()],
+                writers: vec!["FUN_18003ab00".to_string()],
+                unguarded_reads: 2,
+                unguarded_writes: 1,
+                sides: vec![
+                    calxgloss_sync::types::RaceSide {
+                        function: "FUN_18003ab00".to_string(),
+                        statement: "DAT_pin_shared = iVar1 + 1".to_string(),
+                    },
+                    calxgloss_sync::types::RaceSide {
+                        function: "FUN_18003e750".to_string(),
+                        statement: "uVar1 = DAT_pin_shared".to_string(),
+                    },
+                    calxgloss_sync::types::RaceSide {
+                        function: "FUN_180041230".to_string(),
+                        statement: "uVar2 = DAT_pin_shared".to_string(),
+                    },
+                ],
+                suggestion: "guard the shared global with one lock held by both functions"
+                    .to_string(),
+                confidence: calxgloss_sync::types::Confidence::new(60),
+                evidence: "FUN_18003ab00: DAT_pin_shared = iVar1 + 1; \
+                       FUN_18003e750: uVar1 = DAT_pin_shared; \
+                       FUN_180041230: uVar2 = DAT_pin_shared;"
+                    .to_string(),
+            },
+        ));
+    calxgloss_sync::persist::SyncPersistor::new(ws.path())
+        .save(&result)
+        .expect("the hand-filed aggregate race document should be saved");
+
+    let show = || {
+        let (ok, stdout, stderr) = run(
+            cli(ws.path()).args([
+                "--target-dir",
+                ".",
+                "sync",
+                "--binary",
+                "fixture-target",
+                "--show",
+            ]),
+            ws.path(),
+        );
+        assert!(ok, "the sync show failed:\n{stdout}\n{stderr}");
+        stdout
+    };
+    let first = show();
+    assert!(
+        first.contains("data_race 1"),
+        "the kind line keeps the kind name and counts the one aggregate:\n{first}"
+    );
+    assert!(
+        first.contains("DAT_pin_shared"),
+        "the finding row names the shared global as its target:\n{first}"
+    );
+    assert_eq!(
+        first,
+        show(),
+        "a second --show of the same document reports identically"
+    );
+}
+
+#[test]
 fn the_globalstate_report_prints_the_documents_admission_line_only_when_there_is_one() {
     // The global-state admission line at the process seam (issue #350). The
     // `--show` report prints the filed document's one bounded line, which

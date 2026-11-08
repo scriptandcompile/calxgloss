@@ -572,9 +572,14 @@ async fn two_functions_sharing_an_unprotected_global_land_a_data_race_finding() 
     let SyncFinding::DataRace(record) = race else {
         unreachable!("the shared global reads as a data race");
     };
-    assert_eq!(record.function, "FUN_18003ab00");
-    assert_eq!(record.partner, "FUN_18003e750");
+    // One finding for the shared global, naming each accessor once
+    // on its side of the read/write split (issue #434).
     assert_eq!(record.variable, "DAT_counter");
+    assert_eq!(record.writers, ["FUN_18003ab00".to_string()]);
+    assert_eq!(record.readers, ["FUN_18003e750".to_string()]);
+    assert_eq!(record.unguarded_writes, 1);
+    assert_eq!(record.unguarded_reads, 1);
+    assert_eq!(record.sides.len(), 2);
     assert_eq!(
         record.suggestion,
         "guard the shared global with one lock held by both functions"
@@ -736,7 +741,9 @@ async fn data_race_findings_append_after_the_per_function_findings() {
         .collect();
     assert_eq!(
         order,
-        vec![("FUN_18003ab00", "mutex"), ("FUN_18003ab00", "data_race"),]
+        // The aggregate names no single function — it is about the
+        // global, not an accessor (issue #434).
+        vec![("FUN_18003ab00", "mutex"), ("", "data_race"),]
     );
 }
 
@@ -792,8 +799,10 @@ async fn many_bodies_sharing_a_decompiler_junk_name_form_no_cross_function_findi
         .collect();
     assert_eq!(
         order,
-        vec![("FUN_18003ab00", "data_race")],
-        "eight bodies sharing junk names, and only the real global pairs into one finding"
+        // The aggregate is about the global, so it names no single
+        // function — the rollup shape (issue #434).
+        vec![("", "data_race")],
+        "eight bodies sharing junk names, and only the real global reads into one finding"
     );
 }
 

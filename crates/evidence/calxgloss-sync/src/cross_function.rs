@@ -29,13 +29,19 @@
 //! a global-state record can never name different accesses for the
 //! same identifier. This crate adds only its lock-span attribution on
 //! top: an access inside a recognized acquire→release span counts as
-//! protected by that span's lock object. Two functions naming one
-//! global land one [`SyncFinding::DataRace`] per pair unless one lock
-//! object covers every access on both sides — the same-lock rule is
-//! the false-positive gate, so properly locked data claims nothing.
+//! protected by that span's lock object. Shared globals with two or
+//! more accessor functions — at least one reading and at least one
+//! writing — land one [`SyncFinding::DataRace`] per global (issue
+//! #434), the same aggregation shape the global-state crate's rollup
+//! uses, not one per pair of functions. The same-lock rule is the
+//! false-positive gate in its generalized shape: one lock object
+//! whose span covers every access of the global across every accessor
+//! claims nothing, so properly locked data stays silent (issue #113).
+
+use std::collections::HashMap;
 
 use crate::mutex::{MutexDetector, lock_object};
-use crate::types::{DataRace, LockOrder, SyncFinding};
+use crate::types::{DataRace, LockOrder, RaceSide, SyncFinding};
 use calxgloss_decomp::DecompiledFunction;
 use calxgloss_globalstate::{AccessKind, global_sites, statement_at};
 
@@ -159,38 +165,114 @@ impl CrossFunctionAnalyzer {
         // The data-race reading over the same kept bodies: shared
         // variables are the globals named in the bodies, each access
         // annotated with the lock objects whose recognized
-        // acquire→release spans cover it.
+        // acquire→release spans cover it. One finding per shared
+        // global (issue #434): the accesses bucket under their global
+        // in first-sighting order — the first body to name it starts
+        // the bucket, in listing order, first to name a not-yet-bucketed
+        // global buckets first — so one global read and written by
+        // several functions claims its race once.
         let accesses: Vec<Vec<GlobalAccess>> = functions
             .iter()
             .map(|func| global_accesses(func, mutex))
             .collect();
-        for i in 0..functions.len() {
-            for j in (i + 1)..functions.len() {
-                for variable in shared_globals(&accesses[i], &accesses[j]) {
-                    // The same-lock rule is the false-positive gate:
-                    // one lock object covering every access on both
-                    // sides means both functions guard the data with
-                    // the same lock, and properly locked data is not
-                    // a race.
-                    if same_lock_protects_both(&accesses[i], &accesses[j], &variable) {
-                        continue;
+        let mut buckets: Vec<GlobalSites> = Vec::new();
+        let mut bucket_of: HashMap<String, usize> = HashMap::new();
+        for (index, body) in accesses.iter().enumerate() {
+            for access in body {
+                let slot = match bucket_of.get(&access.name) {
+                    Some(slot) => *slot,
+                    None => {
+                        let slot = buckets.len();
+                        bucket_of.insert(access.name.clone(), slot);
+                        buckets.push(GlobalSites {
+                            global: access.name.clone(),
+                            accessors: Vec::new(),
+                            sites: Vec::new(),
+                        });
+                        slot
                     }
-                    findings.push(SyncFinding::DataRace(DataRace {
-                        function: functions[i].name.clone(),
-                        partner: functions[j].name.clone(),
-                        variable: variable.clone(),
-                        suggestion: DATA_RACE_SUGGESTION.to_string(),
-                        confidence: DATA_RACE_CONFIDENCE.into(),
-                        evidence: format!(
-                            "{}: {}; {}: {};",
-                            functions[i].name,
-                            access_statement(&functions[i].body, &accesses[i], &variable),
-                            functions[j].name,
-                            access_statement(&functions[j].body, &accesses[j], &variable),
-                        ),
-                    }));
+                };
+                let bucket = &mut buckets[slot];
+                if !bucket.accessors.contains(&index) {
+                    bucket.accessors.push(index);
                 }
+                bucket.sites.push(access.clone());
             }
+        }
+        for bucket in buckets {
+            // Two or more accessor functions, at least one reading
+            // and at least one writing among all their accesses —
+            // the qualification the pair reading used, read over the
+            // whole bucket: functions that only overwrite one slot
+            // lose updates but watch no half-written value.
+            if bucket.accessors.len() < 2 {
+                continue;
+            }
+            let reads = bucket.sites.iter().any(|a| a.kind == AccessKind::Read);
+            let writes = bucket.sites.iter().any(|a| a.kind == AccessKind::Write);
+            if !(reads && writes) {
+                continue;
+            }
+            // The same-lock rule, generalized to the whole bucket:
+            // one lock object whose spans cover every access of the
+            // global across every accessor means the accessors guard
+            // the data with the same lock, and properly locked data
+            // is not a race. Any unprotected access, or accessors
+            // guarded by different locks, leaves the claim standing.
+            if one_lock_covers_every_access(&bucket.sites) {
+                continue;
+            }
+            let mut readers: Vec<String> = Vec::new();
+            let mut writers: Vec<String> = Vec::new();
+            let mut sides: Vec<RaceSide> = Vec::new();
+            for &index in &bucket.accessors {
+                let accesses_of_side = &accesses[index];
+                if accesses_of_side
+                    .iter()
+                    .any(|a| a.name == bucket.global && a.kind == AccessKind::Read)
+                {
+                    readers.push(functions[index].name.clone());
+                }
+                if accesses_of_side
+                    .iter()
+                    .any(|a| a.name == bucket.global && a.kind == AccessKind::Write)
+                {
+                    writers.push(functions[index].name.clone());
+                }
+                let statement =
+                    access_statement(&functions[index].body, accesses_of_side, &bucket.global);
+                sides.push(RaceSide {
+                    function: functions[index].name.clone(),
+                    statement,
+                });
+            }
+            // The evidence string keeps the pair reading's shape —
+            // each side's statement, semicolon-separated — so an old
+            // evidence check still reads the same for two sides.
+            let evidence = sides
+                .iter()
+                .map(|side| format!("{}: {};", side.function, side.statement))
+                .collect::<Vec<String>>()
+                .join(" ");
+            findings.push(SyncFinding::DataRace(DataRace {
+                variable: bucket.global,
+                readers,
+                writers,
+                unguarded_reads: bucket
+                    .sites
+                    .iter()
+                    .filter(|a| a.kind == AccessKind::Read && a.locks.is_empty())
+                    .count(),
+                unguarded_writes: bucket
+                    .sites
+                    .iter()
+                    .filter(|a| a.kind == AccessKind::Write && a.locks.is_empty())
+                    .count(),
+                sides,
+                suggestion: DATA_RACE_SUGGESTION.to_string(),
+                confidence: DATA_RACE_CONFIDENCE.into(),
+                evidence,
+            }));
         }
         findings
     }
@@ -226,11 +308,24 @@ fn lock_sequence(func: &DecompiledFunction, mutex: &MutexDetector) -> Vec<String
 /// the lock objects whose recognized acquire→release spans cover the
 /// site. An empty `locks` means the access stands outside every
 /// pairing — unprotected as far as this reading can see.
+#[derive(Clone)]
 struct GlobalAccess {
     name: String,
     offset: usize,
     kind: AccessKind,
     locks: Vec<String>,
+}
+
+/// Every access one scan's bodies make to one global, kept as the
+/// race reading buckets it: the global's name, the indices of the
+/// functions naming it — in listing order, each once however often
+/// it visits — and every access site, in body order per accessor.
+/// One bucket per global, not one per pair: the same rollup shape
+/// the global-state crate's shared reading files (issue #434).
+struct GlobalSites {
+    global: String,
+    accessors: Vec<usize>,
+    sites: Vec<GlobalAccess>,
 }
 
 /// One recognized acquire→release span: the lock object the pairing
@@ -295,68 +390,27 @@ fn lock_spans(body: &str, mutex: &MutexDetector) -> Vec<LockSpan> {
     spans
 }
 
-/// The globals both bodies name, in the earlier body's access order
-/// and one name once — so one function pair claims one global once.
-/// A name only qualifies when the pair shows both a store and a read
-/// somewhere: two functions that each only overwrite the same slot
-/// lose updates, but neither watches a half-written value, and the
-/// classic read/write race is what this detector reports.
-fn shared_globals(mine: &[GlobalAccess], theirs: &[GlobalAccess]) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for candidate in mine {
-        if names.contains(&candidate.name) {
-            continue;
-        }
-        if !theirs.iter().any(|a| a.name == candidate.name) {
-            continue;
-        }
-        // The mixed gate is per global: an unrelated read of some
-        // other variable never qualifies this name's pair.
-        let mut writes = false;
-        let mut reads = false;
-        for access in mine
-            .iter()
-            .chain(theirs.iter())
-            .filter(|a| a.name == candidate.name)
-        {
-            match access.kind {
-                AccessKind::Write => writes = true,
-                AccessKind::Read => reads = true,
-            }
-        }
-        if writes && reads {
-            names.push(candidate.name.clone());
-        }
-    }
-    names
-}
-
-/// Whether one lock object's spans cover every access to the global
-/// in both bodies: both functions guard the data with the same lock,
-/// which is the false-positive gate — properly locked data is not a
-/// race. An unprotected access on either side, or two sides guarded
-/// by different locks, leaves the claim standing.
-fn same_lock_protects_both(mine: &[GlobalAccess], theirs: &[GlobalAccess], name: &str) -> bool {
-    let covering_locks = |accesses: &[GlobalAccess]| -> Option<Vec<String>> {
-        let mut common: Option<Vec<String>> = None;
-        for access in accesses.iter().filter(|a| a.name == name) {
-            if access.locks.is_empty() {
-                return None;
-            }
-            common = Some(match common {
-                None => access.locks.clone(),
-                Some(previous) => previous
-                    .into_iter()
-                    .filter(|lock| access.locks.contains(lock))
-                    .collect(),
-            });
-        }
-        common
-    };
-    let (Some(ours), Some(theirs)) = (covering_locks(mine), covering_locks(theirs)) else {
+/// Whether one lock object's spans cover every access of the global
+/// across every accessor: the accessors guard the data with the same
+/// lock, which is the false-positive gate — properly locked data is
+/// not a race. An unprotected access anywhere, or accessors guarded
+/// by different locks, leaves the claim standing. The generalized
+/// shape of the pair rule, which asked the same question of two
+/// bodies at a time (issue #434).
+fn one_lock_covers_every_access(sites: &[GlobalAccess]) -> bool {
+    let Some(mut covering) = sites.first().map(|access| access.locks.clone()) else {
         return false;
     };
-    ours.iter().any(|lock| theirs.contains(lock))
+    for access in sites {
+        if access.locks.is_empty() {
+            return false;
+        }
+        covering.retain(|lock| access.locks.contains(lock));
+        if covering.is_empty() {
+            return false;
+        }
+    }
+    !covering.is_empty()
 }
 
 /// The access statement the evidence names for one body's side of the
@@ -711,9 +765,13 @@ mod tests {
         let SyncFinding::DataRace(record) = &findings[0] else {
             unreachable!("the shared global reads as a data race");
         };
-        assert_eq!(record.function, "FUN_18003ab00");
-        assert_eq!(record.partner, "FUN_18003e750");
         assert_eq!(record.variable, "DAT_counter");
+        assert_eq!(record.readers, ["FUN_18003e750"]);
+        assert_eq!(record.writers, ["FUN_18003ab00"]);
+        // Every access sits outside every span, so both sides count
+        // as unguarded.
+        assert_eq!(record.unguarded_reads, 1);
+        assert_eq!(record.unguarded_writes, 1);
         assert_eq!(
             record.suggestion,
             "guard the shared global with one lock held by both functions"
@@ -721,7 +779,20 @@ mod tests {
         // The unprotected side is absence-of-evidence: one band below
         // the evidence-based kinds.
         assert_eq!(record.confidence, DATA_RACE_CONFIDENCE);
-        // The evidence records both functions' access lines.
+        // Each accessor side carries one example access statement, in
+        // listing order, and the evidence spells the sides out.
+        let sides: Vec<(&str, &str)> = record
+            .sides
+            .iter()
+            .map(|side| (side.function.as_str(), side.statement.as_str()))
+            .collect();
+        assert_eq!(
+            sides,
+            [
+                ("FUN_18003ab00", "DAT_counter = iVar1 + 1"),
+                ("FUN_18003e750", "uVar1 = DAT_counter"),
+            ]
+        );
         assert_eq!(
             record.evidence,
             "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
@@ -823,34 +894,139 @@ mod tests {
     }
 
     #[test]
-    fn a_race_lands_once_per_function_pair_and_per_global() {
+    fn three_functions_reading_and_writing_two_globals_land_two_races() {
+        // The pair-era shape claimed three findings here (one pair per
+        // global per pair). The aggregate reading claims one per
+        // global: DAT_x, read by two functions, and DAT_y — each
+        // named once, each function once across the findings.
         let findings = analyze(&[
             ("FUN_18003ab00", "DAT_x = 1; DAT_y = 2;"),
             ("FUN_18003e750", "iVar1 = DAT_x; iVar2 = DAT_y;"),
             ("FUN_180041230", "iVar3 = DAT_x;"),
         ]);
-        let named: Vec<(&str, &str, &str)> = findings
+        assert_eq!(findings.len(), 2, "one finding per shared global");
+        let SyncFinding::DataRace(first) = &findings[0] else {
+            panic!("first finding should be a data race");
+        };
+        assert_eq!(first.variable, "DAT_x");
+        assert_eq!(
+            first.readers,
+            ["FUN_18003e750".to_string(), "FUN_180041230".to_string()],
+            "both readers named once, in listing order"
+        );
+        assert_eq!(first.writers, ["FUN_18003ab00".to_string()]);
+        assert_eq!(first.sides.len(), 3, "all three accessors carry a side");
+        let SyncFinding::DataRace(second) = &findings[1] else {
+            panic!("second finding should be a data race");
+        };
+        assert_eq!(second.variable, "DAT_y");
+        assert_eq!(second.readers, ["FUN_18003e750".to_string()]);
+        assert_eq!(second.writers, ["FUN_18003ab00".to_string()]);
+    }
+
+    #[test]
+    fn races_land_in_the_order_the_scan_first_sighted_each_global() {
+        // Two shared globals order by where the scan first sighted
+        // each, not by name: `DAT_z`'s access starts the first body,
+        // so its finding stands first even though `DAT_a` sorts
+        // earlier. A third global, `DAT_m`, every accessor touches
+        // under one lock object, and it claims nothing — its absence
+        // from the list is the same-lock rule asking its question of
+        // all accessors at once.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "DAT_z = 1; DAT_a = 2; EnterCriticalSection(&guard); DAT_m = 3; LeaveCriticalSection(&guard);",
+            ),
+            (
+                "FUN_18003e750",
+                "iVar1 = DAT_z; iVar2 = DAT_a; EnterCriticalSection(&guard); iVar3 = DAT_m; LeaveCriticalSection(&guard);",
+            ),
+        ]);
+        let globals: Vec<&str> = findings
             .iter()
             .map(|finding| {
                 let SyncFinding::DataRace(record) = finding else {
                     unreachable!("every finding here is a data race");
                 };
-                (
-                    record.function.as_str(),
-                    record.partner.as_str(),
-                    record.variable.as_str(),
-                )
+                record.variable.as_str()
             })
             .collect();
-        // The last pair reads `DAT_x` from both sides — two readers
-        // never tear a value, so the mixed gate keeps that pair out.
+        assert_eq!(globals, ["DAT_z", "DAT_a"], "first-sighting order wins");
+    }
+
+    #[test]
+    fn an_accessor_that_reads_and_writes_names_itself_once_in_each_list_once_on_the_sides() {
+        // `FUN_18003ab00` both loads and stores the global. The
+        // record answers "each function named once": once in
+        // `readers`, once in `writers`, and one side — not three
+        // entries for one accessor.
+        let findings = analyze(&[
+            ("FUN_18003ab00", "iVar1 = DAT_g; DAT_g = iVar1 + 1;"),
+            ("FUN_18003e750", "DAT_g = 2;"),
+        ]);
+        assert_eq!(findings.len(), 1, "one finding for the one shared global");
+        let SyncFinding::DataRace(record) = &findings[0] else {
+            unreachable!("the shared global reads as a data race");
+        };
+        assert_eq!(record.readers, ["FUN_18003ab00".to_string()]);
         assert_eq!(
-            named,
-            [
-                ("FUN_18003ab00", "FUN_18003e750", "DAT_x"),
-                ("FUN_18003ab00", "FUN_18003e750", "DAT_y"),
-                ("FUN_18003ab00", "FUN_180041230", "DAT_x"),
-            ]
+            record.writers,
+            ["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()],
+            "listing order, the dual-role accessor named once"
+        );
+        assert_eq!(record.sides.len(), 2, "one side per accessor function");
+        assert_eq!(record.unguarded_reads, 1);
+        assert_eq!(record.unguarded_writes, 2);
+    }
+
+    #[test]
+    fn one_lock_three_accessors_under_it_claims_no_race() {
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "EnterCriticalSection(&guard); DAT_g = 1; LeaveCriticalSection(&guard);",
+            ),
+            (
+                "FUN_18003e750",
+                "EnterCriticalSection(&guard); uVar1 = DAT_g; LeaveCriticalSection(&guard);",
+            ),
+            (
+                "FUN_180041230",
+                "EnterCriticalSection(&guard); uVar2 = DAT_g; LeaveCriticalSection(&guard);",
+            ),
+        ]);
+        assert!(findings.is_empty(), "every accessor holds the same lock");
+    }
+
+    #[test]
+    fn an_accessor_s_side_quotes_its_unguarded_access_when_it_also_has_a_guarded_one() {
+        // The claim is the unprotected access, so the side's example
+        // statement comes from outside every span even though the
+        // body also touches the global under a lock.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "EnterCriticalSection(&guard); DAT_g = 1; LeaveCriticalSection(&guard); DAT_g = 2;",
+            ),
+            ("FUN_18003e750", "uVar1 = DAT_g;"),
+        ]);
+        assert_eq!(findings.len(), 1);
+        let SyncFinding::DataRace(record) = &findings[0] else {
+            unreachable!("the shared global reads as a data race");
+        };
+        let writer = record
+            .sides
+            .iter()
+            .find(|side| side.function == "FUN_18003ab00")
+            .expect("the writer carries a side");
+        assert_eq!(
+            writer.statement, "DAT_g = 2",
+            "the unguarded access stands as the example"
+        );
+        assert_eq!(
+            record.unguarded_writes, 1,
+            "only the second store stands unguarded"
         );
     }
 

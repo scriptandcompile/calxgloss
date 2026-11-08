@@ -42,9 +42,7 @@ pub(super) const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 /// row, hence the boxed `FnOnce` rather than the plain `fn` pointer
 /// (issue #302).
 pub(super) type EvidenceScanTask = Box<
-    dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ScanRunOutcome> + Send>>
-        + Send
-        + 'static,
+    dyn FnOnce(ScanJob) -> Pin<Box<dyn Future<Output = ScanRunOutcome> + Send>> + Send + 'static,
 >;
 
 /// One evidence scan as it passes through the fan-out window: it counts

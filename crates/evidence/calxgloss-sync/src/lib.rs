@@ -54,8 +54,10 @@
 //!   acquisition sequence from the decompiles the scan already
 //!   fetched. Two functions acquiring the same two locks in opposite
 //!   orders are reported as a `lock_order` conflict. The same bodies
-//!   are then read for a `data_race` claim: one function writes a
-//!   program global another reads, with no lock both sides respect.
+//!   are then read for a `data_race` claim: one shared global read
+//!   and written by two or more accessor functions with no lock
+//!   every access sits under lands exactly one finding (issue #434),
+//!   naming every accessor once rather than pairing them.
 //!   Deciding which identifiers name program globals is the
 //!   `calxgloss-globalstate` crate's shared reading. This crate
 //!   consumes that reading directly and keeps only the lock-span
@@ -106,3 +108,4 @@ pub use types::FutexUsage;
 pub use types::LockOrder;
 pub use types::LockOrderRecord;
 pub use types::LockOrdering;
+pub use types::RaceSide;

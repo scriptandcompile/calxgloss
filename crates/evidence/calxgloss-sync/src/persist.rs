@@ -137,8 +137,8 @@ impl SyncPersistor {
 mod tests {
     use super::*;
     use crate::types::{
-        AtomicOperation, ConcurrencyHint, Confidence, ScanMetadata, SyncFinding, SyncType,
-        ThreadSpawn, TlsUsage,
+        AtomicOperation, ConcurrencyHint, Confidence, DataRace, RaceSide, ScanMetadata,
+        SyncFinding, SyncType, ThreadSpawn, TlsUsage,
     };
     use calxgloss_types::persist::PersistError;
 
@@ -364,6 +364,49 @@ mod tests {
             }
             other => panic!("expected a tls fragment finding, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_aggregated_race_survives_the_round_trip_exactly_as_saved() {
+        // The aggregate is one record with lists, not two findings
+        // that JSON could split apart: the global, both accessor
+        // lists, the unguarded counts, and every side's statement
+        // read back whole (issue #434).
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = SyncPersistor::new(dir.path());
+
+        let mut result = SyncResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings.push(SyncFinding::DataRace(DataRace {
+            variable: "DAT_counter".to_string(),
+            readers: vec!["FUN_18003e750".to_string(), "FUN_180041230".to_string()],
+            writers: vec!["FUN_18003ab00".to_string()],
+            unguarded_reads: 2,
+            unguarded_writes: 1,
+            sides: vec![
+                RaceSide {
+                    function: "FUN_18003ab00".to_string(),
+                    statement: "DAT_counter = iVar1 + 1".to_string(),
+                },
+                RaceSide {
+                    function: "FUN_18003e750".to_string(),
+                    statement: "uVar1 = DAT_counter".to_string(),
+                },
+                RaceSide {
+                    function: "FUN_180041230".to_string(),
+                    statement: "uVar2 = DAT_counter".to_string(),
+                },
+            ],
+            suggestion: "guard the shared global with one lock held by both functions".to_string(),
+            confidence: Confidence::new(60),
+            evidence: "FUN_18003ab00: DAT_counter = iVar1 + 1; \
+                       FUN_18003e750: uVar1 = DAT_counter; \
+                       FUN_180041230: uVar2 = DAT_counter;"
+                .to_string(),
+        }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded, result, "reads back exactly as saved");
     }
 
     #[test]

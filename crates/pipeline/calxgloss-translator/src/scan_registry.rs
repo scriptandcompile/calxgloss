@@ -290,9 +290,8 @@ pub struct ScanRunOptions {
 /// On a scan or save failure the answer carries the failure's words in
 /// `error`, so the phase can mark the row's completed event failed
 /// (issue #429).
-type RunStep = Box<
-    dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<ScanRunOutcome> + Send + Sync + 'static,
->;
+type RunStep =
+    Box<dyn Fn(ScanContext, ScanRunOptions) -> OwnedFuture<ScanRunOutcome> + Send + Sync + 'static>;
 
 /// What one registered scan's run answers: whether its document is in
 /// place afterwards — filed by this run, or already filed and
