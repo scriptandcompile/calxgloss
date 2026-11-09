@@ -3,7 +3,7 @@
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
     PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
+    PipelineTimeEstimate, ProgressResponse, ServerError, UnitCancelResponse,
 };
 
 use super::process::binary_matches;
@@ -24,38 +24,24 @@ use tracing::info;
 
 /// Handle GET /api/progress — return in-flight translation units.
 ///
-/// The rows come from the store's shared live records (issue #452). This
-/// older row shape still carries `retry_strategy` as a required string,
-/// so a unit that has not made an LLM call is served the empty string it
-/// always got. Issue #454 retires this shape for the shared record's
-/// optional field.
+/// The envelope keeps `in_progress` and `count`; each row is the store's
+/// shared live record, the same shape `/api/progress/enhanced` serves and
+/// the WebSocket pushes (issue #454).
 pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<ProgressResponse> {
     let progress = match &combined.progress {
         Some(p) => p,
         None => return ProgressResponse::empty().into(),
     };
 
-    let entries = progress.read().await.snapshot().await;
-
-    // Sort the shared records in the store's own row order, then fold
-    // each into the older row shape.
-    let mut units: Vec<LiveUnitProgress> = entries.values().cloned().collect();
-    super::super::live_store::sort_unit_rows(&mut units);
-
-    let in_progress: Vec<ProgressInfo> = units
-        .iter()
-        .map(|e| ProgressInfo {
-            binary: e.binary.clone(),
-            function: e.function.clone(),
-            attempt: e.attempt,
-            retry_strategy: e.retry_strategy.clone().unwrap_or_default(),
-            outcome: e.outcome.clone(),
-            phase: e.phase,
-            phase_history: e.phase_history.clone(),
-            finished: e.finished,
-            elapsed_secs: e.elapsed_secs,
-        })
+    // The store's shared records in the store's own row order.
+    let mut in_progress: Vec<LiveUnitProgress> = progress
+        .read()
+        .await
+        .snapshot()
+        .await
+        .into_values()
         .collect();
+    super::super::live_store::sort_unit_rows(&mut in_progress);
 
     let count = in_progress.len();
     Json(ProgressResponse { in_progress, count })

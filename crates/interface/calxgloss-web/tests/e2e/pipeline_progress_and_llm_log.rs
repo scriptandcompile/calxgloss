@@ -1019,7 +1019,9 @@ async fn test_progress_empty() {
 /// reports the current phase, the phase history in event order, and elapsed
 /// time per in-flight unit. The sequence includes a tier escalation:
 /// `ContextTierSelected` re-emitted after `LlmCallFailed`, which must show up
-/// as a second `context_tier` entry in the history.
+/// as a second `context_tier` entry in the history. Since issue #454 the rows
+/// are the store's shared live records, and a unit that never made an LLM
+/// call omits the retry strategy.
 #[tokio::test]
 async fn test_progress_reports_phase_history() {
     let fixture = TestFixture::new();
@@ -1141,6 +1143,11 @@ async fn test_progress_reports_phase_history() {
     assert_eq!(unit["phase"].as_str(), Some("testing"));
     assert_eq!(unit["finished"].as_bool(), Some(false));
     assert!(unit["elapsed_secs"].as_f64().unwrap_or(-1.0) >= 0.0);
+    // The row is the store's shared live record, so its own fields
+    // appear beside the shared ones (issue #454): the tier the
+    // escalation landed on.
+    assert_eq!(unit["context_tier"].as_str(), Some("T2"));
+    assert_eq!(unit["tier_label"].as_str(), Some("T2 label"));
 
     // Phase history in event order, with the escalation visible.
     let history: Vec<&str> = unit["phase_history"]
@@ -1177,6 +1184,13 @@ async fn test_progress_reports_phase_history() {
         .expect("Update unit present");
     assert_eq!(done["phase"].as_str(), Some("review"));
     assert_eq!(done["finished"].as_bool(), Some(true));
+    // A unit that never made an LLM call carries no retry strategy on
+    // the wire (issue #454).
+    assert!(
+        done.get("retry_strategy").is_none(),
+        "a unit with no LLM call carries no retry strategy: {done}"
+    );
+    assert_eq!(done["succeeded"].as_bool(), Some(true));
     assert_eq!(
         done["phase_history"]
             .as_array()

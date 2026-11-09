@@ -2,9 +2,9 @@
 
 use axum::http::StatusCode;
 use calxgloss_types::{
-    BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
-    PhaseRecord, PipelinePhase, PipelineState, ReviewDashboard, ReviewStatus, TokenUsageEntry,
-    TranslationPhase, UnitObligation, UnitOfWork, UnitUnknowns,
+    BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, LiveUnitProgress,
+    PhaseProgress, PipelinePhase, PipelineState, ReviewDashboard, ReviewStatus, TokenUsageEntry,
+    UnitObligation, UnitOfWork, UnitUnknowns,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1631,38 +1631,18 @@ impl axum::response::IntoResponse for ServerError {
 
 // ─── Progress response types ─────────────────────────────────────────
 
-/// Information about a unit currently being translated.
-///
-/// This is the older row shape of `/api/progress`; its fields now come
-/// from the store's shared live record (issue #452). Issue #454 retires
-/// this shape and serves the shared record itself.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressInfo {
-    pub binary: BinaryIdentity,
-    pub function: String,
-    pub attempt: u32,
-    /// Retry strategy of the current LLM-call attempt (issue #363) —
-    /// never a batch outcome; the batch outcome is reported by
-    /// [`outcome`](Self::outcome).
-    pub retry_strategy: String,
-    /// The batch outcome for a finished unit — "batch_ok" / "batch_failed"
-    /// / "cancelled" — `None` while the unit is still in flight.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    /// The pipeline step this unit is currently in.
-    pub phase: TranslationPhase,
-    /// Phases entered, in event order (re-entered phases appear again).
-    pub phase_history: Vec<PhaseRecord>,
-    /// Whether a terminal event (completed / failed / function-completed)
-    /// has been observed — distinguishes finished units from in-flight ones.
-    pub finished: bool,
-    pub elapsed_secs: f64,
-}
-
 /// Response for the live progress endpoint.
+///
+/// Each row is the store's shared live record (issue #454). A unit that
+/// has never made an LLM call carries no retry strategy: the endpoint
+/// omits the field rather than serving an empty string, because the run
+/// never reported one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressResponse {
-    pub in_progress: Vec<ProgressInfo>,
+    /// The units the live run tracks, in the store's row order: by
+    /// binary, then by function.
+    pub in_progress: Vec<LiveUnitProgress>,
+    /// How many rows the endpoint served.
     pub count: usize,
 }
 
