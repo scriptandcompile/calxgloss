@@ -68,7 +68,7 @@ the pipeline header still churning.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P57 | Delete the pass-throughs and dead copies — six padding surfaces: the 131-`pub use` facade crate, a 542-line dead stub mirror in `calxgloss-verify`, `calxgloss-sync` setters and aliases nothing calls, a character-identical `landed_state` copy in web, and the hand-printed serve banner already 7 routes stale; ~1,500 lines gone, zero behaviour lost | shared (`calxgloss`, `calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-sync`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P57 | Delete the pass-throughs and dead copies — six padding surfaces: the 131-`pub use` facade crate, a 542-line dead stub mirror in `calxgloss-verify`, `calxgloss-sync` setters and aliases nothing calls, a character-identical `landed_state` copy in web, and the hand-printed serve banner already 7 routes stale; ~1,500 lines gone, zero behaviour lost | shared (`calxgloss`, `calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-sync`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | ticketed: #444–#448, all unblocked | [#443](https://github.com/scriptandcompile/calxgloss/issues/443) |
 | P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
@@ -564,7 +564,9 @@ already missing 7 of 71 routes. Straight subtractions: delete the dead
 mirror and the padding, call the shared `landed_state`, generate the
 banner from the route table, and shrink or drop the facade — the CLI
 already depends on the real crates, so the facade either goes or becomes
-real (one assembly entry point, ~10 names). ~1,500 lines gone, zero
+real (one assembly entry point, ~10 names) — spec #443 decided it goes
+outright, and the banner's hand-printed list is deleted with the full
+list deferred to P58's route table. ~1,500 lines gone, zero
 behaviour lost, and every remaining track stops paying the facade line
 for each new type. The deletion test passes at each site: removing one
 scatters nothing. Source: 2026-11-08 architecture review, candidate 5
