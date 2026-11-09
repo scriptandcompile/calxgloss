@@ -27,8 +27,9 @@ use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
 use calxgloss_types::{
-    BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, UnitObligation,
-    UnitUnknowns, UnknownRecord, UnknownResolutions, classification_override_records_path,
+    BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, PersistError,
+    UnitObligation, UnitUnknowns, UnknownRecord, UnknownResolutions,
+    classification_override_records_path, classification_record_dir, read_classification_record,
     read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir, work_kind_for_prefix,
 };
 use chrono::Utc;
@@ -793,12 +794,13 @@ pub(crate) fn read_review_skips(workspace: &std::path::Path) -> std::collections
 }
 
 /// Every classification record under `re/classify/{binary}.json` (written
-/// by the `classify` command). The category and crate replacement are
-/// parsed leniently — a record that fails to parse still counts as
-/// classified, it just declares no shim dependency. Shared by the builder
-/// and the run close's conformance derivation (issue #423).
+/// by the `classify` command), read through the shared classification
+/// read (issue #457). The category and crate replacement are parsed
+/// leniently — a record that fails to parse still counts as classified,
+/// it just declares no shim dependency. Shared by the builder and the
+/// run close's conformance derivation (issue #423).
 pub(crate) fn read_classification_records(workspace: &std::path::Path) -> Vec<ClassifiedDll> {
-    let classify_dir = workspace.join("re").join("classify");
+    let classify_dir = classification_record_dir(workspace);
     if !classify_dir.exists() {
         return Vec::new();
     }
@@ -825,18 +827,26 @@ pub(crate) fn read_classification_records(workspace: &std::path::Path) -> Vec<Cl
                 .and_then(|m| m.modified().ok())
                 .map(chrono::DateTime::<chrono::Utc>::from)
                 .unwrap_or_else(chrono::Utc::now);
-            let parsed = std::fs::read_to_string(entry.path())
-                .ok()
-                .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
-            dlls.push(match parsed {
-                Some(p) => ClassifiedDll {
+            // The lenient policy is a decision made at this site (issue #457).
+            // A record whose bytes do not parse still counts the binary as
+            // classified. Its category, crate replacement, and reason stay
+            // honestly unknown. The shared module's read names missing and
+            // corrupt apart; matching every fault keeps this site's choice
+            // visible to the compiler, not left to a default value.
+            let record = read_classification_record(workspace, &BinaryIdentity::new(&dll_name));
+            dlls.push(match record {
+                Ok(record) => ClassifiedDll {
                     binary: dll_name,
-                    category: p.category,
-                    crate_replacement: p.crate_replacement,
-                    reason: p.reason,
+                    category: record.category,
+                    crate_replacement: record.crate_replacement,
+                    reason: record.reason,
                     classified_at,
                 },
-                None => ClassifiedDll {
+                Err(
+                    PersistError::NotFound { .. }
+                    | PersistError::Json { .. }
+                    | PersistError::Io { .. },
+                ) => ClassifiedDll {
                     binary: dll_name,
                     category: None,
                     crate_replacement: None,
@@ -1055,20 +1065,6 @@ fn read_record_tree<T: serde::de::DeserializeOwned>(
 struct BaselineData {
     test_count: usize,
     pass_count: usize,
-}
-
-/// The fields the builder needs from a classification record
-/// (`re/classify/{binary}.json`, written by the `classify` command); everything
-/// else in the record is ignored, and both fields are optional so older or
-/// partial records still read.
-#[derive(Debug, Default, serde::Deserialize)]
-struct ClassificationFile {
-    #[serde(default)]
-    category: Option<DllCategory>,
-    #[serde(default)]
-    crate_replacement: Option<String>,
-    #[serde(default)]
-    reason: Option<String>,
 }
 
 /// A DLL with a classification record on disk. `binary` is the record file name
@@ -1446,6 +1442,57 @@ mod tests {
             unit.dependencies
         );
         assert_eq!(unit.status, ReviewStatus::DoNotTranslate);
+    }
+
+    #[test]
+    fn a_corrupt_classification_record_still_lists_the_binary_with_no_category() {
+        // The builder's lenient policy, stated at its own site (issue #457):
+        // a record whose bytes do not parse keeps the binary listed. Its
+        // synthetic classify unit still stands, and nothing parks it — the
+        // category is honestly unknown and no reason is invented. The
+        // unreadable record never reads as an unclassified binary.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        let classify = classification_record_dir(git.repo_path());
+        std::fs::create_dir_all(&classify).expect("classify dir");
+        std::fs::write(classify.join("broken.dll.json"), "{ not json")
+            .expect("file an unparseable record");
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        // The read itself: the corrupt record still lists the binary, with
+        // category, crate replacement, and reason all honestly unknown.
+        let listed = read_classification_records(dir.path());
+        assert_eq!(
+            listed.len(),
+            1,
+            "the corrupt record keeps the binary listed"
+        );
+        assert_eq!(
+            listed[0].binary, "broken.dll",
+            "the file's name keys the row"
+        );
+        assert!(
+            listed[0].category.is_none(),
+            "an unreadable record leaves the category unknown, not invented"
+        );
+        assert!(listed[0].crate_replacement.is_none(), "no shim is implied");
+        assert!(listed[0].reason.is_none(), "no reason is invented");
+
+        let unit = find_unit(&dashboard, "classify/broken.dll");
+        assert_eq!(
+            unit.status,
+            ReviewStatus::Accepted,
+            "a corrupt record does not park the binary it names"
+        );
+        assert!(
+            unit.known_gaps.is_empty(),
+            "no reason is invented for a record that cannot be read: {:?}",
+            unit.known_gaps
+        );
     }
 
     #[test]

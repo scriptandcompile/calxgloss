@@ -43,6 +43,10 @@
 //!   (`BinaryClassificationOverride`, `ClassificationOverrideControl`) —
 //!   one target binary's category corrected live, persisted under the
 //!   record tree
+//! - [`classification_record`] — The classification record
+//!   (`ClassificationRecord`) — what a run recorded about one binary,
+//!   filed per binary under the record tree at `re/classify/`, with the
+//!   one path and the one read that name missing and corrupt apart
 //! - [`retry_strategy`] — The retry-strategy closed set (`RetryStrategy`) —
 //!   how a failed attempt gets fixed, shared by the retry loop, the
 //!   reviewer overrides, and the dashboard
@@ -74,6 +78,7 @@ pub const MAX_LOG_ENTRIES: usize = 10_000;
 pub mod capability;
 pub mod capture;
 pub mod classification_overrides;
+pub mod classification_record;
 pub mod complexity;
 pub mod confidence;
 pub mod context_tier;
@@ -116,6 +121,10 @@ pub use capture::{
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
     classification_override_records_path,
+};
+pub use classification_record::{
+    ClassificationRecord, classification_record_dir, classification_record_path,
+    read_classification_record,
 };
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use confidence::Confidence;
