@@ -34,8 +34,7 @@ use crate::types::SyncResult;
 /// ```
 ///
 /// The default cache directory is `{workspace}/re/analysis/sync/`, set
-/// by [`new`](Self::new). [`with_cache_dir`](Self::with_cache_dir)
-/// points the persistor at an explicit directory instead.
+/// by [`new`](Self::new).
 ///
 /// # Example
 ///
@@ -63,15 +62,6 @@ impl SyncPersistor {
     pub fn new(workspace: impl AsRef<Path>) -> Self {
         Self {
             store: JsonStore::new(analysis_dir(workspace).join("sync")),
-        }
-    }
-
-    /// Creates a new persistor with an explicit cache directory.
-    ///
-    /// Results are stored directly under the provided `cache_dir` path.
-    pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Self {
-        Self {
-            store: JsonStore::new(cache_dir),
         }
     }
 
@@ -244,7 +234,7 @@ mod tests {
         // `--show` months later — sees exactly what was saved
         // (issue #349).
         let dir = tempfile::tempdir().unwrap();
-        let persistor = SyncPersistor::with_cache_dir(dir.path());
+        let persistor = SyncPersistor::new(dir.path());
         let mut saved = sample_result("eqmain.dll");
         saved.metadata.coverage = Some(calxgloss_types::ScanCoverage {
             status: calxgloss_types::CoverageStatus::Partial,
@@ -287,16 +277,6 @@ mod tests {
             matches!(err, SyncError::Json(_)),
             "expected Json, got {err:?}"
         );
-    }
-
-    #[test]
-    fn with_cache_dir_files_documents_directly_inside_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = dir.path().join("custom-cache");
-        let persistor = SyncPersistor::with_cache_dir(&cache);
-
-        persistor.save(&sample_result("eqmain.dll")).unwrap();
-        assert!(cache.join("eqmain.dll.json").exists());
     }
 
     #[test]

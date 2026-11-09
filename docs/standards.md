@@ -167,7 +167,9 @@ sentence, and propose the split or rewrite.
   (`JsonStore` / `PersistError`), not raw `serde_json` + `fs` calls.
 - Artifacts live under `<workspace_root>/re/analysis/<domain>/`
   (e.g. `re/analysis/typeinfer/`). The persistor takes the workspace root in
-  `new()` and allows overriding the directory via `with_cache_dir()` for tests.
+  `new()`; a persistor whose tests need a flat cache directory also offers
+  `with_cache_dir()`. One with no caller keeps none — the sync persistor's
+  went unused and was deleted (issue #446).
 - Persisted types derive `serde::Serialize`/`Deserialize`; persisted records
   include scan metadata (`ScanMetadata`) so results are traceable.
 

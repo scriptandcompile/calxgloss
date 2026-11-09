@@ -274,49 +274,6 @@ impl<S> SyncEngine<S> {
         self
     }
 
-    /// Read async runtime loops against `detector`'s name sets instead
-    /// of the standard ones.
-    pub fn with_async_runtime(mut self, detector: AsyncDetector) -> Self {
-        self.async_runtime = detector;
-        self
-    }
-
-    /// Read futex synchronization against `detector`'s name sets instead
-    /// of the standard ones.
-    pub fn with_futex(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
-    /// Read futex synchronization against `detector`'s name sets instead
-    /// of the standard ones.
-    pub fn with_futexes(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
-    /// Read futex synchronization against `detector`'s name sets instead
-    /// of the standard ones.
-    pub fn with_futex_detector(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
-    pub fn with_futexes_detector(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
-    pub fn with_futex_runtime(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
-    pub fn with_futex_detection(mut self, detector: FutexDetector) -> Self {
-        self.futex = detector;
-        self
-    }
-
     /// Detect concurrency constructs across `binary`, decompiling
     /// each function exactly once and reading it with all the per-body
     /// detectors.

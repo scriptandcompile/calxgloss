@@ -252,11 +252,6 @@ pub struct AsyncRuntime {
     pub evidence: String,
 }
 
-// Compatibility aliases for the async runtime record's spelling.
-pub type AsyncRuntimeUsage = AsyncRuntime;
-pub type AsyncLoop = AsyncRuntime;
-pub type AsyncOperation = AsyncRuntime;
-
 // ============================================================
 // Futex
 // ============================================================
@@ -291,12 +286,6 @@ pub struct Futex {
     /// the reasoning.
     pub evidence: String,
 }
-
-// Compatibility aliases for the futex record's spelling.
-pub type FutexUsage = Futex;
-pub type FutexOperation = Futex;
-pub type FutexRecord = Futex;
-pub type FutexCall = Futex;
 
 // ============================================================
 // Lock ordering
@@ -339,17 +328,6 @@ pub struct LockOrder {
     /// translation prompt) can check the reasoning.
     pub evidence: String,
 }
-
-// Compatibility aliases for the lock-order record's spelling.
-/// Alias of [`LockOrder`], for consumers that call the reading by the
-/// pass's name.
-pub type LockOrdering = LockOrder;
-/// Alias of [`LockOrder`], for consumers that call the reading by the
-/// record's name.
-pub type LockOrderRecord = LockOrder;
-/// Alias of [`LockOrder`], for consumers that want the claim's
-/// cross-function origin in the name.
-pub type CrossFunctionLockOrder = LockOrder;
 
 // ============================================================
 // Data races
@@ -418,17 +396,6 @@ pub struct RaceSide {
     /// without its trailing semicolon.
     pub statement: String,
 }
-
-// Compatibility aliases for the data-race record's spelling.
-/// Alias of [`DataRace`], for consumers that call the reading by the
-/// shape's name.
-pub type DataRaceConflict = DataRace;
-/// Alias of [`DataRace`], for consumers that call the reading by the
-/// record's name.
-pub type DataRaceRecord = DataRace;
-/// Alias of [`DataRace`], for consumers that want the claim's
-/// cross-function origin in the name.
-pub type CrossFunctionDataRace = DataRace;
 
 // ============================================================
 // Finding union
