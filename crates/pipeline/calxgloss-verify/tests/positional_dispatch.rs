@@ -21,7 +21,9 @@
 //! ```
 
 use calxgloss_types::{BinaryIdentity, TestCase, VerifierCommand};
-use calxgloss_types::{VerificationReceipt, VerificationVerdict, persist, verification_receipt_path};
+use calxgloss_types::{
+    VerificationReceipt, VerificationVerdict, persist, verification_receipt_path,
+};
 use calxgloss_verify::{Verifier, VerifyContext};
 use serde_json::json;
 
@@ -118,7 +120,9 @@ async fn an_arity_the_unit_never_defined_is_a_harness_error_not_a_compile_failur
             &VerifyContext::default(),
         )
         .await
-        .expect_err("a test project that never built is the verifier's error, never a unit verdict");
+        .expect_err(
+            "a test project that never built is the verifier's error, never a unit verdict",
+        );
 
     // The build-error text still rides the hand-back, so a human can
     // read whose code broke — and whose did not.

@@ -154,17 +154,29 @@ async fn a_test_project_that_never_builds_files_a_harness_error_pair_not_a_compi
     let verifier = Verifier::new(work.path()).expect("verifier");
     // The body compiles cleanly on its own; only the harness's own
     // runner file fails to build against it.
-    let body = "pub fn receipt_gate(code: u32) -> serde_json::Value { serde_json::Value::from(code) }";
+    let body =
+        "pub fn receipt_gate(code: u32) -> serde_json::Value { serde_json::Value::from(code) }";
 
     let error = verifier
-        .verify(BINARY, FUNCTION, body, &[case(7)], &VerifyContext::default())
+        .verify(
+            BINARY,
+            FUNCTION,
+            body,
+            &[case(7)],
+            &VerifyContext::default(),
+        )
         .await
-        .expect_err("a test project that never built is the verifier's error, never a unit verdict");
+        .expect_err(
+            "a test project that never built is the verifier's error, never a unit verdict",
+        );
 
     // The reason names the build arm and carries the build-error text,
     // so a human can still read whose code broke.
     let handed_back = error.to_string();
-    assert!(handed_back.contains("failed to build"), "the arm is named: {handed_back}");
+    assert!(
+        handed_back.contains("failed to build"),
+        "the arm is named: {handed_back}"
+    );
     assert!(
         handed_back.contains("this function takes 1 argument but 0 arguments were supplied"),
         "the build error text rides the reason: {handed_back}"
@@ -181,7 +193,10 @@ async fn a_test_project_that_never_builds_files_a_harness_error_pair_not_a_compi
         .harness_error_reason
         .as_deref()
         .expect("the harness-error pair names its own broken arm");
-    assert!(reason.contains("failed to build"), "the arm is named: {reason}");
+    assert!(
+        reason.contains("failed to build"),
+        "the arm is named: {reason}"
+    );
     assert!(
         reason.contains("this function takes 1 argument but 0 arguments were supplied"),
         "the build error text rides the filed reason: {reason}"
@@ -191,10 +206,16 @@ async fn a_test_project_that_never_builds_files_a_harness_error_pair_not_a_compi
         VerifierCommand::CompileOnly,
         "no baseline case ever ran through a runner"
     );
-    assert_eq!(filed.dimensions["values"].assessed, 0, "nothing was assessed");
+    assert_eq!(
+        filed.dimensions["values"].assessed, 0,
+        "nothing was assessed"
+    );
     assert_eq!(filed.dimensions["values"].passed, 0);
     assert_eq!(filed.dimensions["api_trace"].assessed, 0);
-    assert!(filed.failed_cases.is_empty(), "no unit verdict — no case to name");
+    assert!(
+        filed.failed_cases.is_empty(),
+        "no unit verdict — no case to name"
+    );
 
     // No compile-failed pair anywhere under this unit's key — scanning
     // the attempt slots a retry sequence could write beside this run's
@@ -203,12 +224,8 @@ async fn a_test_project_that_never_builds_files_a_harness_error_pair_not_a_compi
     // genuinely failed compile leg, and this run's compile leg logged
     // success.
     for attempt in 1..=3 {
-        let pair = verification_receipt_path(
-            work.path(),
-            &BinaryIdentity::new(BINARY),
-            FUNCTION,
-            attempt,
-        );
+        let pair =
+            verification_receipt_path(work.path(), &BinaryIdentity::new(BINARY), FUNCTION, attempt);
         if pair.exists() {
             let read: VerificationReceipt =
                 persist::load_json(&pair).expect("the filed authority reads");
