@@ -4,8 +4,9 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 ## Conventions
 
+- **Always read with `--json` and explicit fields.** Bare `gh issue view` / `gh pr view` calls request the retired Projects (classic) `projectCards` field on older `gh` builds and die with a GraphQL error (`repository.issue.projectCards`). A `--json` list queries only the fields you name, so the dead field never enters the query.
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filter the comments with `jq`, and fetch the labels too.
+- **Read an issue**: `gh issue view <number> --json number,title,body,state,labels,assignees,comments --jq '...'`.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
@@ -19,11 +20,11 @@ Infer the repo from `git remote -v`. When run inside a clone, `gh` works out the
 
 When this flag is set to `yes`, PRs get the same labels and states as issues, using the `gh pr` equivalents:
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **Read a PR**: `gh pr view <number> --json number,title,body,state,labels,author,authorAssociation,comments` and `gh pr diff <number>` for the diff.
 - **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
 
-GitHub numbers issues and PRs in one shared series, so a bare `#42` may be either one. Resolve it with `gh pr view 42` first, and fall back to `gh issue view 42`.
+GitHub numbers issues and PRs in one shared series, so a bare `#42` may be either one. Tell them apart with `gh api repos/<owner>/<repo>/pulls/<n>` — exit 0 means a PR — then read with the PR or issue command above.
 
 ## When a skill says "publish to the issue tracker"
 
@@ -31,7 +32,7 @@ Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run the **Read an issue** command from Conventions: `gh issue view <number> --json number,title,body,state,labels,assignees,comments`.
 
 ## Wayfinding operations
 
