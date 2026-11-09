@@ -88,28 +88,16 @@ pub async fn handle_serve(
     println_content("");
     println_content("  Press Ctrl+C to stop");
     println!();
+    hsep_bold();
+    println!();
 
+    // Issue #448 (P57) deletes the hand-printed endpoint list from this
+    // banner. The server registers far more routes than the list named.
+    // The printed list was already stale. P58 will generate a real list
+    // from the route table.
     let server_state = ServerState::new(workspace)
         .with_log_level(log_level)
         .with_log_filter(log_filter);
-    println_content("Endpoints:");
-    println_content("    GET  /                  Dashboard frontend");
-    println_content("    GET  /api/dashboard     Full review dashboard JSON");
-    println_content("    GET  /api/queue         Review queue (dependency-ordered)");
-    println_content("    GET  /api/graph         Dependency graph data");
-    println_content("    GET  /api/units/:id     Unit detail");
-    println_content("    GET  /api/units/:id/diff  Git diff between branch and main");
-    println_content("    POST /api/units/:id/accept    Accept (merge to main)");
-    println_content("    POST /api/units/:id/send-back Send back with comments");
-    println_content("    POST /api/units/:id/patch     Request patch (retry translation)");
-    println_content("    GET  /api/server/status Server status (uptime, memory, CPU, connections)");
-    println_content("    POST /api/server/shutdown Graceful shutdown (pause pipeline, save, exit)");
-    println_content("    POST /api/server/restart  Stop process — restart the command manually");
-    println_content("    PATCH /api/server/log-level Change log verbosity (this process only)");
-    println_content("    GET  /health            Health probe (workspace, uptime, version)");
-    println!();
-    hsep_bold();
-    println!();
 
     // Start the axum server with the settings-backed actions backend
     // connected to the router (issue #327). The review UI's patch button
