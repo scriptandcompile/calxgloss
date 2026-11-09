@@ -89,23 +89,25 @@ pub async fn api_get_pipeline(
         None => return PipelineProgressResponse::empty(0).into(),
     };
 
-    let entries_snapshot = progress.read().await.snapshot().await;
-    let classifications_raw = progress.read().await.classifications().await;
-    let batch_summaries_raw = progress.read().await.batch_summaries().await;
-    let processing = progress.read().await.processing_binary().await;
-    let activity = progress.read().await.activity().await;
-    let queue = progress.read().await.queue().await;
-    let ingestion = progress.read().await.ingestion().await;
-
-    // Convert to owned HashMaps for O(1) lookups by binary identity
-    let mut classifications: HashMap<BinaryIdentity, ClassificationInfo> = classifications_raw
+    // One consistent store read serves the whole payload (issue #455).
+    // An interleaved request can no longer stitch two passes into one
+    // response.
+    let reading = progress.read().await.full_read().await;
+    let entries_snapshot = reading.units;
+    let mut classifications: HashMap<BinaryIdentity, ClassificationInfo> = reading
+        .classifications
         .into_iter()
         .map(|c| (c.binary.clone(), c))
         .collect();
-    let batch_summaries: HashMap<BinaryIdentity, BatchInfo> = batch_summaries_raw
+    let batch_summaries: HashMap<BinaryIdentity, BatchInfo> = reading
+        .batch_summaries
         .into_iter()
         .map(|b| (b.binary.clone(), b))
         .collect();
+    let processing = reading.processing;
+    let activity = reading.activity;
+    let queue = reading.queue;
+    let ingestion = reading.ingestion;
 
     // A restarted run re-classifies nothing, so the persisted records are
     // the only account of what the workspace already knows; this run's own
@@ -733,39 +735,53 @@ pub async fn api_stop_pipeline(
 
 // ─── POST /api/pipeline/binaries/{binary}/{pause,resume} ─────────────
 
+/// Take the store's one consistent read for a request (issue #455).
+/// Returns `None` when no live store is attached. A control handler takes
+/// this once and answers every store question of the request from it, so
+/// no decision can mix fields from two passes.
+async fn store_reading(combined: &CombinedState) -> Option<super::super::live_store::StoreReading> {
+    match &combined.progress {
+        Some(progress) => Some(progress.read().await.full_read().await),
+        None => None,
+    }
+}
+
 /// The binaries the workspace has discovered — the same set `GET
 /// /api/pipeline` builds its rows from: live progress (entries,
 /// classifications, batch summaries, the binary in flight, the working
 /// pass's heartbeat, the queue plan, ingested analysis) plus the persisted classification
 /// records, plus the persisted paused set. A binary paused in an earlier run
 /// is known to the workspace even before this run rediscovers it, and
-/// resume must never lock the operator out of clearing that pause.
+/// resume must never lock the operator out of clearing that pause. The
+/// live half comes from one store reading the caller took for the request
+/// (issue #455).
 async fn discovered_binaries(
     combined: &CombinedState,
     scope: &ScopeControl,
+    reading: Option<&super::super::live_store::StoreReading>,
 ) -> std::collections::HashSet<BinaryIdentity> {
     let mut names: std::collections::HashSet<BinaryIdentity> =
         scope.paused_binaries().into_iter().collect();
-    if let Some(progress) = &combined.progress {
-        for entry in progress.read().await.snapshot().await.values() {
+    if let Some(reading) = reading {
+        for entry in reading.units.values() {
             names.insert(entry.binary.clone());
         }
-        for classification in progress.read().await.classifications().await {
-            names.insert(classification.binary);
+        for classification in &reading.classifications {
+            names.insert(classification.binary.clone());
         }
-        for summary in progress.read().await.batch_summaries().await {
-            names.insert(summary.binary);
+        for summary in &reading.batch_summaries {
+            names.insert(summary.binary.clone());
         }
-        if let Some(binary) = progress.read().await.processing_binary().await {
-            names.insert(binary);
+        if let Some(binary) = &reading.processing {
+            names.insert(binary.clone());
         }
-        if let Some((binary, _)) = progress.read().await.activity().await {
-            names.insert(binary);
+        if let Some((binary, _)) = &reading.activity {
+            names.insert(binary.clone());
         }
-        for binary in progress.read().await.queue().await {
+        for binary in &reading.queue {
             names.insert(BinaryIdentity::new(binary.as_str()));
         }
-        names.extend(progress.read().await.ingestion().await.analyzed);
+        names.extend(reading.ingestion.analyzed.iter().cloned());
     }
     for (binary, _) in disk_classifications(combined.server.repo_path()) {
         names.insert(binary);
@@ -788,7 +804,8 @@ async fn control_binary_pause(
     pause: bool,
 ) -> Result<Json<BinaryPauseResponse>, ServerError> {
     let scope = scope_handle(combined)?;
-    let discovered = discovered_binaries(combined, &scope).await;
+    let reading = store_reading(combined).await;
+    let discovered = discovered_binaries(combined, &scope, reading.as_ref()).await;
     if !discovered
         .iter()
         .any(|b| binary_matches(b.as_str(), binary))
@@ -866,7 +883,10 @@ async fn control_binary_start(
 ) -> Result<Json<BinaryPauseResponse>, ServerError> {
     let scope = scope_handle(combined)?;
     let (control, run_requests) = run_handles(combined)?;
-    let discovered = discovered_binaries(combined, &scope).await;
+    // One store read answers both halves of this request — the discovered
+    // set and the stale-press guard below (issue #455).
+    let reading = store_reading(combined).await;
+    let discovered = discovered_binaries(combined, &scope, reading.as_ref()).await;
     if !discovered
         .iter()
         .any(|b| binary_matches(b.as_str(), binary))
@@ -885,14 +905,13 @@ async fn control_binary_start(
         previous,
         PipelineState::Running | PipelineState::Paused | PipelineState::Stopping
     );
-    let processing = match &combined.progress {
-        Some(progress) => progress.read().await.processing_binary().await,
-        None => None,
-    };
-    let planned = match &combined.progress {
-        Some(progress) => progress.read().await.queue().await,
-        None => Vec::new(),
-    };
+    let processing = reading
+        .as_ref()
+        .and_then(|reading| reading.processing.clone());
+    let planned: Vec<String> = reading
+        .as_ref()
+        .map(|reading| reading.queue.clone())
+        .unwrap_or_default();
     let target_is_processing = processing
         .as_ref()
         .is_some_and(|current| binary_matches(current.as_str(), binary));
@@ -1000,7 +1019,8 @@ pub async fn api_focus_binary(
     PathExtractor(binary): PathExtractor<String>,
 ) -> Result<Json<BinaryFocusResponse>, ServerError> {
     let scope = scope_handle(&combined)?;
-    let discovered = discovered_binaries(&combined, &scope).await;
+    let reading = store_reading(&combined).await;
+    let discovered = discovered_binaries(&combined, &scope, reading.as_ref()).await;
     if !discovered
         .iter()
         .any(|b| binary_matches(b.as_str(), &binary))

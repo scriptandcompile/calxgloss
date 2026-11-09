@@ -182,6 +182,33 @@ struct StoreData {
     scans: BTreeMap<String, ScanRow>,
 }
 
+/// One whole answer from the store, taken under a single lock
+/// (issue #455). A handler serving the pipeline payload or a read of the
+/// run's binary names takes one of these per request. The store copies
+/// every field at the same moment, so no field the handler serves can
+/// name a different pass than the rest.
+#[derive(Debug)]
+pub struct StoreReading {
+    /// The shared record for every tracked unit, keyed by unit key
+    /// (`{binary}/{function}`) — as [`ProgressState::snapshot`] hands them out.
+    pub units: HashMap<String, LiveUnitProgress>,
+    /// The shared scan records of the binary whose pass is in flight,
+    /// in scan-name order (issue #428).
+    pub scans: Vec<LiveScanProgress>,
+    /// The run's classification results, one per classified binary.
+    pub classifications: Vec<ClassificationInfo>,
+    /// The batch summaries filed for passes that have ended.
+    pub batch_summaries: Vec<BatchInfo>,
+    /// The binary whose batch pass is currently in flight, if any.
+    pub processing: Option<BinaryIdentity>,
+    /// The run's ordered queue plan — empty until a plan lands.
+    pub queue: Vec<String>,
+    /// The working pass's latest heartbeat — `(binary, activity)`.
+    pub activity: Option<(BinaryIdentity, BinaryActivity)>,
+    /// Startup ingestion state (issue #124).
+    pub ingestion: IngestionState,
+}
+
 /// Tracks translation units currently in progress.
 ///
 /// Created when `handle_live` starts the server with an event channel,
@@ -414,7 +441,10 @@ impl ProgressState {
 
     /// The shared scan records of the binary whose pass is in flight, in
     /// scan-name order — the live view's stable row order (issue #428).
-    pub async fn scan_view(&self) -> Vec<LiveScanProgress> {
+    /// Test-only: the store's honesty-rule tests read it (issue #453);
+    /// handlers take the whole reading instead (issue #455).
+    #[cfg(test)]
+    async fn scan_view(&self) -> Vec<LiveScanProgress> {
         self.state
             .read()
             .await
@@ -435,8 +465,38 @@ impl ProgressState {
             .collect()
     }
 
+    /// Read the whole store once (issue #455). A handler serving the
+    /// pipeline payload or a read of the run's binary names calls this one
+    /// time per request. The store copies every field of the
+    /// [`StoreReading`] under a single lock acquisition, so a field from
+    /// one pass cannot be stitched onto rows from another. A running
+    /// unit's or scan's elapsed measurement is taken now, as in
+    /// [`view`](Self::view).
+    pub async fn full_read(&self) -> StoreReading {
+        let data = self.state.read().await;
+        StoreReading {
+            units: data
+                .entries
+                .iter()
+                .map(|(key, entry)| (key.clone(), shared_unit_record(entry)))
+                .collect(),
+            scans: data.scans.values().map(shared_scan_record).collect(),
+            classifications: data
+                .classifications
+                .values()
+                .map(classification_record)
+                .collect(),
+            batch_summaries: data.batch_summaries.values().map(batch_record).collect(),
+            processing: data.processing.clone(),
+            queue: data.queue.clone(),
+            activity: data.activity.clone(),
+            ingestion: data.ingestion.clone(),
+        }
+    }
+
     /// The current shared record for one unit, keyed by binary and
-    /// function name.
+    /// function name. The event pump reads it to push the applied unit's
+    /// record over the WebSocket.
     pub async fn entry(&self, binary: &str, function: &str) -> Option<LiveUnitProgress> {
         let key = UnitKey::new(&BinaryIdentity::from(binary), function).to_string();
         self.state
@@ -447,68 +507,37 @@ impl ProgressState {
             .map(shared_unit_record)
     }
 
-    /// Returns a snapshot of classification results as serializable info.
-    pub async fn classifications(&self) -> Vec<ClassificationInfo> {
-        self.state
-            .read()
-            .await
-            .classifications
-            .values()
-            .map(|v| ClassificationInfo {
-                binary: v.binary.clone(),
-                category: v.category.clone(),
-                classification_strategy: v.classification_strategy.clone(),
-                crate_replacement: v.crate_replacement.clone(),
-                exported_symbols: v.exported_symbols,
-                imported_symbols: v.imported_symbols,
-            })
-            .collect()
-    }
-
-    /// Returns a snapshot of batch summary results as serializable info.
-    pub async fn batch_summaries(&self) -> Vec<BatchInfo> {
-        self.state
-            .read()
-            .await
-            .batch_summaries
-            .values()
-            .map(|v| BatchInfo {
-                binary: v.binary.clone(),
-                total_functions: v.total_functions,
-                success_count: v.success_count,
-                failure_count: v.failure_count,
-                total_attempts: v.total_attempts,
-                total_tokens: v.total_tokens,
-            })
-            .collect()
-    }
-
     /// The binary whose batch pass is currently in flight, if any —
     /// `BatchStarted` records it, and that binary's `BatchSummary` clears it.
-    pub async fn processing_binary(&self) -> Option<BinaryIdentity> {
+    /// Test-only: the store's honesty-rule tests read it (issue #453);
+    /// handlers take the whole reading instead (issue #455).
+    #[cfg(test)]
+    async fn processing_binary(&self) -> Option<BinaryIdentity> {
         self.state.read().await.processing.clone()
     }
 
     /// The run's ordered queue plan — the binaries the live loop will
     /// process, in that order. Empty when no plan has been announced.
-    pub async fn queue(&self) -> Vec<String> {
+    /// Test-only: the store's honesty-rule tests read it (issue #453);
+    /// handlers take the whole reading instead (issue #455).
+    #[cfg(test)]
+    async fn queue(&self) -> Vec<String> {
         self.state.read().await.queue.clone()
     }
 
     /// The working pass's latest heartbeat — `(binary, activity)`, `None`
     /// while no pass is running to report one.
-    pub async fn activity(&self) -> Option<(BinaryIdentity, BinaryActivity)> {
+    /// Test-only: the store's honesty-rule tests read it (issue #453);
+    /// handlers take the whole reading instead (issue #455).
+    #[cfg(test)]
+    async fn activity(&self) -> Option<(BinaryIdentity, BinaryActivity)> {
         self.state.read().await.activity.clone()
     }
 
-    /// Startup ingestion state (issue #124) — whether the startup preflight
-    /// scan has begun, and which binaries' auto-analysis has landed.
-    pub async fn ingestion(&self) -> IngestionState {
-        self.state.read().await.ingestion.clone()
-    }
-
     /// Returns the number of currently in-flight units.
-    pub async fn len(&self) -> usize {
+    /// Test-only: the store's honesty-rule tests read it (issue #453).
+    #[cfg(test)]
+    async fn len(&self) -> usize {
         self.state.read().await.entries.len()
     }
 
@@ -527,7 +556,9 @@ impl ProgressState {
     }
 
     /// Returns whether there are any currently in-flight units.
-    pub async fn is_empty(&self) -> bool {
+    /// Test-only: the store's honesty-rule tests read it (issue #453).
+    #[cfg(test)]
+    async fn is_empty(&self) -> bool {
         self.state.read().await.entries.is_empty()
     }
 }
@@ -747,6 +778,31 @@ fn shared_scan_record(r: &ScanRow) -> LiveScanProgress {
     }
 }
 
+/// The shared classification record for one stored result — the shape
+/// `/api/pipeline` renders, projected the one way the store reports it.
+fn classification_record(v: &ClassificationResult) -> ClassificationInfo {
+    ClassificationInfo {
+        binary: v.binary.clone(),
+        category: v.category.clone(),
+        classification_strategy: v.classification_strategy.clone(),
+        crate_replacement: v.crate_replacement.clone(),
+        exported_symbols: v.exported_symbols,
+        imported_symbols: v.imported_symbols,
+    }
+}
+
+/// The shared batch-summary record for one stored result.
+fn batch_record(v: &BatchResult) -> BatchInfo {
+    BatchInfo {
+        binary: v.binary.clone(),
+        total_functions: v.total_functions,
+        success_count: v.success_count,
+        failure_count: v.failure_count,
+        total_attempts: v.total_attempts,
+        total_tokens: v.total_tokens,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,12 +882,128 @@ mod tests {
         }
     }
 
+    // ── the single store reading (issue #455) ─────────────────────────
+
+    /// One store reading answers every pipeline field at once (issue
+    /// #455). The units, scan rows, classification results, batch
+    /// summaries, the binary in flight, the queue plan, the heartbeat, and
+    /// the ingestion state all come back in one answer.
+    #[tokio::test]
+    async fn one_store_reading_answers_every_pipeline_field_at_once() {
+        let store = ProgressState::new();
+        store.apply(&unit_started("game_logic.dll", "FUN_1")).await;
+        store
+            .apply(&scan_started("game_logic.dll", "type-database"))
+            .await;
+        store.apply(&batch_started("game_logic.dll")).await;
+        store
+            .apply(&batch_progress("game_logic.dll", "translating", "FUN_1"))
+            .await;
+        store
+            .apply(&ProgressEvent::QueuePlanned {
+                binaries: vec!["game_logic.dll".into(), "LaunchPad.exe".into()],
+            })
+            .await;
+        store
+            .apply(&ProgressEvent::ClassificationComplete {
+                binary: "game_logic.dll".into(),
+                category: "engine".into(),
+                classification_strategy: "translate".into(),
+                crate_replacement: None,
+                exported_symbols: 4,
+                imported_symbols: 2,
+            })
+            .await;
+        store.apply(&batch_summary("LaunchPad.exe")).await;
+
+        let reading = store.full_read().await;
+
+        assert_eq!(reading.units.len(), 1, "the in-flight unit is a row");
+        let unit = reading.units.values().next().expect("the one unit row");
+        assert_eq!(unit.function, "FUN_1");
+        assert_eq!(reading.scans.len(), 1, "the running scan is a row");
+        assert_eq!(reading.scans[0].scan, "type-database");
+        assert!(
+            !reading.scans[0].finished,
+            "its completed event has not landed"
+        );
+        assert_eq!(reading.classifications.len(), 1);
+        assert_eq!(reading.classifications[0].category, "engine");
+        assert_eq!(reading.batch_summaries.len(), 1);
+        assert_eq!(
+            reading.batch_summaries[0].binary,
+            BinaryIdentity::new("LaunchPad.exe")
+        );
+        assert_eq!(
+            reading.processing.as_deref(),
+            Some("game_logic.dll"),
+            "the batch pass is in flight"
+        );
+        let (heartbeat_binary, heartbeat) = reading.activity.expect("the pass is beating");
+        assert_eq!(heartbeat_binary, BinaryIdentity::new("game_logic.dll"));
+        assert_eq!(heartbeat.pass, "translating");
+        assert_eq!(reading.queue, ["game_logic.dll", "LaunchPad.exe"]);
+        assert!(
+            !reading.ingestion.started,
+            "no ingestion event landed, so the reading says ingestion never began"
+        );
+    }
+
+    /// A taken store reading names one pass throughout, and it never
+    /// moves (issue #455). Once it answers, a later pass cannot change any
+    /// of its fields. A fresh reading names the new pass from its first
+    /// field to its last.
+    #[tokio::test]
+    async fn a_taken_store_reading_names_one_pass_throughout_and_never_moves() {
+        let store = ProgressState::new();
+        store.apply(&batch_started("game_logic.dll")).await;
+        store
+            .apply(&batch_progress("game_logic.dll", "call graph", "FUN_1"))
+            .await;
+        store
+            .apply(&ProgressEvent::QueuePlanned {
+                binaries: vec!["game_logic.dll".into()],
+            })
+            .await;
+
+        let first = store.full_read().await;
+
+        // The second pass lands after the first reading was answered.
+        store.apply(&batch_started("LaunchPad.exe")).await;
+        store
+            .apply(&batch_progress("LaunchPad.exe", "translating", "FUN_9"))
+            .await;
+        store
+            .apply(&ProgressEvent::QueuePlanned {
+                binaries: vec!["LaunchPad.exe".into()],
+            })
+            .await;
+
+        assert_eq!(
+            first.processing.as_deref(),
+            Some("game_logic.dll"),
+            "the answered reading still names the pass it witnessed"
+        );
+        let (heartbeat_binary, heartbeat) = first.activity.expect("the witnessed pass's heartbeat");
+        assert_eq!(heartbeat_binary, BinaryIdentity::new("game_logic.dll"));
+        assert_eq!(heartbeat.pass, "call graph");
+        assert_eq!(first.queue, ["game_logic.dll"]);
+
+        let second = store.full_read().await;
+        assert_eq!(second.processing.as_deref(), Some("LaunchPad.exe"));
+        let (heartbeat_binary, heartbeat) = second.activity.expect("the new pass's heartbeat");
+        assert_eq!(heartbeat_binary, BinaryIdentity::new("LaunchPad.exe"));
+        assert_eq!(heartbeat.pass, "translating");
+        assert_eq!(second.queue, ["LaunchPad.exe"]);
+    }
+
     // ── scan-record honesty (ADR-0061, issues #428/#429) ──────────────
 
     /// The evidence engine reported no single count, so the record carries
     /// none (issue #429). An unknown count stays unknown, never a zero.
     #[tokio::test]
-    async fn a_scan_whose_evidence_engine_reported_no_count_keeps_its_findings_unknown_never_zero() {
+    async fn a_scan_whose_evidence_engine_reported_no_count_keeps_its_findings_unknown_never_zero()
+    {
         let store = ProgressState::new();
         store.apply(&scan_started("LaunchPad.exe", "sync")).await;
         store
