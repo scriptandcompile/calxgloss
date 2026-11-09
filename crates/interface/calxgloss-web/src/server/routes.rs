@@ -3,7 +3,6 @@
 //!
 //! Issue #450 moved this table out of `server/mod.rs`, so the live-view
 //! store extraction of issue #449 no longer shares the routing file.
-//! Nothing about the routes themselves changed.
 
 use axum::{
     Router,
