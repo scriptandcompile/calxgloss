@@ -397,17 +397,17 @@ pub fn build_router_with_ws(
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             llm_io_log.record(&event);
-            progress_clone.on_event(&event).await;
+            progress_clone.apply(&event).await;
             // WS phase events (issue #55): once a unit-scoped event is
             // applied, push that unit's full live record — current phase,
             // phase history, tier, evidence — so the live view updates the
             // row in place instead of refetching the enhanced endpoint.
+            // The store hands out the shared record directly (issue #452).
             if let Some(unit) = event.unit_key()
-                && let Some(entry) = progress_clone
+                && let Some(record) = progress_clone
                     .entry(unit.binary().as_str(), unit.function())
                     .await
             {
-                let record = handlers::live_unit_progress(&entry);
                 manager_clone
                     .push(WsMessage::UnitPhase(UnitPhaseMessage::new(record)))
                     .await;

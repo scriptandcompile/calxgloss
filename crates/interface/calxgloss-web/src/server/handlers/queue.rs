@@ -57,7 +57,7 @@ pub async fn api_get_queue(
 /// reads `cancelled` — neither moved toward review at all, so neither may
 /// read as awaiting review. This reading is not a review status — the
 /// status field keeps its own git-backed meaning (issue #431).
-fn live_reading(record: &super::super::ProgressEntry) -> Option<String> {
+fn live_reading(record: &calxgloss_types::LiveUnitProgress) -> Option<String> {
     if record.finished {
         if record.succeeded == Some(false) {
             let word = if record.outcome.as_deref() == Some("cancelled") {

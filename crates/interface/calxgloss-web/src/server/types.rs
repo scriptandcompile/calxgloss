@@ -1632,6 +1632,10 @@ impl axum::response::IntoResponse for ServerError {
 // ─── Progress response types ─────────────────────────────────────────
 
 /// Information about a unit currently being translated.
+///
+/// This is the older row shape of `/api/progress`; its fields now come
+/// from the store's shared live record (issue #452). Issue #454 retires
+/// this shape and serves the shared record itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressInfo {
     pub binary: BinaryIdentity,

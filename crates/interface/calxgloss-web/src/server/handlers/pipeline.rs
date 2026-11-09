@@ -3,8 +3,7 @@
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
     PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse, ScanRecord, ServerError,
-    UnitCancelResponse,
+    PipelineTimeEstimate, ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
 };
 
 use super::process::binary_matches;
@@ -15,16 +14,21 @@ use axum::{
     extract::{Path as PathExtractor, State},
 };
 use calxgloss_types::{
-    BinaryIdentity, BinaryProgress, LiveScanProgress, LiveTranslationState, LiveUnitProgress,
-    PalReadiness, PalTraitReadiness, PassStatus, PhaseProgress, PhaseState, PipelinePhase,
-    PipelineRunRequest, PipelineState, RunRequestSignal, ScopeControl, TokenUsageLog,
-    TranslationPhase, derive_unit_confidence,
+    BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PalReadiness,
+    PalTraitReadiness, PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest, PipelineState,
+    RunRequestSignal, ScopeControl, TokenUsageLog, TranslationPhase,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::info;
 
 /// Handle GET /api/progress — return in-flight translation units.
+///
+/// The rows come from the store's shared live records (issue #452). This
+/// older row shape still carries `retry_strategy` as a required string,
+/// so a unit that has not made an LLM call is served the empty string it
+/// always got. Issue #454 retires this shape for the shared record's
+/// optional field.
 pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<ProgressResponse> {
     let progress = match &combined.progress {
         Some(p) => p,
@@ -33,21 +37,23 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
 
     let entries = progress.read().await.snapshot().await;
 
-    let in_progress: Vec<ProgressInfo> = entries
-        .values()
-        .map(|e| {
-            let elapsed = e.started_at.elapsed().as_secs_f64();
-            ProgressInfo {
-                binary: e.binary.clone(),
-                function: e.function.clone(),
-                attempt: e.attempt,
-                retry_strategy: e.retry_strategy.clone(),
-                outcome: e.outcome.clone(),
-                phase: e.phase,
-                phase_history: e.phase_history.clone(),
-                finished: e.finished,
-                elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
-            }
+    // Sort the shared records in the store's own row order, then fold
+    // each into the older row shape.
+    let mut units: Vec<LiveUnitProgress> = entries.values().cloned().collect();
+    super::super::live_store::sort_unit_rows(&mut units);
+
+    let in_progress: Vec<ProgressInfo> = units
+        .iter()
+        .map(|e| ProgressInfo {
+            binary: e.binary.clone(),
+            function: e.function.clone(),
+            attempt: e.attempt,
+            retry_strategy: e.retry_strategy.clone().unwrap_or_default(),
+            outcome: e.outcome.clone(),
+            phase: e.phase,
+            phase_history: e.phase_history.clone(),
+            finished: e.finished,
+            elapsed_secs: e.elapsed_secs,
         })
         .collect();
 
@@ -60,9 +66,10 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
 /// Where `/api/progress` answers "which units are in flight and what phase are
 /// they in", this answers what the live view needs to show the pipeline
 /// working: per-unit phase and elapsed time plus context tier, retry strategy,
-/// attempt, baseline/verification pass status, and unit confidence. The records
-/// are the shared [`LiveTranslationState`] ones, so W2/W3 can consume them
-/// without depending on the web crate.
+/// attempt, baseline/verification pass status, and unit confidence. The store
+/// hands out this whole [`LiveTranslationState`] as one atomic snapshot —
+/// units, scan rows, counts, and heartbeat (issue #452) — so the payload can
+/// never stitch rows from two passes.
 ///
 /// Registered in the **live router only** (see `live_only_routes`):
 /// outside `calxgloss live` there is no live translation state, and an empty
@@ -75,107 +82,7 @@ pub async fn api_get_progress_enhanced(
         None => return LiveTranslationState::empty().into(),
     };
 
-    let entries = progress.read().await.snapshot().await;
-    let mut units: Vec<LiveUnitProgress> = entries.values().map(live_unit_progress).collect();
-
-    // Stable order so the live view doesn't shuffle rows between refreshes.
-    units.sort_by(|a, b| {
-        a.binary
-            .cmp(&b.binary)
-            .then_with(|| a.function.cmp(&b.function))
-    });
-
-    // The scan rows of the binary whose pass is in flight (issue #428),
-    // in scan-name order — already stable from the store's keyed map.
-    let scans: Vec<LiveScanProgress> = progress
-        .read()
-        .await
-        .scan_snapshot()
-        .await
-        .iter()
-        .map(live_scan_progress)
-        .collect();
-
-    // The working pass's latest heartbeat, beside the scan rows (issue
-    // #430): pass name, the function Kuna is on, and its position in the
-    // pass's work list. The store records it from the same
-    // `BatchProgress` event the pipeline row already shows. The store
-    // clears the record at every pass boundary, so it never outlives the
-    // pass it describes.
-    let activity = progress
-        .read()
-        .await
-        .activity()
-        .await
-        .map(|(_binary, heartbeat)| heartbeat);
-
-    let count = units.len();
-    let in_flight = units.iter().filter(|u| !u.finished).count();
-    Json(LiveTranslationState {
-        units,
-        count,
-        in_flight,
-        scans,
-        activity,
-    })
-}
-
-/// Project one [`ScanRecord`] into the shared [`LiveScanProgress`] the
-/// live view consumes (issue #428). A running scan's elapsed is measured
-/// at serve time from its own start. A finished scan reports the seconds
-/// recorded by its completed event. A scan that filed no single count
-/// keeps `findings` as `None`, and the payload then carries no count. A
-/// failed scan keeps its error words beside that unknown count
-/// (issue #429).
-pub(crate) fn live_scan_progress(r: &ScanRecord) -> LiveScanProgress {
-    let elapsed = match r.elapsed_secs {
-        Some(secs) => secs,
-        None => r.started_at.elapsed().as_secs_f64(),
-    };
-    LiveScanProgress {
-        scan: r.scan.clone(),
-        binary: r.binary.clone(),
-        finished: r.finished,
-        elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
-        findings: r.findings,
-        error: r.error.clone(),
-    }
-}
-
-/// Project one live [`ProgressEntry`] into the shared [`LiveUnitProgress`]
-/// record the live view consumes.
-///
-/// Shared by `GET /api/progress/enhanced` and the WebSocket `unit_phase` push
-/// so both surfaces report the same honest shape: unmeasured test classes stay
-/// [`PassState::NotRun`](calxgloss_types::PassState::NotRun), an unnamed retry
-/// strategy is `None` rather than a blank, and confidence is derived from
-/// evidence rather than guessed.
-pub(crate) fn live_unit_progress(e: &ProgressEntry) -> LiveUnitProgress {
-    let elapsed = e.started_at.elapsed().as_secs_f64();
-    let baseline =
-        PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
-    let verification =
-        PassStatus::from_optional_counts(e.verification_tests_passed, e.verification_tests_total);
-    LiveUnitProgress {
-        binary: e.binary.clone(),
-        function: e.function.clone(),
-        phase: e.phase,
-        phase_history: e.phase_history.clone(),
-        elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
-        attempt: e.attempt,
-        // An entry starts with an empty retry strategy; none named yet
-        // means none to report, not a blank one.
-        retry_strategy: (!e.retry_strategy.is_empty()).then(|| e.retry_strategy.clone()),
-        context_tier: e.context_tier.clone(),
-        tier_label: e.tier_label.clone(),
-        baseline: baseline.clone(),
-        verification,
-        compiled: e.compiled,
-        unit_confidence: derive_unit_confidence(e.compiled, &baseline),
-        finished: e.finished,
-        succeeded: e.succeeded,
-        outcome: e.outcome.clone(),
-    }
+    Json(progress.read().await.view().await)
 }
 
 /// Handle GET /api/pipeline — return overall pipeline progress.
@@ -196,7 +103,7 @@ pub async fn api_get_pipeline(
         None => return PipelineProgressResponse::empty(0).into(),
     };
 
-    let entries = progress.read().await.snapshot().await;
+    let entries_snapshot = progress.read().await.snapshot().await;
     let classifications_raw = progress.read().await.classifications().await;
     let batch_summaries_raw = progress.read().await.batch_summaries().await;
     let processing = progress.read().await.processing_binary().await;
@@ -220,9 +127,6 @@ pub async fn api_get_pipeline(
     for (binary, info) in disk_classifications(combined.server.repo_path()) {
         classifications.entry(binary).or_insert(info);
     }
-
-    // Snapshot entries before dropping the lock to avoid nested borrows
-    let entries_snapshot: HashMap<String, ProgressEntry> = entries.clone();
 
     // Collect every discovered binary identity from all sources in view
     let mut dll_names: HashSet<BinaryIdentity> = HashSet::new();
@@ -542,7 +446,7 @@ fn compute_time_estimate(
 /// escalations re-enter phases, so the latest phase alone understates
 /// progress). `TranslationPhase`'s declaration order is the pipeline order,
 /// which is why it derives `Ord`.
-fn furthest_phase(entry: &ProgressEntry) -> TranslationPhase {
+fn furthest_phase(entry: &LiveUnitProgress) -> TranslationPhase {
     entry
         .phase_history
         .iter()
@@ -586,7 +490,7 @@ fn counted_phase(phase: PipelinePhase, completed: usize, total: usize) -> PhaseP
 /// never count as done.
 fn dll_done_count(
     total_dlls: usize,
-    entries: &HashMap<String, ProgressEntry>,
+    entries: &HashMap<String, LiveUnitProgress>,
     batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
     threshold: TranslationPhase,
     batch_counts: bool,
@@ -618,7 +522,7 @@ fn derive_phases(
     total_dlls: usize,
     classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
     batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
-    entries: &HashMap<String, ProgressEntry>,
+    entries: &HashMap<String, LiveUnitProgress>,
     ingestion_started: bool,
     analyzed: &[BinaryIdentity],
 ) -> Vec<PhaseProgress> {
@@ -730,7 +634,7 @@ fn derive_binaries(
     dll_names: &[BinaryIdentity],
     classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
     batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
-    entries: &HashMap<String, ProgressEntry>,
+    entries: &HashMap<String, LiveUnitProgress>,
     processing: Option<&BinaryIdentity>,
     activity: Option<&(BinaryIdentity, calxgloss_types::BinaryActivity)>,
     scope: Option<&ScopeControl>,
@@ -741,7 +645,7 @@ fn derive_binaries(
             let classification = classifications.get(binary);
             let batch = batch_summaries.get(binary);
 
-            let units: Vec<&ProgressEntry> =
+            let units: Vec<&LiveUnitProgress> =
                 entries.values().filter(|e| e.binary == *binary).collect();
 
             let (functions_translated, functions_failed, functions_total, tokens_used) = match batch
