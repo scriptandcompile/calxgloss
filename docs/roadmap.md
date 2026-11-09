@@ -51,13 +51,13 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-the architecture-review enablers P58–P60, then P56: the honest
-verification verdict (P55) and the padding deletions (P57) have shipped,
-and P58–P60 make P56's surface
-rewrite and 3,097-line test retarget cheap — run P56 first and it
-re-encodes at the new seam the hardcoded-conformance-unknown hazard the
-2026-11-08 review
-flagged. Below P56 sit P61 and P62, the batch protocol and the retry
+the architecture-review enablers P59–P60 (P58 shipped 2026-11-09), then
+P56: the honest verification verdict (P55), the padding deletions (P57)
+and the live-view store (P58) have shipped, and P59–P60 make P56's
+surface rewrite and 3,097-line test retarget cheap — run P56 first and
+it re-encodes at the new seam the hardcoded-conformance-unknown hazard
+the 2026-11-08 review flagged. Below P56 sit P61 and P62, the batch
+protocol and the retry
 settle, on which P27 otherwise builds twice. Then P27's hypothesis ledger
 leads the older tracks again, and the rest of the review's tracks sit
 just ahead of the track that would otherwise pay their duplication twice
@@ -69,7 +69,7 @@ the pipeline header still churning.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ✅ done | all six tickets shipped (#450–#455) | [#449](https://github.com/scriptandcompile/calxgloss/issues/449) |
+| P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ✅ done | Spec #449; tickets #450–#455, closed 2026-11-09 | [#449](https://github.com/scriptandcompile/calxgloss/issues/449) |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
@@ -148,9 +148,11 @@ candidates 1–5 strong and 6–11 worth exploring). They are scheduled
 interleaved, each just ahead of the track that would otherwise pay its
 duplication twice: P57 — first and cheapest, pure subtraction — has
 since shipped: spec #443, tickets #444–#448, ~1,500 padding lines gone,
-and every track that adds a type stops paying a facade line; P58–P60
-ahead of P56,
-which rewrites the same web surface and retargets 3,097 lines of
+and every track that adds a type stops paying a facade line; P58 has
+since shipped too: spec #449, tickets #450–#455, the live-view store
+lifted out of `server/mod.rs` into its own module with the two web-only
+DTOs deleted; P59–P60 ahead of P56, which rewrites the same web surface
+and retargets 3,097 lines of
 conformance tests — running P56 before the shared record-read seam and
 the test adapter would ship the review's unknown-hardcoding hazard
 straight into the retargeted tests; P61 and P62 ahead of P27 (and P61
@@ -550,27 +552,6 @@ then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
 touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431); and, as
 rework cost (2026-11-08 review), by P59 and P60 — the retargeted tests
 and the web payload land on their seam, so P56 runs after them.
-
-## P58 — One live-view store at a real seam (interface + shared)
-
-**One unit's live state crosses three type definitions and two crates,
-and its honesty rules are written three times.** The store —
-`ProgressState`, `ScanRecord`, `ProgressEntry`, `on_event` at
-`calxgloss-web/src/server/mod.rs:356–950` — is 570 lines buried in the
-file that also holds all 69 routes; ADR-0061's unknown-never-zero edge
-and the pass-boundary clear exist twice in Rust and again in browser JS,
-pinned by 185 e2e tests over HTTP and zero unit tests on the store, and
-`/api/progress` demands a required `retry_strategy` String where every
-other surface makes it optional. Extract it to its own module:
-`apply(&ProgressEvent)` in, the shared `LiveTranslationState` out (one
-atomic snapshot; the 8 locks become internal); delete `ProgressInfo` and
-`ScanRecord`; move the route table to its own file. Store rules then get
-direct unit tests — no router, no port, no sleeps — and `mod.rs` drops
-from 1,451 to ~880 lines. The extraction keeps ADR-0061 exactly as
-decided: scan records live in memory and are persisted nowhere. Source:
-candidate 1 (strong). Blocks (as rework, not design): P56 (it builds its
-payload in the same file), P59 (its merge fold consumes the store's
-view).
 
 ## P59 — One review-surface reader over the record tree (shared + interface)
 
