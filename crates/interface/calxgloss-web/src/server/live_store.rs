@@ -746,3 +746,687 @@ fn shared_scan_record(r: &ScanRow) -> LiveScanProgress {
         error: r.error.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests pin down what ADR-0061 decided the store must report
+    // (issue #453). Each test feeds progress events through `apply` and
+    // asserts on the records the store hands back. No router, no port, no
+    // sleeps, no store internals — only the public interface above.
+
+    fn scan_started(binary: &str, scan: &str) -> ProgressEvent {
+        ProgressEvent::EvidenceScanStarted {
+            binary: binary.into(),
+            scan: scan.to_string(),
+        }
+    }
+
+    fn scan_completed(
+        binary: &str,
+        scan: &str,
+        findings: Option<usize>,
+        error: Option<&str>,
+    ) -> ProgressEvent {
+        ProgressEvent::EvidenceScanCompleted {
+            binary: binary.into(),
+            scan: scan.to_string(),
+            elapsed_secs: 2.5,
+            findings,
+            error: error.map(str::to_string),
+        }
+    }
+
+    fn unit_started(binary: &str, function: &str) -> ProgressEvent {
+        ProgressEvent::TranslationStarted {
+            binary: binary.into(),
+            function: function.to_string(),
+        }
+    }
+
+    fn llm_call_started(
+        binary: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+    ) -> ProgressEvent {
+        ProgressEvent::LlmCallStart {
+            binary: binary.into(),
+            function: function.to_string(),
+            attempt,
+            retry_strategy: strategy.to_string(),
+        }
+    }
+
+    fn batch_started(binary: &str) -> ProgressEvent {
+        ProgressEvent::BatchStarted {
+            binary: binary.into(),
+        }
+    }
+
+    fn batch_progress(binary: &str, pass: &str, function: &str) -> ProgressEvent {
+        ProgressEvent::BatchProgress {
+            binary: binary.into(),
+            pass: pass.to_string(),
+            function: function.to_string(),
+            index: 1200,
+            total: 7267,
+        }
+    }
+
+    fn batch_summary(binary: &str) -> ProgressEvent {
+        ProgressEvent::BatchSummary {
+            binary: binary.into(),
+            total_functions: 10,
+            success_count: 9,
+            failure_count: 1,
+            total_attempts: 12,
+            total_tokens: 40_000,
+        }
+    }
+
+    // ── scan-record honesty (ADR-0061, issues #428/#429) ──────────────
+
+    /// The evidence engine reported no single count, so the record carries
+    /// none (issue #429). An unknown count stays unknown, never a zero.
+    #[tokio::test]
+    async fn a_scan_whose_evidence_engine_reported_no_count_keeps_its_findings_unknown_never_zero() {
+        let store = ProgressState::new();
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", None, None))
+            .await;
+
+        let rows = store.scan_view().await;
+        assert_eq!(rows.len(), 1, "the started/completed pair leaves one row");
+        assert!(rows[0].finished, "the completed event landed");
+        assert_eq!(
+            rows[0].findings, None,
+            "an unreported count is absent, never Some(0): {rows:?}"
+        );
+        assert_eq!(
+            rows[0].error, None,
+            "a scan that did not fail names no error"
+        );
+    }
+
+    /// A failed scan is finished *with* its error words and *without* its
+    /// count, so it never reads as a completed scan that found nothing
+    /// (issue #429).
+    #[tokio::test]
+    async fn a_failed_scan_keeps_its_error_words_and_leaves_the_count_unknown() {
+        let store = ProgressState::new();
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        store
+            .apply(&scan_completed(
+                "LaunchPad.exe",
+                "sync",
+                None,
+                Some("the sync evidence engine refused the scan"),
+            ))
+            .await;
+
+        let rows = store.scan_view().await;
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].finished,
+            "the completed event lands even on a failure"
+        );
+        assert_eq!(
+            rows[0].error.as_deref(),
+            Some("the sync evidence engine refused the scan"),
+            "the failure keeps its own words"
+        );
+        assert_eq!(
+            rows[0].findings, None,
+            "a failed scan files no count, so the failure cannot read as zero findings: {rows:?}"
+        );
+    }
+
+    /// Scan records describe the pass in flight: the first scan event for
+    /// a different binary retires the previous binary's rows (issue #428).
+    #[tokio::test]
+    async fn the_first_scan_event_for_a_new_binary_clears_the_previous_binaries_rows() {
+        let store = ProgressState::new();
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", Some(43), None))
+            .await;
+        store
+            .apply(&scan_started("LaunchPad.exe", "call-graph"))
+            .await;
+        store.apply(&scan_started("game_logic.dll", "sync")).await;
+
+        let rows = store.scan_view().await;
+        assert_eq!(rows.len(), 1, "only the new binary's rows remain: {rows:?}");
+        assert_eq!(rows[0].binary.as_str(), "game_logic.dll");
+        assert!(
+            !rows[0].finished,
+            "the new binary's scan is the one running"
+        );
+    }
+
+    /// A re-pass over the same binary keeps each finished row until that
+    /// scan's own started event lands and replaces the record — no earlier
+    /// scan event wipes it (issue #428).
+    #[tokio::test]
+    async fn a_repass_over_the_same_binary_replaces_a_row_only_when_its_started_event_lands() {
+        let store = ProgressState::new();
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", Some(3), None))
+            .await;
+        // Another scan of the same binary starting does not wipe the
+        // finished sync row — its findings stay on the panel.
+        store
+            .apply(&scan_started("LaunchPad.exe", "call-graph"))
+            .await;
+        let rows = store.scan_view().await;
+        assert_eq!(rows.len(), 2);
+        let sync = rows
+            .iter()
+            .find(|r| r.scan == "sync")
+            .expect("sync row kept");
+        assert!(sync.finished, "the previous pass's finished row survives");
+        assert_eq!(sync.findings, Some(3));
+
+        // The sync scan's own started event opens the fresh record.
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        let rows = store.scan_view().await;
+        let sync = rows
+            .iter()
+            .find(|r| r.scan == "sync")
+            .expect("sync row replaced");
+        assert!(!sync.finished, "the re-pass's row is the running one");
+        assert_eq!(sync.findings, None, "the fresh record files no count yet");
+    }
+
+    /// A completed event with no running record for the current binary is
+    /// a dropped event — the panel loses that one story rather than
+    /// inventing a row (issue #428).
+    #[tokio::test]
+    async fn a_completed_scan_with_no_running_record_is_dropped_not_given_a_fabricated_row() {
+        let store = ProgressState::new();
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", Some(9), None))
+            .await;
+        assert!(
+            store.scan_view().await.is_empty(),
+            "a completed with no started event fabricates no row"
+        );
+
+        // Even beside another scan's records, a lone completed for a scan
+        // that never started stays out.
+        store
+            .apply(&scan_started("LaunchPad.exe", "call-graph"))
+            .await;
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", Some(9), None))
+            .await;
+        let rows = store.scan_view().await;
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the started call-graph row is on the panel"
+        );
+        assert_eq!(rows[0].scan, "call-graph");
+    }
+
+    /// Scan events name no unit: they never open a unit record and never
+    /// touch a phase history (ADR-0061, first decision).
+    #[tokio::test]
+    async fn a_scan_event_never_opens_a_unit_record_or_touches_a_phase_history() {
+        let store = ProgressState::new();
+        store.apply(&scan_started("LaunchPad.exe", "sync")).await;
+        store
+            .apply(&scan_completed("LaunchPad.exe", "sync", Some(1), None))
+            .await;
+        assert!(store.is_empty().await, "scan traffic names no unit");
+        assert_eq!(store.len().await, 0);
+        assert!(store.view().await.units.is_empty());
+    }
+
+    // ── heartbeat and processing-binary honesty ───────────────────────
+
+    /// The heartbeat records where the working pass stands — and a new
+    /// started pass makes any earlier heartbeat stale (issue #430).
+    #[tokio::test]
+    async fn a_batch_progress_event_sets_the_heartbeat_and_a_new_started_pass_clears_it() {
+        let store = ProgressState::new();
+        store
+            .apply(&batch_progress(
+                "LaunchPad.exe",
+                "evidence scans",
+                "FUN_1800412a0",
+            ))
+            .await;
+        let (binary, beat) = store.activity().await.expect("the pass is beating");
+        assert_eq!(binary.as_str(), "LaunchPad.exe");
+        assert_eq!(beat.pass, "evidence scans");
+        assert_eq!(beat.function.as_deref(), Some("FUN_1800412a0"));
+        assert_eq!(beat.index, Some(1200));
+        assert_eq!(beat.total, Some(7267));
+        assert!(
+            store.view().await.activity.is_some(),
+            "the heartbeat rides beside the scan rows in the payload"
+        );
+
+        store.apply(&batch_started("game_logic.dll")).await;
+        assert!(
+            store.activity().await.is_none(),
+            "a new pass retires the previous pass's heartbeat"
+        );
+        assert!(store.view().await.activity.is_none());
+    }
+
+    /// A batch summary closes the pass its binary was working, and that
+    /// binary's heartbeat goes with it. A different binary's summary leaves
+    /// the heartbeat alone.
+    #[tokio::test]
+    async fn a_batch_summary_clears_that_binaries_heartbeat_but_leaves_another_binaries() {
+        let store = ProgressState::new();
+        store.apply(&batch_started("LaunchPad.exe")).await;
+        store
+            .apply(&batch_progress("LaunchPad.exe", "call graph", "FUN_1"))
+            .await;
+        store.apply(&batch_summary("game_logic.dll")).await;
+        assert!(
+            store.activity().await.is_some(),
+            "another binary's summary does not close this pass"
+        );
+
+        store.apply(&batch_summary("LaunchPad.exe")).await;
+        assert!(
+            store.activity().await.is_none(),
+            "the working binary's summary ends the heartbeat"
+        );
+    }
+
+    /// One binary's pass is in flight at a time. The started event names
+    /// it, and that binary's summary clears it.
+    #[tokio::test]
+    async fn a_batch_start_names_the_processing_binary_and_that_binaries_summary_clears_it() {
+        let store = ProgressState::new();
+        store.apply(&batch_started("LaunchPad.exe")).await;
+        assert_eq!(
+            store.processing_binary().await.as_deref(),
+            Some("LaunchPad.exe")
+        );
+
+        store.apply(&batch_summary("game_logic.dll")).await;
+        assert_eq!(
+            store.processing_binary().await.as_deref(),
+            Some("LaunchPad.exe"),
+            "another binary's summary does not end this pass"
+        );
+
+        store.apply(&batch_summary("LaunchPad.exe")).await;
+        assert_eq!(
+            store.processing_binary().await,
+            None,
+            "the pass in flight is done once its summary lands"
+        );
+    }
+
+    // ── queue-plan honesty ────────────────────────────────────────────
+
+    /// The plan is the run's intent: a later plan replaces the earlier
+    /// one wholesale, not merged into it.
+    #[tokio::test]
+    async fn a_new_queue_plan_replaces_the_runs_plan_wholesale() {
+        let store = ProgressState::new();
+        store
+            .apply(&ProgressEvent::QueuePlanned {
+                binaries: vec!["LaunchPad.exe".into(), "game_logic.dll".into()],
+            })
+            .await;
+        assert_eq!(store.queue().await, ["LaunchPad.exe", "game_logic.dll"]);
+
+        store
+            .apply(&ProgressEvent::QueuePlanned {
+                binaries: vec!["game_logic.dll".into()],
+            })
+            .await;
+        assert_eq!(
+            store.queue().await,
+            ["game_logic.dll"],
+            "the new plan stands on its own, not appended to the old"
+        );
+    }
+
+    // ── unit-record honesty ───────────────────────────────────────────
+
+    /// Whichever event names a unit first opens its record — dropping that
+    /// event would lose real evidence. A later `TranslationStarted` finds
+    /// the record and never resets it.
+    #[tokio::test]
+    async fn the_first_event_naming_a_unit_opens_its_record_and_a_later_started_event_never_overwrites_it()
+     {
+        let store = ProgressState::new();
+        store
+            .apply(&ProgressEvent::TestsGenerated {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_1".into(),
+                test_count: 5,
+            })
+            .await;
+        let opened = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the tests-generated event opened the record");
+        assert_eq!(
+            opened.baseline,
+            PassStatus::pending(5),
+            "the first event's evidence is kept, not dropped"
+        );
+
+        store
+            .apply(&llm_call_started(
+                "LaunchPad.exe",
+                "FUN_1",
+                3,
+                "tier_escalation",
+            ))
+            .await;
+        store.apply(&unit_started("LaunchPad.exe", "FUN_1")).await;
+
+        let record = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the record survives");
+        assert_eq!(
+            record.attempt, 3,
+            "the late started event does not reset the attempt"
+        );
+        assert_eq!(
+            record.retry_strategy.as_deref(),
+            Some("tier_escalation"),
+            "nor the strategy the third attempt named"
+        );
+        assert_eq!(
+            record.baseline,
+            PassStatus::pending(5),
+            "nor the earlier evidence"
+        );
+        assert!(!record.finished, "a started event is not a terminal event");
+        assert_eq!(store.len().await, 1, "one record per unit, not two");
+    }
+
+    /// The phase history records transitions, not dwell time. More events
+    /// inside the same phase append nothing. A re-entered different phase,
+    /// like a tier escalation landing `ContextTier` again, appends its entry.
+    #[tokio::test]
+    async fn the_phase_history_appends_only_when_the_derived_phase_changes() {
+        let store = ProgressState::new();
+        store.apply(&unit_started("LaunchPad.exe", "FUN_1")).await;
+        store
+            .apply(&ProgressEvent::ScanFetchComplete {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_1".into(),
+                address: None,
+                disassembly_lines: 10,
+            })
+            .await;
+        store
+            .apply(&llm_call_started("LaunchPad.exe", "FUN_1", 1, "direct"))
+            .await;
+        let phases: Vec<TranslationPhase> = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the record exists")
+            .phase_history
+            .iter()
+            .map(|entry| entry.phase)
+            .collect();
+        assert_eq!(
+            phases,
+            vec![
+                TranslationPhase::ScanFetch,
+                TranslationPhase::ApiTagging,
+                TranslationPhase::LlmCall,
+            ]
+        );
+
+        // More events inside the LLM-call phase: the same phase re-derived
+        // is not a transition.
+        store
+            .apply(&ProgressEvent::LlmRequest {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_1".into(),
+                attempt: 1,
+                retry_strategy: "direct".into(),
+                prompt: "…".into(),
+            })
+            .await;
+        store
+            .apply(&ProgressEvent::LlmCallInProgress {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_1".into(),
+                attempt: 1,
+                retry_strategy: "direct".into(),
+                elapsed_secs: 5,
+            })
+            .await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the record exists");
+        assert_eq!(
+            record.phase_history.len(),
+            3,
+            "staying in LlmCall appends nothing"
+        );
+        assert_eq!(record.phase, TranslationPhase::LlmCall);
+
+        // A tier escalation re-derives a *different* phase — the history
+        // records the re-entry so the escalation stays visible.
+        store
+            .apply(&ProgressEvent::ContextTierSelected {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_1".into(),
+                tier: "T2".into(),
+                tier_label: "with_tests".into(),
+                complexity: "High".into(),
+                api_call_count: 3,
+            })
+            .await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the record exists");
+        assert_eq!(
+            record
+                .phase_history
+                .last()
+                .expect("history is never empty")
+                .phase,
+            TranslationPhase::ContextTier,
+            "a re-entered different phase appends"
+        );
+    }
+
+    /// A cancelled unit and a failed unit are both finished and failed —
+    /// their outcome words tell the dashboard which is which (issue #91).
+    #[tokio::test]
+    async fn a_cancelled_unit_and_a_failed_unit_read_apart_by_their_outcome_words() {
+        let store = ProgressState::new();
+        store
+            .apply(&unit_started("LaunchPad.exe", "FUN_cancelled"))
+            .await;
+        store
+            .apply(&llm_call_started(
+                "LaunchPad.exe",
+                "FUN_cancelled",
+                1,
+                "direct",
+            ))
+            .await;
+        store
+            .apply(&ProgressEvent::UnitCancelled {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_cancelled".into(),
+            })
+            .await;
+
+        store
+            .apply(&unit_started("LaunchPad.exe", "FUN_failed"))
+            .await;
+        store
+            .apply(&ProgressEvent::FunctionCompleted {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_failed".into(),
+                success: false,
+                attempts: 3,
+                branch: None,
+            })
+            .await;
+
+        let cancelled = store
+            .entry("LaunchPad.exe", "FUN_cancelled")
+            .await
+            .expect("the cancelled record exists");
+        let failed = store
+            .entry("LaunchPad.exe", "FUN_failed")
+            .await
+            .expect("the failed record exists");
+        assert!(cancelled.finished && failed.finished, "both are terminal");
+        assert_eq!(cancelled.succeeded, Some(false));
+        assert_eq!(failed.succeeded, Some(false));
+        assert_eq!(
+            cancelled.outcome.as_deref(),
+            Some("cancelled"),
+            "the operator cancellation names itself"
+        );
+        assert_eq!(
+            failed.outcome.as_deref(),
+            Some("batch_failed"),
+            "a failed unit names the batch outcome"
+        );
+        assert_ne!(cancelled.outcome, failed.outcome, "the two read apart");
+    }
+
+    /// The two completed events read apart. `TranslationCompleted` records
+    /// that the unit succeeded, with no batch outcome word until the batch
+    /// records one. `FunctionCompleted` records `batch_ok` in the outcome
+    /// field — never in the retry strategy (issue #363).
+    #[tokio::test]
+    async fn a_completed_unit_sets_succeeded_and_its_terminal_word_lands_in_the_outcome_field() {
+        let store = ProgressState::new();
+        store.apply(&unit_started("LaunchPad.exe", "FUN_ok")).await;
+        store
+            .apply(&llm_call_started("LaunchPad.exe", "FUN_ok", 1, "direct"))
+            .await;
+        store
+            .apply(&ProgressEvent::TranslationCompleted {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_ok".into(),
+                total_attempts: 1,
+                success_strategy: Some("direct".into()),
+            })
+            .await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_ok")
+            .await
+            .expect("the record exists");
+        assert!(record.finished, "the completed event is terminal");
+        assert_eq!(record.succeeded, Some(true));
+        assert_eq!(
+            record.outcome, None,
+            "the unit-level completion files no batch outcome word"
+        );
+        assert_eq!(
+            record.retry_strategy.as_deref(),
+            Some("direct"),
+            "the attempt's strategy keeps its own name after the unit is done"
+        );
+
+        store
+            .apply(&ProgressEvent::FunctionCompleted {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_ok".into(),
+                success: true,
+                attempts: 1,
+                branch: None,
+            })
+            .await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_ok")
+            .await
+            .expect("the record exists");
+        assert_eq!(record.succeeded, Some(true));
+        assert_eq!(record.outcome.as_deref(), Some("batch_ok"));
+        assert_eq!(
+            record.retry_strategy.as_deref(),
+            Some("direct"),
+            "the batch outcome never lands under the retry-strategy name"
+        );
+    }
+
+    /// No LLM call has named a strategy yet, so the record hands out none
+    /// — not a blank string that would render as a strategy.
+    #[tokio::test]
+    async fn a_unit_with_no_llm_call_yet_omits_the_retry_strategy() {
+        let store = ProgressState::new();
+        store.apply(&unit_started("LaunchPad.exe", "FUN_1")).await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the started event opened the record");
+        assert_eq!(
+            record.retry_strategy, None,
+            "an unnamed strategy is absent, not blank"
+        );
+
+        store
+            .apply(&llm_call_started("LaunchPad.exe", "FUN_1", 1, "direct"))
+            .await;
+        let record = store
+            .entry("LaunchPad.exe", "FUN_1")
+            .await
+            .expect("the record exists");
+        assert_eq!(record.retry_strategy.as_deref(), Some("direct"));
+    }
+
+    /// The payload's counts describe the served rows. `count` names every
+    /// tracked unit and `in_flight` only the unfinished ones, and the
+    /// status getters agree with both.
+    #[tokio::test]
+    async fn the_unit_count_and_in_flight_count_agree_with_the_served_rows() {
+        let store = ProgressState::new();
+        store
+            .apply(&unit_started("LaunchPad.exe", "FUN_done"))
+            .await;
+        store
+            .apply(&unit_started("LaunchPad.exe", "FUN_running"))
+            .await;
+        store
+            .apply(&ProgressEvent::TranslationCompleted {
+                binary: "LaunchPad.exe".into(),
+                function: "FUN_done".into(),
+                total_attempts: 1,
+                success_strategy: None,
+            })
+            .await;
+
+        let view = store.view().await;
+        assert_eq!(view.units.len(), 2, "both units are served");
+        assert_eq!(view.count, 2, "the count names every tracked unit");
+        assert_eq!(view.in_flight, 1, "only the unfinished unit is in flight");
+        assert_eq!(
+            view.units.iter().filter(|unit| !unit.finished).count(),
+            view.in_flight,
+            "in_flight agrees with the served rows"
+        );
+        assert_eq!(
+            store.len().await,
+            view.count,
+            "the status count matches the payload"
+        );
+        assert_eq!(
+            store.in_flight_count().await,
+            view.in_flight,
+            "the status in-flight count matches the payload"
+        );
+    }
+}
