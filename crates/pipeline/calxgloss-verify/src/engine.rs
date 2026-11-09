@@ -18,13 +18,13 @@ use crate::cargo;
 use crate::helpers::{sanitize_crate_name, sanitize_identifier};
 use crate::parse;
 
-/// Shared PAL stub content, embedded at compile time from `src/pal/src/stub_content.rs`.
-///
-/// This file mirrors the stubs in `stubs.rs`.  The constant is written to
-/// `scratch/pal/src/stub_content.rs` when the first scratch project is
-/// created (and re-written whenever the embedded template has changed), so
-/// the scratch project can `include!` it — which is why it must not carry
-/// `//!` doc comments (E0753 inside a macro expansion).
+/// Shared PAL stub content — the one source of the verify stage's stub
+/// text, embedded at compile time from `src/pal/src/stub_content.rs`.
+/// The constant is written to `scratch/pal/src/stub_content.rs` when the
+/// first scratch project is created (and re-written whenever the embedded
+/// template has changed), so the scratch project can `include!` it —
+/// which is why it must not carry `//!` doc comments (E0753 inside a
+/// macro expansion).
 pub const PAL_STUB_CONTENT: &str = include_str!("pal/src/stub_content.rs");
 
 // ============================================================
@@ -894,7 +894,7 @@ edition = "2021"
         std::fs::write(pal_dir.join("Cargo.toml"), cargo_toml).ok();
 
         // lib.rs that includes the embedded stub content
-        let lib_rs = r#"// Stub content from stubs.rs.
+        let lib_rs = r#"// Stub content embedded from calxgloss-verify's src/pal/src/stub_content.rs.
 include!("stub_content.rs");
 "#;
         std::fs::write(pal_dir.join("src").join("lib.rs"), lib_rs).ok();
@@ -1682,7 +1682,6 @@ enum InputShape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Stubs;
     use crate::{parse_cargo_output, parse_test_line, parse_test_results};
     use std::fs;
 
@@ -2079,13 +2078,6 @@ MYUNIT FUN_1800014a0: mismatch, expected 7 got 8
             ["blit".to_string(), "present".to_string()]
         );
         assert_eq!(report.failed[0].trace_divergence_index, Some(1));
-    }
-
-    #[test]
-    fn test_stubs_all_produces_valid_rust() {
-        let stubs = Stubs::all();
-        assert!(!stubs.is_empty());
-        assert!(stubs.contains("pub trait"));
     }
 
     #[test]

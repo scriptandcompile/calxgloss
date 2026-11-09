@@ -7,7 +7,7 @@
 //! when the translation does not compile. The stub text that rides into
 //! every scaffold is call-stable too.
 //!
-//! Three of these tests scaffold and `cargo check` a real scratch project;
+//! Four of these tests scaffold and `cargo check` a real scratch project;
 //! they follow this crate's convention of hiding compile-backed tests
 //! behind `#[ignore]`:
 //!
@@ -17,7 +17,9 @@
 
 use std::path::{Path, PathBuf};
 
-use calxgloss_verify::{Stubs, Verifier, sanitize_crate_name, sanitize_identifier};
+use calxgloss_verify::{
+    CompileResult, PAL_STUB_CONTENT, Verifier, sanitize_crate_name, sanitize_identifier,
+};
 
 /// The translation under test: comment alignment, unicode, and odd
 /// whitespace all deliberate, because preservation means *these bytes*,
@@ -33,16 +35,6 @@ const TRANSLATION: &str = concat!(
 
 /// The marker the scaffold writes immediately before the translated body.
 const BODY_MARKER: &str = "// ===== Translated function =====\n\n";
-
-/// The stub text rendered into every scaffold is byte-identical call to
-/// call, and non-empty.
-#[test]
-fn the_stub_text_is_byte_identical_call_to_call() {
-    let first = Stubs::all();
-    let second = Stubs::all();
-    assert_eq!(first, second, "two renders of the stub text match exactly");
-    assert!(!first.is_empty(), "the stub text carries the stub content");
-}
 
 /// The name sanitizers are stable call to call and idempotent — feeding a
 /// sanitized name back in changes nothing, so project names cannot drift
@@ -107,11 +99,7 @@ async fn two_scaffolds_of_one_translation_are_byte_identical() {
     let run_b = tempfile::tempdir().expect("second work dir");
 
     for dir in [run_a.path(), run_b.path()] {
-        Verifier::new(dir)
-            .expect("verifier")
-            .compile("fixture_target.dll", "fixture_add", TRANSLATION)
-            .await
-            .expect("the compile check runs");
+        scaffold_in(dir).await;
     }
 
     for file in ["Cargo.toml", "src/lib.rs"] {
@@ -120,6 +108,51 @@ async fn two_scaffolds_of_one_translation_are_byte_identical() {
         assert_eq!(
             a, b,
             "{file} stands byte-identical across two scaffold runs"
+        );
+    }
+}
+
+/// The live stub text is the embedded PAL content the scaffold writes into
+/// every scratch PAL crate. Two scaffold runs write it byte-identical, and
+/// non-empty. The scratch project carrying it compiles, because every
+/// scratch project depends on the PAL crate that holds it.
+#[tokio::test]
+#[ignore = "scaffolds and cargo-checks a scratch project"]
+async fn the_live_stub_text_is_byte_identical_and_compiles_in_a_scaffolded_scratch_project() {
+    let run_a = tempfile::tempdir().expect("first work dir");
+    let run_b = tempfile::tempdir().expect("second work dir");
+
+    let results = [
+        scaffold_in(run_a.path()).await,
+        scaffold_in(run_b.path()).await,
+    ];
+
+    let pal_stub_file = |work: &Path| {
+        let path = work
+            .join("scratch")
+            .join("pal")
+            .join("src")
+            .join("stub_content.rs");
+        std::fs::read(&path).expect("the scaffold wrote the shared PAL crate's stub content")
+    };
+    let first = pal_stub_file(run_a.path());
+    let second = pal_stub_file(run_b.path());
+    assert_eq!(
+        first, second,
+        "two scaffold runs write the stub text byte-identical"
+    );
+    assert!(!first.is_empty(), "the stub text carries the stub content");
+    assert_eq!(
+        first,
+        PAL_STUB_CONTENT.as_bytes(),
+        "the scaffolded PAL crate carries the live embedded stub bytes"
+    );
+
+    for result in results {
+        assert!(
+            result.success,
+            "the scratch project carrying the live stub text compiles: {:?}",
+            result.errors
         );
     }
 }
@@ -154,6 +187,16 @@ async fn a_failing_translation_is_still_preserved_byte_for_byte() {
         body, BROKEN,
         "the failing translation still stands verbatim"
     );
+}
+
+/// Scaffold one scratch project for the fixture translation under `work`,
+/// and hand back the compile-check result beside the files on disk.
+async fn scaffold_in(work: &Path) -> CompileResult {
+    Verifier::new(work)
+        .expect("verifier")
+        .compile("fixture_target.dll", "fixture_add", TRANSLATION)
+        .await
+        .expect("the compile check runs")
 }
 
 /// The one scaffolded scratch project under a verifier's work dir.

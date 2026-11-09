@@ -53,15 +53,13 @@ mod cargo;
 mod engine;
 mod helpers;
 mod parse;
-mod stubs;
 
 pub use calxgloss_types::{
     FailedTest, ShimMappingTestResult, ShimVerificationResult, TestCase, VerificationResult,
 };
-pub use engine::{CompileResult, VerificationRun, Verifier, VerifyContext};
+pub use engine::{CompileResult, PAL_STUB_CONTENT, VerificationRun, Verifier, VerifyContext};
 pub use helpers::{sanitize_crate_name, sanitize_identifier};
 pub use parse::{
     extract_mapping_function, parse_cargo_output, parse_shim_test_results, parse_test_line,
     parse_test_results,
 };
-pub use stubs::Stubs;

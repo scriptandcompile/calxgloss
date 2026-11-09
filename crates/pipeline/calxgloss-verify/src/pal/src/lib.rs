@@ -5,8 +5,9 @@
 // Each project adds a path dependency to this crate and imports
 // everything via `use pal::*;`.
 //
-// Stub content is generated from stubs.rs and embedded via include!.
+// Stub content lives in stub_content.rs beside this file — the one source,
+// embedded into calxgloss-verify and written out by its scaffold.
 
-// Stub content from stubs.rs.
+// Stub content embedded from calxgloss-verify's src/pal/src/stub_content.rs.
 include!("stub_content.rs");
 
