@@ -25,8 +25,8 @@
 use super::actions::{ActionResult, ActionsState, lookup_unit};
 use calxgloss_types::scan::now_unix_secs;
 use calxgloss_types::{
-    EffectiveLedger, PersistError, UnknownActionError, UnknownRecord, UnknownResolution,
-    UnknownResolutions, load_json, read_unknown_ledger, save_json, unknown_resolutions_path,
+    EffectiveLedger, PersistError, UnknownActionError, UnknownRecord, UnknownResolutions,
+    landed_state, load_json, read_unknown_ledger, save_json, unknown_resolutions_path,
 };
 use tracing::info;
 
@@ -135,20 +135,6 @@ enum Disposition<'a> {
 struct CapturedState {
     settled: bool,
     revision: u32,
-}
-
-/// Names the state a refused action found landed, in the wording family the
-/// shared unknown-type and the unit actions' `state_name` both keep: a
-/// record without a settlement reads as open at its current revision, a
-/// settled one names its disposition and the revision it was settled at.
-fn landed_state(record: &UnknownRecord, entry: Option<&UnknownResolution>) -> String {
-    match entry {
-        Some(entry) => format!(
-            "{} at record revision {}",
-            entry.disposition, entry.expected_revision
-        ),
-        None => format!("open at record revision {}", record.revision),
-    }
 }
 
 /// Find the record the action addresses, as the pipeline's ledger files it

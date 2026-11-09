@@ -674,7 +674,9 @@ pub enum UnknownActionError {
 /// Names the landed state a refused settle or reopen found, in the style the
 /// review actions' `state_name` keeps: a missing entry reads as the open
 /// state with the record's current revision, never as an empty string.
-fn landed_state(record: &UnknownRecord, entry: Option<&UnknownResolution>) -> String {
+/// Every refusal that names a landed state calls this function, so the
+/// wording has one source across the workspace (issue #447).
+pub fn landed_state(record: &UnknownRecord, entry: Option<&UnknownResolution>) -> String {
     match entry {
         Some(entry) => format!(
             "{} at record revision {}",

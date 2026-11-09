@@ -197,8 +197,8 @@ pub use unknowns::{
     BinaryUnknownLedger, DECLARED_UNKNOWN_KINDS, EffectiveDisposition, EffectiveLedger,
     JoinedUnknown, UnitUnknown, UnitUnknowns, UnknownActionError, UnknownDisposition, UnknownKind,
     UnknownLedger, UnknownOrigin, UnknownRecord, UnknownResolution, UnknownResolutions,
-    UnknownSeverity, read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir,
-    unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
+    UnknownSeverity, landed_state, read_unknown_ledger, read_unknown_resolutions,
+    unknown_ledger_dir, unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
 };
 pub use verification::{
     DimensionCounts, FailedTest, VerificationReceipt, VerificationResult, VerificationVerdict,
