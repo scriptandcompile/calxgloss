@@ -85,7 +85,7 @@ The unit-detail view that diffs one attempt against another. It compares exactly
 The kept record of prompts and responses the reviewer can read and search. Old entries are honestly absent, not hidden.
 
 **Honest degradation**:
-The standing rule for every surface: a missing or corrupt artifact reads as *no artifact*. An unmeasured value renders blank, never zero.
+The standing rule for every surface: a missing artifact reads as *no artifact*. A corrupt artifact is reported as unreadable with its cause named, never as an absent one (issue #458). An unmeasured value renders blank, never zero.
 
 ### Running and steering
 

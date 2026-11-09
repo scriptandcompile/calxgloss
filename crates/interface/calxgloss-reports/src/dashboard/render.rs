@@ -558,6 +558,14 @@ pub fn render_unit_view(data: &UnitViewData) {
     if let Some(ref strategy) = data.dll_strategy {
         println_content(format!("    Strategy:   {}", strategy));
     }
+    // The binary's classification record is filed but cannot be parsed
+    // (issue #458). The view renders the same honest unknown the unreadable
+    // ledgers use, so a corrupt record never reads as an unclassified binary.
+    if let Some(ref fault) = data.classification_fault {
+        println_content(yellow_bold(&format!(
+            "    Classification: unknown — record unreadable ({fault})"
+        )));
+    }
 
     println_content("");
 

@@ -421,6 +421,63 @@ fn tagged_object_strategy_hydrates_category_and_strategy() {
     );
 }
 
+/// Issue #458: the unit view consults `read_classification_record`. An
+/// unparseable record reaches the view carrying its fault. The view then
+/// says the record cannot be read, instead of showing the binary as
+/// unclassified.
+#[test]
+fn a_corrupt_classification_record_reaches_the_unit_view_as_a_named_fault() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    let classify = git.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("create classify dir");
+    std::fs::write(classify.join("broken.dll.json"), "{ not json")
+        .expect("file an unparseable record");
+
+    let target = ViewTarget {
+        binary: "broken.dll".into(),
+        function: "BrokenFunction".into(),
+        specific_attempt: None,
+    };
+    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
+
+    assert!(
+        view.dll_category.is_none() && view.dll_strategy.is_none(),
+        "an unreadable record invents no category or strategy"
+    );
+    let fault = view
+        .classification_fault
+        .expect("the corrupt record reaches the view carrying its fault");
+    assert!(
+        fault.contains("invalid JSON"),
+        "the fault names why the record cannot be read, got: {fault}"
+    );
+}
+
+/// The other side of the #458 split: with no record filed, the view shows
+/// no classification and no fault. The binary really is unclassified.
+#[test]
+fn a_missing_classification_record_reads_as_no_classification_at_the_unit_view() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+
+    let target = ViewTarget {
+        binary: "never_classified.dll".into(),
+        function: "SomeFunction".into(),
+        specific_attempt: None,
+    };
+    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
+
+    assert!(
+        view.dll_category.is_none() && view.dll_strategy.is_none(),
+        "no record means no category or strategy"
+    );
+    assert!(
+        view.classification_fault.is_none(),
+        "a missing record is not reported as a fault"
+    );
+}
+
 #[test]
 fn sent_back_shim_blocks_dependent_function_unit() {
     let dir = temp_workspace();

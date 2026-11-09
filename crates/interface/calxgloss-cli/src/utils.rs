@@ -106,7 +106,10 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
 /// classification record. A binary whose in-force decision parks it gets a
 /// refusal naming the gap, the detected signal, and the override escape
 /// hatch; anything else passes — including a file that cannot be read or
-/// parsed, which the normal flow reports as its own error.
+/// parsed, which the normal flow reports as its own error. One record is
+/// the exception. The guard consults `read_classification_record`, and a
+/// record that exists but cannot be parsed stops the guard instead of
+/// letting the binary pass as unclassified (issue #458).
 ///
 /// Call it at the command entry points, before the analysis engine loads
 /// and before the LLM client is constructed, so a parked target starts
@@ -145,12 +148,29 @@ pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path
     }
 
     // The persisted record from a previous classify run, consulted only when
-    // the file itself could not answer.
-    if recorded_category(workspace, binary).as_ref() == Some(&DllCategory::DotNetManaged) {
-        return Err(anyhow::anyhow!(parked_refusal(
-            binary,
-            "its classification record says DotNetManaged"
-        )));
+    // the file itself could not answer. `read_classification_record` separates
+    // a missing record from an unreadable one (issue #458). No record
+    // honestly means no persisted answer. A record that cannot be parsed
+    // stops the guard, so the binary never passes on as unclassified.
+    match calxgloss_types::read_classification_record(
+        workspace,
+        &calxgloss_types::BinaryIdentity::new(binary),
+    ) {
+        Ok(record) => {
+            if record.category == Some(DllCategory::DotNetManaged) {
+                return Err(anyhow::anyhow!(parked_refusal(
+                    binary,
+                    "its classification record says DotNetManaged"
+                )));
+            }
+        }
+        Err(calxgloss_types::PersistError::NotFound { .. }) => {}
+        Err(fault) => {
+            return Err(anyhow::anyhow!(
+                "{binary}: cannot read its classification record ({fault}) — run classify \
+                 again to refile it"
+            ));
+        }
     }
 
     Ok(())
@@ -166,30 +186,6 @@ fn parked_refusal(binary: &str, signal: &str) -> String {
          dashboard's classification panel, or re/analysis/classification_overrides.json) \
          to make {binary} translatable again."
     )
-}
-
-/// The category persisted in a binary's classification record
-/// (`re/classify/{sanitized}.json`), if the record exists and names one.
-fn recorded_category(workspace: &Path, binary: &str) -> Option<calxgloss_types::DllCategory> {
-    let sanitized: String = binary
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' => '_',
-            other => other,
-        })
-        .collect();
-    let path = workspace
-        .join("re")
-        .join("classify")
-        .join(format!("{sanitized}.json"));
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|record| {
-            record
-                .get("category")
-                .and_then(|c| serde_json::from_value(c.clone()).ok())
-        })
 }
 
 /// Parse a retry strategy string into a [`RetryStrategy`].
@@ -834,6 +830,29 @@ mod tests {
         let target = dir.path().join("target").join("broken.dll");
         guard_managed_binary(dir.path(), "broken.dll", &target)
             .expect("an unreadable file passes the guard");
+    }
+
+    #[test]
+    fn a_corrupt_classification_record_never_reads_as_unclassified_at_the_guard() {
+        // Issue #458: the guard consults `read_classification_record`, and a
+        // corrupt document comes back saying it cannot be parsed. With the
+        // file unable to answer, the guard reports the broken record. The
+        // binary never passes on as if no record existed.
+        let dir = fixture_workspace(&[]);
+        let target = dir.path().join("target").join("managed_app.dll");
+        std::fs::write(&target, b"not a PE at all").expect("write unparseable target");
+        let classify = dir.path().join("re").join("classify");
+        std::fs::create_dir_all(&classify).expect("classify dir");
+        std::fs::write(classify.join("managed_app.dll.json"), "{ not json")
+            .expect("file an unparseable record");
+
+        let fault = guard_managed_binary(dir.path(), "managed_app.dll", &target)
+            .expect_err("an unreadable record is refused, not read as no record");
+        let message = fault.to_string();
+        assert!(
+            message.contains("cannot read") && message.contains("classification record"),
+            "the guard names the unreadable record, got: {message}"
+        );
     }
 
     // ─── Attempt-branch commit staging (issue #413) ──────────────────

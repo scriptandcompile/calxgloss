@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use calxgloss_git::GitManager;
 use calxgloss_types::BinaryIdentity;
 use calxgloss_types::dashboard::UnitOfWork;
+use calxgloss_types::{PersistError, read_classification_record};
 
 // ============================================================
 // Unit view data types
@@ -42,6 +43,11 @@ pub struct UnitViewData {
     /// Classification data for the DLL.
     pub dll_category: Option<String>,
     pub dll_strategy: Option<String>,
+    /// Set when a filed classification record cannot be read. It carries the
+    /// fault `read_classification_record` reported (issue #458). The render
+    /// shows an unreadable record instead of an unclassified binary. A
+    /// missing record is not a fault, and leaves this field empty.
+    pub classification_fault: Option<String>,
 }
 
 /// Summary of a git diff between branch and main.
@@ -176,8 +182,21 @@ impl UnitViewData {
             (None, None)
         };
 
-        // 7. Get DLL classification data
-        let (dll_category, dll_strategy) = Self::load_classification(repo_path, &target.binary);
+        // 7. Read the binary's classification through `read_classification_record`
+        // (issue #458). This site states the fault policy. A missing record
+        // honestly means no classification. A record that cannot be parsed
+        // reaches the view carrying its fault, and the render shows the
+        // record as unreadable rather than the binary as unclassified.
+        let (dll_category, dll_strategy, classification_fault) =
+            match read_classification_record(repo_path, &target.binary) {
+                Ok(record) => (
+                    record.category.map(|category| format!("{category:?}")),
+                    record.strategy.as_ref().and_then(strategy_name),
+                    None,
+                ),
+                Err(PersistError::NotFound { .. }) => (None, None, None),
+                Err(fault) => (None, None, Some(fault.to_string())),
+            };
 
         Ok(Self {
             target: target.clone(),
@@ -190,6 +209,7 @@ impl UnitViewData {
             baseline_tests_total: baseline_total,
             dll_category,
             dll_strategy,
+            classification_fault,
         })
     }
 
@@ -303,44 +323,16 @@ impl UnitViewData {
         attempts.sort_by_key(|a| a.attempt);
         attempts
     }
+}
 
-    /// Load DLL classification data. `binary` is the binary filename verbatim;
-    /// the record file is `{binary}.json` (issue #68).
-    fn load_classification(repo_path: &Path, binary: &str) -> (Option<String>, Option<String>) {
-        let classify_dir = repo_path.join("re").join("classify");
-        let file_name = format!("{}.json", binary);
-        let path = classify_dir.join(&file_name);
-
-        if !path.exists() {
-            return (None, None);
-        }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return (None, None),
-        };
-
-        #[derive(serde::Deserialize)]
-        struct ClassificationRecord {
-            #[serde(rename = "category")]
-            category: Option<String>,
-            // `Strategy` serializes as an enum: unit variants as bare
-            // strings, crate replacement as a tagged object. Reading it
-            // as a plain string would fail the whole record parse.
-            #[serde(rename = "strategy")]
-            strategy: Option<serde_json::Value>,
-        }
-
-        let record: ClassificationRecord = match serde_json::from_str(&content) {
-            Ok(r) => r,
-            Err(_) => return (None, None),
-        };
-        let strategy = record.strategy.and_then(|s| match s {
-            serde_json::Value::String(s) => Some(s),
-            serde_json::Value::Object(obj) => obj.keys().next().cloned(),
-            _ => None,
-        });
-
-        (record.category, strategy)
+/// The strategy's variant name, as the `classify` command files it: a
+/// bare string (`"PalMapping"`) or, when the strategy carries data, the
+/// single key of a tagged object (`{"CrateReplacement": {…}}`). Reading
+/// it as a plain string would fail the whole record parse.
+fn strategy_name(strategy: &serde_json::Value) -> Option<String> {
+    match strategy {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(obj) => obj.keys().next().cloned(),
+        _ => None,
     }
 }
