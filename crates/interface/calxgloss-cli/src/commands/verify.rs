@@ -37,7 +37,7 @@ pub async fn handle_verify(
         .map(PathBuf::from)
         .or_else(|| Some(TestGenerator::new(workspace).baseline_path(binary, function)));
 
-    let baseline_tests: Vec<calxgloss::TestCase> = match &baseline_path {
+    let baseline_tests: Vec<calxgloss_types::TestCase> = match &baseline_path {
         Some(path) if path.exists() => {
             info!(path = %path.display(), "Loading baseline tests");
             serde_json::from_str(

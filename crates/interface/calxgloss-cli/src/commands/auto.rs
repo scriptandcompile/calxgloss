@@ -9,17 +9,17 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use calxgloss::DllCategory;
-use calxgloss::PipelineRunRequest;
-use calxgloss::ProgressEvent;
-use calxgloss::RunScope;
-use calxgloss::RunTarget;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
 use calxgloss_translator::AcceptedAttemptSource;
 use calxgloss_translator::assembly::BinaryTarget;
 use calxgloss_translator::assembly::assemble;
+use calxgloss_types::DllCategory;
+use calxgloss_types::PipelineRunRequest;
+use calxgloss_types::ProgressEvent;
+use calxgloss_types::RunScope;
+use calxgloss_types::RunTarget;
 use tracing::{info, warn};
 
 use crate::commands::classify::handle_classify;
@@ -506,7 +506,7 @@ pub async fn handle_auto(
     };
     // `phase=Classify` re-runs classification even for already-classified
     // binaries; the default phase leaves the detection logic untouched.
-    let force_classify = run.is_some_and(|r| r.phase == calxgloss::RunPhase::Classify);
+    let force_classify = run.is_some_and(|r| r.phase == calxgloss_types::RunPhase::Classify);
 
     // The workspace record tree comes first (issue #123): `.git` exists
     // before any scan work, so a clean start never leaves the dashboard
@@ -1167,7 +1167,7 @@ mod tests {
 
     // --- the auto run's binary worklist (issue #220) ---------------------
 
-    use calxgloss::{ScopeControl, TranslationEvents};
+    use calxgloss_types::{ScopeControl, TranslationEvents};
     use std::cell::RefCell;
     use std::rc::Rc;
 

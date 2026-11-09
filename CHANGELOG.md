@@ -230,6 +230,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+#### Facade crate (internal)
+
+- **Delete the facade crate `calxgloss`, and the CLI now imports each name from the crate that owns it (#444, track P57)** — the facade existed only to re-export other crates' names, for one consumer: the CLI. Every new shared type anywhere in the workspace forced another `pub use` line there. That file logged 64 changes for that reason alone. The change deletes the crate, its doctest, its entry in the workspace members list, and its entry in the CLI manifest. The CLI already depends directly on every real crate, so each of its imports now names the crate that defines the imported item. All the names the CLI took from the facade are defined in `calxgloss-types`. Spec #443 chose deletion over keeping a smaller facade, so no new entry point appears. Nothing moves at runtime. Any caller left pointing at the deleted crate fails the build.
+
 #### Retry loop (internal)
 
 - **The vacuous divergence probe (#332, track P38)** — both retry branches carried a ~90-line behavior-divergence probe whose edge-case results were fabricated all-true, so the detector that reports only on a failing edge could never fire: the probe was dead arithmetic over pretend inputs. The probes and their fabricated inputs come out; the divergence event, the fault record, and the detector type stay, because the web analytics still parse fault logs and the P22/P25 gate work is where edge results will get real evidence. A verified passing run records zero divergence events and zero divergence faults.

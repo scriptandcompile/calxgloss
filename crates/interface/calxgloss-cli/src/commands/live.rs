@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss::{
+use calxgloss_types::{
     PipelineControl, PipelineRunRequest, PipelineState, RunRequestSignal, StopSignal,
     TranslationEvents, UnitCancellation,
 };
@@ -146,20 +146,20 @@ pub async fn handle_live(
     // #221) emits BinaryPauseChanged on the same broadcast as every
     // other lifecycle operation, so WS clients re-render the row
     // without a reload.
-    let scope_control = calxgloss::ScopeControl::open(&workspace).with_events(events.clone());
+    let scope_control = calxgloss_types::ScopeControl::open(&workspace).with_events(events.clone());
 
     // Per-unit reviewer-override handle (issue #96, W2.7) — opened over
     // the workspace, so the persisted override records are honored from
     // the first context build, and every change through an endpoint
     // re-persists them for the next run.
-    let override_control = calxgloss::OverrideControl::open(&workspace);
+    let override_control = calxgloss_types::OverrideControl::open(&workspace);
 
     // Binary classification-override handle (issue #97, W2.8) — opened
     // over the workspace, so the persisted classification corrections
     // apply to the classify step from its first pass, and every change
     // through an endpoint re-persists them for the next run.
     let classification_override_control =
-        calxgloss::ClassificationOverrideControl::open(&workspace);
+        calxgloss_types::ClassificationOverrideControl::open(&workspace);
 
     // Settings-backed review-actions backend (issue #327): built from
     // the same `pipeline_spec` fold (issue #324) the run's passes go

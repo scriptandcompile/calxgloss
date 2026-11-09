@@ -25,12 +25,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use calxgloss::{
+use calxgloss_translator::assembly::BinaryTarget;
+use calxgloss_translator::assembly::PipelineSpec;
+use calxgloss_types::{
     ClassificationOverrideControl, OverrideControl, PipelineControl, ScopeControl, StopSignal,
     TranslationEvents, UnitCancellation,
 };
-use calxgloss_translator::assembly::BinaryTarget;
-use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_web::LogLevelControl;
 
 use crate::Settings;

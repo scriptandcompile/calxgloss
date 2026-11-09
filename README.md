@@ -189,7 +189,6 @@ to fix this:
 | `calxgloss-verify` | Compile and test verification |
 | `calxgloss-git` | Git branch/commit/merge automation |
 | `calxgloss-reports` | Terminal output formatting |
-| `calxgloss` | Meta-lib, re-exports all public APIs |
 | `calxgloss-cli` | CLI entry point |
 | `calxgloss-web` | Web review UI (REST API, live events, accept/send-back/patch) |
 

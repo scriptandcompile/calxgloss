@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss::ClassificationOverrideControl;
-use calxgloss::ProgressEvent;
-use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
 use calxgloss_git::GitManager;
 use calxgloss_pal::ApiMappings;
+use calxgloss_types::ClassificationOverrideControl;
+use calxgloss_types::ProgressEvent;
+use calxgloss_types::TranslationEvents;
 use tracing::info;
 
 use crate::Settings;

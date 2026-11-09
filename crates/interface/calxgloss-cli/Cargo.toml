@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss = { path = "../../calxgloss" }
 calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
 calxgloss-testgen = { path = "../../pipeline/calxgloss-testgen" }

@@ -112,11 +112,11 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
 /// and before the LLM client is constructed, so a parked target starts
 /// neither.
 pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path) -> Result<()> {
-    use calxgloss::DllCategory;
+    use calxgloss_types::DllCategory;
 
     // The operator's word outranks the PE fact (ADR 0003): an override
     // away from DotNetManaged makes the binary fully translatable again.
-    let overrides = calxgloss::ClassificationOverrideControl::open(workspace);
+    let overrides = calxgloss_types::ClassificationOverrideControl::open(workspace);
     if let Some(o) = overrides.get(binary) {
         if o.category != DllCategory::DotNetManaged {
             return Ok(());
@@ -170,7 +170,7 @@ fn parked_refusal(binary: &str, signal: &str) -> String {
 
 /// The category persisted in a binary's classification record
 /// (`re/classify/{sanitized}.json`), if the record exists and names one.
-fn recorded_category(workspace: &Path, binary: &str) -> Option<calxgloss::DllCategory> {
+fn recorded_category(workspace: &Path, binary: &str) -> Option<calxgloss_types::DllCategory> {
     let sanitized: String = binary
         .chars()
         .map(|c| match c {

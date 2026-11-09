@@ -4,9 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use calxgloss::ContextTier;
-use calxgloss::DllCategory;
-use calxgloss::GitBranch;
 use calxgloss_config::Resolved;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
@@ -14,6 +11,9 @@ use calxgloss_git::GitManager;
 use calxgloss_translator::Translation;
 use calxgloss_translator::assembly::LlmSelection;
 use calxgloss_translator::assembly::assemble;
+use calxgloss_types::ContextTier;
+use calxgloss_types::DllCategory;
+use calxgloss_types::GitBranch;
 use calxgloss_verify::VerificationResult;
 use tracing::{error, info, warn};
 

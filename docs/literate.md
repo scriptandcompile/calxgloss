@@ -9,11 +9,10 @@ references so you can open the span and edit it.*
 
 ## 0. How to read this document
 
-Calxgloss is a Cargo workspace of thirty-four crates in five contexts:
+Calxgloss is a Cargo workspace of thirty-three crates in five contexts:
 
 ```
 crates/
-├── calxgloss/          the meta-lib (one file of re-exports)
 ├── shared/             calxgloss-types, calxgloss-config
 ├── integrations/       calxgloss-decomp, -kuna, -llm, -pal, -prompts,
 │                       -testfixtures

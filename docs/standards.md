@@ -9,9 +9,9 @@ by tooling (`cargo fmt`, clippy, `cargo check`) are not repeated here.
 - One crate per domain concern. Name it `calxgloss-<domain>` (kebab-case) and
   put it in its context directory: `crates/<context>/calxgloss-<domain>`. The
   contexts are the five groups of `GLOSSARY-MAP.md` (pipeline, evidence,
-  integrations, interface, shared). The meta-lib is at `crates/calxgloss`.
-  The `[workspace] members` list in the root `Cargo.toml` contains the
-  meta-lib plus one glob per context.
+  integrations, interface, shared).
+  The `[workspace] members` list in the root `Cargo.toml` contains one
+  glob per context.
 - Package metadata is inherited: `version`, `edition`, `license`, `repository`
   use `workspace = true`. Every crate declares its own `description` — it is
   intentionally not a workspace field.

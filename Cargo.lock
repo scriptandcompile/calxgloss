@@ -330,42 +330,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "calxgloss"
-version = "0.5.0"
-dependencies = [
- "calxgloss-algorithm",
- "calxgloss-analysis",
- "calxgloss-apidetect",
- "calxgloss-bdiff",
- "calxgloss-callback",
- "calxgloss-callgraph",
- "calxgloss-config",
- "calxgloss-consts",
- "calxgloss-controlflow",
- "calxgloss-decomp",
- "calxgloss-errhandling",
- "calxgloss-floatsimd",
- "calxgloss-git",
- "calxgloss-globalstate",
- "calxgloss-kuna",
- "calxgloss-libmatch",
- "calxgloss-llm",
- "calxgloss-memory",
- "calxgloss-pal",
- "calxgloss-prompts",
- "calxgloss-reports",
- "calxgloss-serialize",
- "calxgloss-stringctx",
- "calxgloss-sync",
- "calxgloss-testgen",
- "calxgloss-translator",
- "calxgloss-typeinfer",
- "calxgloss-types",
- "calxgloss-typesdb",
- "calxgloss-verify",
-]
-
-[[package]]
 name = "calxgloss-algorithm"
 version = "0.5.0"
 dependencies = [
@@ -478,7 +442,6 @@ name = "calxgloss-cli"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "calxgloss",
  "calxgloss-algorithm",
  "calxgloss-analysis",
  "calxgloss-apidetect",

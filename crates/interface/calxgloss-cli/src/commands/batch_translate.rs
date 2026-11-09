@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use calxgloss::DllCategory;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
 use calxgloss_translator::assembly::assemble;
+use calxgloss_types::DllCategory;
 use tracing::{info, warn};
 
 use crate::Settings;

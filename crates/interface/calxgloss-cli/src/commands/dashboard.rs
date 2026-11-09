@@ -3,14 +3,14 @@
 //! subcommands.
 
 use anyhow::{Context, Result};
-use calxgloss::ReviewStatus;
-use calxgloss::UnitOfWork;
 use calxgloss_git::GitBranch;
 use calxgloss_git::GitManager;
 use calxgloss_reports::dashboard::{
     DashboardBuilder, UnitViewData, ViewTarget, render_dashboard, render_dashboard_follow,
     render_unit_view,
 };
+use calxgloss_types::ReviewStatus;
+use calxgloss_types::UnitOfWork;
 use tracing::info;
 
 use crate::utils::*;
