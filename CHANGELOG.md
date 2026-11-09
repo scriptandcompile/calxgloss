@@ -242,6 +242,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Delete `calxgloss-sync`'s uncalled setters and dead type aliases, so each sync record keeps one spelling (#446, track P57)** — the sync engine's builder carried seven setters no program path called: `with_futex`, `with_futexes`, `with_futex_detector`, `with_futexes_detector`, `with_futex_runtime`, `with_futex_detection` and `with_async_runtime`. Its persistor carried a `with_cache_dir` constructor read only by its own tests. The crate also re-exported 13 type aliases like `FutexUsage`, `AsyncLoop`, `LockOrdering` and `DataRaceConflict` that nothing spelled outside their own definitions. All of it is gone: the setters, the aliases, and the re-export lines. The real record names — `Futex`, `AsyncRuntime`, `LockOrder`, `DataRace` — are now the only spellings. Setters the scan registry and the crate's tests call stay. A grep record shows every deleted name had no caller, and the workspace suite passed unmodified.
 
+#### Web unknown actions (internal)
+
+- **Delete the web unknown actions' copy of the landed-state naming helper, so one shared function names the state for every surface (#447, track P57)** — the web unknown-actions module held a second `landed_state` function, character-identical to the shared unknowns record module's. A wording change in one file would silently diverge from the other. The shared function is public, the web copy is deleted, and the web action path calls the shared one. A reviewer whose resolve, dismiss or reopen action is refused sees character-for-character the same wording naming the state found landed instead.
+
+#### Serve command banner
+
+- **Delete the serve banner's hand-printed endpoint list, so the startup output states only claims it can keep (#448, track P57)** — `calxgloss serve` printed 14 endpoint lines beside a router registering far more routes; the printed list was already stale. The banner keeps the repository, port, dashboard URL, API root URL and the Ctrl+C stop hint, between the same separators. Generating a complete list from the router's own route data is deliberately deferred to track P58's route table, per spec #443's decision.
+
 #### Retry loop (internal)
 
 - **The vacuous divergence probe (#332, track P38)** — both retry branches carried a ~90-line behavior-divergence probe whose edge-case results were fabricated all-true, so the detector that reports only on a failing edge could never fire: the probe was dead arithmetic over pretend inputs. The probes and their fabricated inputs come out; the divergence event, the fault record, and the detector type stay, because the web analytics still parse fault logs and the P22/P25 gate work is where edge results will get real evidence. A verified passing run records zero divergence events and zero divergence faults.

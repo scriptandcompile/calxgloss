@@ -51,8 +51,9 @@ dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
 has the fail-closed ledger that finally makes "this binary is done" a
 checkable claim instead of "the pipeline stopped with nobody complaining"
 (P26, after its durable-receipt half P25). The front of the table is now
-the architecture-review enablers P57–P60, then P56: the honest
-verification verdict (P55) has shipped, and P57–P60 make P56's surface
+the architecture-review enablers P58–P60, then P56: the honest
+verification verdict (P55) and the padding deletions (P57) have shipped,
+and P58–P60 make P56's surface
 rewrite and 3,097-line test retarget cheap — run P56 first and it
 re-encodes at the new seam the hardcoded-conformance-unknown hazard the
 2026-11-08 review
@@ -68,7 +69,6 @@ the pipeline header still churning.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P57 | Delete the pass-throughs and dead copies — six padding surfaces: the 131-`pub use` facade crate, a 542-line dead stub mirror in `calxgloss-verify`, `calxgloss-sync` setters and aliases nothing calls, a character-identical `landed_state` copy in web, and the hand-printed serve banner already 7 routes stale; ~1,500 lines gone, zero behaviour lost | shared (`calxgloss`, `calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-sync`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | ticketed: #444–#448, all unblocked | [#443](https://github.com/scriptandcompile/calxgloss/issues/443) |
 | P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
@@ -146,8 +146,10 @@ architecture review](reviews/architecture-review-2026-11-08.html)** (two
 codebase walks over the 6-week churn hot spots; the review rated
 candidates 1–5 strong and 6–11 worth exploring). They are scheduled
 interleaved, each just ahead of the track that would otherwise pay its
-duplication twice: P57 first and cheapest — pure subtraction, and every
-track that adds a type stops paying a facade line; P58–P60 ahead of P56,
+duplication twice: P57 — first and cheapest, pure subtraction — has
+since shipped: spec #443, tickets #444–#448, ~1,500 padding lines gone,
+and every track that adds a type stops paying a facade line; P58–P60
+ahead of P56,
 which rewrites the same web surface and retargets 3,097 lines of
 conformance tests — running P56 before the shared record-read seam and
 the test adapter would ship the review's unknown-hardcoding hazard
@@ -548,29 +550,6 @@ then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
 touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431); and, as
 rework cost (2026-11-08 review), by P59 and P60 — the retargeted tests
 and the web payload land on their seam, so P56 runs after them.
-
-## P57 — Delete the pass-throughs and dead copies (shared + pipeline + interface)
-
-**Six surfaces carry pure interface padding.** The facade crate
-`crates/calxgloss/src/lib.rs` (449 lines, 131 `pub use`, one consumer)
-logged 64 changes because every new type needs a line there;
-`calxgloss-verify/src/stubs.rs` (542 lines) is a dead mirror whose live
-copy is `calxgloss-pal/src/stub_content.rs`; `calxgloss-sync` exports 12
-`with_*` setters and 21 type aliases nothing calls;
-`calxgloss-web/src/server/unknown_actions.rs:144–152` duplicates
-`calxgloss-types/src/unknowns.rs:677–685` character-for-character; and
-`calxgloss-cli/src/commands/serve.rs:96–115` hand-prints an endpoint list
-already missing 7 of 71 routes. Straight subtractions: delete the dead
-mirror and the padding, call the shared `landed_state`, generate the
-banner from the route table, and shrink or drop the facade — the CLI
-already depends on the real crates, so the facade either goes or becomes
-real (one assembly entry point, ~10 names) — spec #443 decided it goes
-outright, and the banner's hand-printed list is deleted with the full
-list deferred to P58's route table. ~1,500 lines gone, zero
-behaviour lost, and every remaining track stops paying the facade line
-for each new type. The deletion test passes at each site: removing one
-scatters nothing. Source: 2026-11-08 architecture review, candidate 5
-(strong). Blocks: nothing — the cheapest item, first.
 
 ## P58 — One live-view store at a real seam (interface + shared)
 
