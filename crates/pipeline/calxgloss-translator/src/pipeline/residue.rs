@@ -225,13 +225,26 @@ impl TranslationPipeline {
                 return Ok(());
             }
         };
-        let parked = classification_parks_binary(workspace, binary);
-        // The run's own shared control handles read the persisted scope
-        // and override records, corrupt-record leniency and all: the
-        // filing consults the same documents, by the same key rules,
-        // that queue selection steered itself by this batch.
-        let scope = calxgloss_types::ScopeControl::open(workspace).scope();
-        let overrides = calxgloss_types::OverrideControl::open(workspace);
+        // The filing reads the persisted scope and override documents
+        // through the shared handles' fallible opens (issue #459): the
+        // same documents queue selection steered itself by this batch,
+        // and one whose bytes do not parse stops the filing naming its
+        // fault — a corrupt record never steers dispositions as if it
+        // held nothing.
+        let parked = classification_parks_binary(workspace, binary)?;
+        let scope = calxgloss_types::ScopeControl::try_open(workspace)
+            .map_err(|source| TranslatorError::ReviewRecordUnreadable {
+                binary: binary.to_string(),
+                source,
+            })?
+            .scope();
+        let overrides =
+            calxgloss_types::OverrideControl::try_open(workspace).map_err(|source| {
+                TranslatorError::ReviewRecordUnreadable {
+                    binary: binary.to_string(),
+                    source,
+                }
+            })?;
         let generator = TestGenerator::new(workspace);
         let entries: Vec<calxgloss_types::ObligationEntry> = exports
             .iter()
@@ -303,49 +316,43 @@ impl TranslationPipeline {
 /// nothing and an override alone never parks. Where a record stands,
 /// the operator's classification override record wins over the
 /// record's own category, and only a `DotNetManaged` category parks.
-/// A record that fails to parse declares no category, like every
-/// lenient read of that artifact; the filing never parks a binary on
-/// a guess.
-fn classification_parks_binary(workspace: &std::path::Path, binary: &str) -> bool {
-    // The classify command's own file-name sanitization: the binary
-    // name verbatim, with path separators folded to underscores.
-    let sanitized: String = binary
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' => '_',
-            other => other,
-        })
-        .collect();
-    let path = workspace
-        .join("re")
-        .join("classify")
-        .join(format!("{sanitized}.json"));
-    if !path.is_file() {
-        // No classification record: the dashboard parks no units for
-        // this binary either, and the filing agrees with the reader.
-        return false;
-    }
-    // The classify command writes the category as its serde spelling —
-    // the variant name — so the parked check deserializes that one
-    // field through DllCategory rather than binding the whole record.
-    // Like every lenient read of that artifact, an unreadable record
-    // declares nothing.
-    let record_category = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|record| record.get("category").cloned())
-        .and_then(|category| serde_json::from_value::<calxgloss_types::DllCategory>(category).ok());
-    let override_category = calxgloss_types::load_json::<calxgloss_types::ClassificationOverrides>(
-        &calxgloss_types::classification_override_records_path(workspace),
-    )
-    .ok()
-    .and_then(|overrides| {
-        overrides
+/// Both documents are read through their shared module's read (issue
+/// #459): a never-filed document honestly declares nothing, and a
+/// document whose bytes do not parse is a fault the check hands back:
+/// the filing stops, naming the fault, instead of filing as if no
+/// override had ever stood.
+fn classification_parks_binary(workspace: &std::path::Path, binary: &str) -> Result<bool> {
+    let record_category = match calxgloss_types::read_classification_record(
+        workspace,
+        &calxgloss_types::BinaryIdentity::new(binary),
+    ) {
+        Ok(record) => record.category,
+        Err(calxgloss_types::PersistError::NotFound { .. }) => {
+            // No classification record: the dashboard parks no units for
+            // this binary either, and the filing agrees with the reader.
+            return Ok(false);
+        }
+        Err(source) => {
+            return Err(TranslatorError::ReviewRecordUnreadable {
+                binary: binary.to_string(),
+                source,
+            });
+        }
+    };
+    let override_category = match calxgloss_types::read_classification_overrides(workspace) {
+        Ok(overrides) => overrides
             .overrides
             .get(binary)
-            .map(|record| record.category.clone())
-    });
-    override_category
+            .map(|record| record.category.clone()),
+        Err(calxgloss_types::PersistError::NotFound { .. }) => None,
+        Err(source) => {
+            return Err(TranslatorError::ReviewRecordUnreadable {
+                binary: binary.to_string(),
+                source,
+            });
+        }
+    };
+    Ok(override_category
         .or(record_category)
-        .is_some_and(|category| category == calxgloss_types::DllCategory::DotNetManaged)
+        .is_some_and(|category| category == calxgloss_types::DllCategory::DotNetManaged))
 }

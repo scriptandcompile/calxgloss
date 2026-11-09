@@ -14,6 +14,23 @@ use tracing::info;
 use crate::Settings;
 use crate::utils::*;
 
+/// The override handle the classify path consults: the live run's
+/// shared handle where one was passed, otherwise one opened over the
+/// workspace through the shared module's fallible open (issue #459). A
+/// never-filed document is the clean un-overridden state, while corrupt
+/// bytes stop the command naming their fault — the classification never
+/// runs as if no override had ever stood.
+fn override_handle_or_open(
+    passed: Option<&ClassificationOverrideControl>,
+    workspace: &Path,
+) -> Result<ClassificationOverrideControl> {
+    match passed {
+        Some(control) => Ok(control.clone()),
+        None => ClassificationOverrideControl::try_open(workspace)
+            .with_context(|| "cannot read the classification override records"),
+    }
+}
+
 /// Handle the `classify` subcommand: analyzes DLLs and writes classification records.
 ///
 /// The classification-override handle (issue #97, W2.8) is consulted
@@ -41,9 +58,7 @@ pub async fn handle_classify(
 
     // Initialize analyzer
     let api_mappings = ApiMappings::default();
-    let overrides = classification_overrides
-        .cloned()
-        .unwrap_or_else(|| ClassificationOverrideControl::open(workspace));
+    let overrides = override_handle_or_open(classification_overrides, workspace)?;
     let analyzer = Analyzer::new(calxgloss_decomp::PipelineSource::from(kuna), api_mappings)
         .with_classification_overrides(overrides);
 
@@ -152,4 +167,49 @@ pub async fn handle_classify(
 
     info!(count = classifications.len(), "Classification complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_corrupt_override_document_stops_the_classify_open_naming_the_fault() {
+        // The classify path opens the persisted override document
+        // itself when no live handle stands: corrupt bytes stop the
+        // command naming the document (issue #459).
+        let dir = tempfile::TempDir::new().expect("temp workspace");
+        let analysis = dir.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(analysis.join("classification_overrides.json"), "{ not json")
+            .expect("corrupt the override document");
+
+        let err = override_handle_or_open(None, dir.path())
+            .expect_err("a corrupt document stops the open");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("classification_overrides.json"),
+            "the fault names the unreadable document: {message}"
+        );
+    }
+
+    #[test]
+    fn a_workspace_with_no_override_document_opens_the_clean_handle() {
+        // A never-filed document is the clean un-overridden state —
+        // the command runs with nothing overridden (issue #459).
+        let dir = tempfile::TempDir::new().expect("temp workspace");
+        let control =
+            override_handle_or_open(None, dir.path()).expect("missing is the clean state");
+        assert!(control.records().overrides.is_empty());
+    }
+
+    #[test]
+    fn a_passed_live_handle_is_used_as_is() {
+        // A running server's handle carries the live overrides; the
+        // classify path never re-opens the document underneath it.
+        let control = ClassificationOverrideControl::new();
+        let chosen = override_handle_or_open(Some(&control), Path::new("/nonexistent"))
+            .expect("the live handle is used as is");
+        assert_eq!(chosen.records().overrides, control.records().overrides);
+    }
 }

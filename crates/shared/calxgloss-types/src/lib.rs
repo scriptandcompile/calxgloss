@@ -120,7 +120,7 @@ pub use capture::{
 };
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
-    classification_override_records_path,
+    classification_override_records_path, read_classification_overrides,
 };
 pub use classification_record::{
     ClassificationRecord, classification_record_dir, classification_record_path,
@@ -162,7 +162,8 @@ pub use obligations::{
     obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger,
 };
 pub use overrides::{
-    FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,
+    FunctionOverride, OverrideControl, UnitOverrides, override_records_path, read_unit_overrides,
+    unit_override_key,
 };
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
 pub use pipeline_phase::{
@@ -191,7 +192,7 @@ pub use scenario::{
 };
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,
-    scope_record_path,
+    read_constraints_record, read_scope_record, scope_record_path,
 };
 pub use shim::{
     ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,

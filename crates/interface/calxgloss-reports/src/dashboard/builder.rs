@@ -28,9 +28,9 @@ use calxgloss_types::dashboard::{
 };
 use calxgloss_types::{
     BinaryIdentity, BinaryUnknownLedger, ClassificationOverrides, EffectiveLedger, PersistError,
-    UnitObligation, UnitUnknowns, UnknownRecord, UnknownResolutions,
-    classification_override_records_path, classification_record_dir, read_classification_record,
-    read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir, work_kind_for_prefix,
+    UnitObligation, UnitUnknowns, UnknownRecord, UnknownResolutions, classification_record_dir,
+    read_classification_record, read_unknown_ledger, read_unknown_resolutions, unknown_ledger_dir,
+    work_kind_for_prefix,
 };
 use chrono::Utc;
 
@@ -168,7 +168,7 @@ impl<'a> DashboardBuilder<'a> {
         // `DoNotTranslate` status; the record's reason is kept in
         // `known_gaps` so the queue view can explain the parking.
         let classified = self.read_classification_records();
-        let overrides = self.read_classification_overrides();
+        let overrides = self.read_classification_overrides()?;
         let parked = parked_classifications(&classified, &overrides);
 
         // 3. Read baseline data
@@ -422,13 +422,25 @@ impl<'a> DashboardBuilder<'a> {
         // live records — the same skip set, parked classifications, and
         // unit override records the review surfaces above read (issue
         // #420).
+        // The reviewer unit override record joins the conformance rows
+        // through the shared handle's fallible open: a never-filed
+        // record yields an empty handle that joins nothing, and a
+        // corrupt one stops the build naming the fault (issue #459).
+        let unit_overrides = match calxgloss_types::OverrideControl::try_open(&self.repo_path) {
+            Ok(control) => Some(control),
+            Err(err) => {
+                return Err(
+                    anyhow::Error::from(err).context("reading the reviewer unit override record")
+                );
+            }
+        };
         let conformance_join = super::conformance::ConformanceJoin {
             skipped: skipped_keys.iter().cloned().collect(),
             parked: parked
                 .iter()
                 .map(|(binary, reason)| (binary.as_str(), reason.clone()))
                 .collect(),
-            overrides: Some(calxgloss_types::OverrideControl::open(&self.repo_path)),
+            overrides: unit_overrides,
         };
         dashboard.conformance = super::conformance::derive_binary_conformance(
             self.git,
@@ -627,11 +639,12 @@ impl<'a> DashboardBuilder<'a> {
         read_classification_records(&self.repo_path)
     }
 
-    /// Reads the operator's classification overrides from
-    /// `re/analysis/classification_overrides.json` (written by the web
-    /// classification endpoints). A missing or corrupt file degrades to an
-    /// empty map — no overrides, so the records apply exactly as written.
-    fn read_classification_overrides(&self) -> ClassificationOverrides {
+    /// Reads the operator's classification overrides through the shared
+    /// read (issue #459): a missing document is the clean state — no
+    /// overrides, so the records apply exactly as written — and a corrupt
+    /// one is a fault the build reports, never an empty map that would
+    /// hide reviewer decisions.
+    fn read_classification_overrides(&self) -> Result<ClassificationOverrides, anyhow::Error> {
         read_classification_overrides(&self.repo_path)
     }
 
@@ -861,17 +874,20 @@ pub(crate) fn read_classification_records(workspace: &std::path::Path) -> Vec<Cl
 
 /// Reads the operator's classification overrides from
 /// `re/analysis/classification_overrides.json` (written by the web
-/// classification endpoints). A missing or corrupt file degrades to an
-/// empty map — no overrides, so the records apply exactly as written.
-/// Shared by the builder and the run close's conformance derivation
-/// (issue #423).
+/// classification endpoints) through the shared read (issue #459): a
+/// missing document is `Ok(default)` — no overrides, so the records apply
+/// exactly as written — and a present-but-unreadable one comes back as a
+/// fault naming the document. Shared by the builder and the run close's
+/// conformance derivation (issue #423).
 pub(crate) fn read_classification_overrides(
     workspace: &std::path::Path,
-) -> ClassificationOverrides {
-    let path = classification_override_records_path(workspace);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => ClassificationOverrides::default(),
+) -> Result<ClassificationOverrides, anyhow::Error> {
+    match calxgloss_types::read_classification_overrides(workspace) {
+        Ok(records) => Ok(records),
+        // A never-overridden workspace is the documented clean state:
+        // the records apply exactly as written.
+        Err(PersistError::NotFound { .. }) => Ok(ClassificationOverrides::default()),
+        Err(fault) => Err(anyhow::Error::from(fault)),
     }
 }
 
@@ -2167,7 +2183,8 @@ mod tests {
             .iter()
             .map(|row| row.binary.clone())
             .collect();
-        let run_close = conformance::derive_run_conformance(dir.path(), &binaries);
+        let run_close = conformance::derive_run_conformance(dir.path(), &binaries)
+            .expect("the run close folds its conformance rows");
 
         assert_eq!(run_close.len(), dashboard.conformance.len());
         for (model, close) in dashboard.conformance.iter().zip(&run_close) {
@@ -2212,6 +2229,74 @@ mod tests {
                 .causes
                 .contains(&calxgloss_types::ConformanceUnknownCause::DigestMismatch)),
             "no row reads the envelope-only ledger as an input error"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_unit_override_record_stops_the_dashboard_naming_the_fault() {
+        // The join over reviewer overrides reads through the shared
+        // read: a corrupt record is a fault the build reports, never
+        // an empty join that would hide reviewer decisions (issue #459).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+        std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(
+            calxgloss_types::override_records_path(dir.path()),
+            "{ not json",
+        )
+        .expect("corrupt the override record");
+
+        let err = DashboardBuilder::new(&git)
+            .build()
+            .expect_err("a corrupt override record is a fault, not an empty join");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("unit_overrides.json"),
+            "the fault names the unreadable record: {message}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_classification_override_document_stops_the_dashboard_naming_the_fault() {
+        // Same for the whole-workspace classification override document.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+        std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(
+            calxgloss_types::classification_override_records_path(dir.path()),
+            "{ not json",
+        )
+        .expect("corrupt the override document");
+
+        let err = DashboardBuilder::new(&git)
+            .build()
+            .expect_err("a corrupt override document is a fault, not a default");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("classification_overrides.json"),
+            "the fault names the unreadable document: {message}"
+        );
+    }
+
+    #[test]
+    fn the_run_close_conformance_read_reports_a_corrupt_record_as_a_fault() {
+        // The run close's conformance lines read the same records: a corrupt one
+        // is a fault, matching the model's refusal.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let workspace = dir.path().join("repo");
+        std::fs::create_dir_all(workspace.join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(
+            calxgloss_types::override_records_path(&workspace),
+            "{ not json",
+        )
+        .expect("corrupt the override record");
+
+        let err = conformance::derive_run_conformance(&workspace, &["app.exe".to_string()])
+            .expect_err("a corrupt record stops the fold naming the fault");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("unit_overrides.json"),
+            "the fault names the unreadable record: {message}"
         );
     }
 

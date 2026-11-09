@@ -42,6 +42,38 @@ fn finish_run(control: &PipelineControl, result: &Result<()>) {
     }
 }
 
+/// Open the run's three workspace-backed review handles — the
+/// translation scope, the reviewer's unit overrides, and the
+/// classification overrides — through the shared modules' fallible
+/// opens (issue #459). A never-filed record is the clean, unsteered
+/// state; a record whose bytes do not parse stops the command naming
+/// its fault. The review surfaces this run serves then never have to
+/// guess: corrupt bytes can reach them only as repaired documents,
+/// never as "the reviewer never overrode anything".
+fn open_review_controls(
+    workspace: &std::path::Path,
+    events: &TranslationEvents,
+) -> Result<(
+    calxgloss_types::ScopeControl,
+    calxgloss_types::OverrideControl,
+    calxgloss_types::ClassificationOverrideControl,
+)> {
+    use anyhow::Context;
+    let scope_control = calxgloss_types::ScopeControl::try_open(workspace)
+        .with_context(|| "cannot read the workspace's translation scope records")?
+        .with_events(events.clone());
+    let override_control = calxgloss_types::OverrideControl::try_open(workspace)
+        .with_context(|| "cannot read the workspace's unit override records")?;
+    let classification_override_control =
+        calxgloss_types::ClassificationOverrideControl::try_open(workspace)
+            .with_context(|| "cannot read the workspace's classification override records")?;
+    Ok((
+        scope_control,
+        override_control,
+        classification_override_control,
+    ))
+}
+
 /// Handle the `live` subcommand: start both the auto pipeline and the
 /// web review UI in the same process.
 ///
@@ -145,21 +177,16 @@ pub async fn handle_live(
     // the shared event channel: a per-binary pause or resume (issue
     // #221) emits BinaryPauseChanged on the same broadcast as every
     // other lifecycle operation, so WS clients re-render the row
-    // without a reload.
-    let scope_control = calxgloss_types::ScopeControl::open(&workspace).with_events(events.clone());
-
-    // Per-unit reviewer-override handle (issue #96, W2.7) — opened over
-    // the workspace, so the persisted override records are honored from
-    // the first context build, and every change through an endpoint
-    // re-persists them for the next run.
-    let override_control = calxgloss_types::OverrideControl::open(&workspace);
-
-    // Binary classification-override handle (issue #97, W2.8) — opened
-    // over the workspace, so the persisted classification corrections
-    // apply to the classify step from its first pass, and every change
-    // through an endpoint re-persists them for the next run.
-    let classification_override_control =
-        calxgloss_types::ClassificationOverrideControl::open(&workspace);
+    // without a reload. The per-unit reviewer-override handle (issue
+    // #96, W2.7) and the binary classification-override handle (issue
+    // #97, W2.8) open over the same workspace, honoring the persisted
+    // records from the first pass and re-persisting every endpoint
+    // change. All three open through the shared fallible reads (issue
+    // #459): a corrupt review record stops this command naming its own
+    // fault, so the review surfaces this run serves never see corrupt
+    // bytes as "nothing steered or overridden".
+    let (scope_control, override_control, classification_override_control) =
+        open_review_controls(&workspace, &events)?;
 
     // Settings-backed review-actions backend (issue #327): built from
     // the same `pipeline_spec` fold (issue #324) the run's passes go
@@ -410,5 +437,65 @@ pub async fn handle_live(
             println!();
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_handles_open_clean_over_a_workspace_with_no_review_records() {
+        // A never-filed record is the documented clean state — nothing
+        // steered, nothing overridden (issue #459).
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let events = TranslationEvents::new(8);
+        let (scope, unit_overrides, class_overrides) =
+            open_review_controls(ws.path(), &events).expect("missing records are the clean state");
+        assert!(scope.scope().binaries.is_empty());
+        assert!(unit_overrides.records().overrides.is_empty());
+        assert!(class_overrides.records().overrides.is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_scope_record_stops_the_command_naming_the_fault() {
+        // Corrupt steering never masquerades as unsteered: the live
+        // command stops with the fault the shared read handed back
+        // (issue #459).
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let events = TranslationEvents::new(8);
+        let analysis = ws.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(analysis.join("translation_scope.json"), "{ not json")
+            .expect("corrupt the scope record");
+
+        let err = open_review_controls(ws.path(), &events)
+            .expect_err("a corrupt record stops the command");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("translation_scope.json"),
+            "the fault names the unreadable record: {message}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_override_record_stops_the_command_naming_the_fault() {
+        // Same for the per-unit override record: the live command opens
+        // every review control before serving, and a corrupt one is a
+        // fault, not an empty handle (issue #459).
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+        let events = TranslationEvents::new(8);
+        let analysis = ws.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(analysis.join("unit_overrides.json"), "{ not json")
+            .expect("corrupt the override record");
+
+        let err = open_review_controls(ws.path(), &events)
+            .expect_err("a corrupt record stops the command");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("unit_overrides.json"),
+            "the fault names the unreadable record: {message}"
+        );
     }
 }

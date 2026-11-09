@@ -22,7 +22,8 @@
 //!   selection, so a skip takes effect before a unit ever enters the queue
 //!   plan.
 //!
-//! When the handle is opened over a workspace ([`ScopeControl::open`]) every
+//! When the handle is opened over a workspace
+//! ([`ScopeControl::try_open`]) every
 //! mutation persists the records to `re/analysis/translation_scope.json` and
 //! `re/analysis/translation_constraints.json`, so a restarted run honors
 //! them without re-entering anything. The token spend counter is per-run and
@@ -187,14 +188,35 @@ pub fn constraints_record_path(workspace: impl AsRef<Path>) -> PathBuf {
     analysis_dir(workspace).join("translation_constraints.json")
 }
 
+/// Read the workspace's translation scope record from the record tree.
+///
+/// The faults are named and distinct: no document at the record's path
+/// is [`PersistError::NotFound`], and bytes that do not parse as a
+/// scope are [`PersistError::Json`]. A corrupt record never comes back
+/// as a missing one, and neither reads as "nothing is steered"
+/// (issue #459).
+pub fn read_scope_record(workspace: impl AsRef<Path>) -> Result<TranslationScope, PersistError> {
+    load_json(&scope_record_path(workspace))
+}
+
+/// Read the workspace's translation constraints record from the record
+/// tree, with the same named missing · corrupt split as the scope
+/// record (issue #459).
+pub fn read_constraints_record(
+    workspace: impl AsRef<Path>,
+) -> Result<TranslationConstraints, PersistError> {
+    load_json(&constraints_record_path(workspace))
+}
+
 /// Shared, cheaply-cloneable scope handle (issue #93, W2.5).
 ///
 /// The web router's scope endpoints mutate it; the translator pipeline reads
 /// it at queue selection and at each unit boundary. Clones share the state,
 /// exactly like [`PipelineControl`](crate::PipelineControl). Built with
 /// [`new`](ScopeControl::new) (in-memory only, the plain CLI path) or
-/// [`open`](ScopeControl::open) (loads the workspace's persisted records and
-/// re-persists every mutation).
+/// [`try_open`](ScopeControl::try_open) (loads the workspace's persisted
+/// records, names any corrupt one as a fault, and re-persists every
+/// mutation).
 ///
 /// When built [`with_events`](ScopeControl::with_events), every successful
 /// binary pause/resume emits a
@@ -235,33 +257,27 @@ impl ScopeControl {
         }
     }
 
-    /// Open a handle over a workspace: the persisted records are loaded when
-    /// present (a missing record is an empty scope, not an error — the run
-    /// simply has nothing steered yet), and every mutation re-persists.
-    pub fn open(workspace: impl AsRef<Path>) -> Self {
+    /// Open a handle over a workspace, or name the fault that stopped it.
+    ///
+    /// A missing record is the documented clean state — the run simply
+    /// has nothing steered yet — and yields an empty handle. A corrupt
+    /// record (scope or constraints) is a fault: no handle starts, and
+    /// the named [`PersistError`] comes back to the consumer, so corrupt
+    /// bytes can never masquerade as "nothing is steered" (issue #459).
+    /// Every mutation re-persists.
+    pub fn try_open(workspace: impl AsRef<Path>) -> Result<Self, PersistError> {
         let workspace = workspace.as_ref().to_path_buf();
-        let scope = match load_json(&scope_record_path(&workspace)) {
+        let scope = match read_scope_record(&workspace) {
             Ok(scope) => scope,
             Err(PersistError::NotFound { .. }) => TranslationScope::default(),
-            Err(e) => {
-                // tracing is not a dependency of calxgloss-types (see
-                // dashboard/review.rs) — the corrupt record is named on
-                // stderr, then treated as unsteered.
-                eprintln!("warning: corrupt translation scope record, starting unsteered: {e}");
-                TranslationScope::default()
-            }
+            Err(fault) => return Err(fault),
         };
-        let constraints = match load_json(&constraints_record_path(&workspace)) {
+        let constraints = match read_constraints_record(&workspace) {
             Ok(c) => c,
             Err(PersistError::NotFound { .. }) => TranslationConstraints::default(),
-            Err(e) => {
-                eprintln!(
-                    "warning: corrupt translation constraints record, starting unsteered: {e}"
-                );
-                TranslationConstraints::default()
-            }
+            Err(fault) => return Err(fault),
         };
-        Self {
+        Ok(Self {
             inner: Arc::new(Mutex::new(ScopeState {
                 scope,
                 constraints,
@@ -269,7 +285,21 @@ impl ScopeControl {
                 workspace: Some(workspace),
             })),
             events: None,
-        }
+        })
+    }
+
+    /// Open a handle over a workspace, refusing a corrupt record loudly.
+    ///
+    /// This is the infallible path for fixtures and tests whose records
+    /// are known readable: a corrupt document panics naming the fault,
+    /// instead of being folded into an empty scope inside this module
+    /// (issue #459). Production consumers call
+    /// [`try_open`](Self::try_open) and decide their fallback at the
+    /// call site.
+    pub fn open(workspace: impl AsRef<Path>) -> Self {
+        Self::try_open(workspace).unwrap_or_else(|fault| {
+            panic!("refusing to open the workspace's translation scope records: {fault}")
+        })
     }
 
     /// Emit a [`ProgressEvent::BinaryPauseChanged`] on `events` for every
@@ -471,7 +501,7 @@ impl ScopeControl {
             // The run already honored the focus, so the in-memory clear
             // stands; only a restart could re-honor the stale record. The
             // failure is named on stderr — tracing is not a dependency of
-            // calxgloss-types (see open()'s corrupt-record warning).
+            // calxgloss-types.
             eprintln!("warning: focus consumed but the scope record did not persist: {e}");
         }
         true
@@ -977,6 +1007,126 @@ mod tests {
         assert!(control.scope().skipped_functions.is_empty());
         assert!(control.scope().paused.is_empty());
         assert_eq!(control.constraints().token_budget, None);
+    }
+
+    #[test]
+    fn a_missing_scope_record_reads_as_a_named_missing_fault() {
+        // Missing and corrupt are named apart (issue #417's split, now
+        // carried by the workspace scope record — issue #459).
+        let ws = temp_workspace();
+        let err = read_scope_record(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_scope_record_reads_as_a_named_corrupt_fault() {
+        // Bytes that never parse fail loudly as corrupt — never the
+        // missing fault and never an empty scope (issue #459).
+        let ws = temp_workspace();
+        let path = scope_record_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+
+        let err = read_scope_record(ws.path()).expect_err("bytes that never parse");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "a corrupt record reads as a fault, apart from a missing one: {err}"
+        );
+    }
+
+    #[test]
+    fn a_filed_scope_record_reads_whole_through_the_shared_read() {
+        // What the scope endpoints persist, the shared read hands back —
+        // the whole steer, not a field-by-field guess.
+        let ws = temp_workspace();
+        let control = ScopeControl::open(ws.path());
+        control
+            .skip_function("game_logic.dll", "DrawPrimitive")
+            .expect("skip persists");
+        control
+            .pause_binary("game_logic.dll")
+            .expect("pause persists");
+        control.set_focus("game_logic.dll").expect("focus persists");
+
+        let scope = read_scope_record(ws.path()).expect("the filed record reads");
+        assert_eq!(scope, control.scope(), "the whole scope reads back");
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_constraints_record_reads_as_its_named_fault() {
+        // The constraints record keeps the same named-fault split as the
+        // scope record (issue #459).
+        let ws = temp_workspace();
+        let err = read_constraints_record(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+
+        let path = constraints_record_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+        let err = read_constraints_record(ws.path()).expect_err("bytes that never parse");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "a corrupt record reads as a fault, apart from a missing one: {err}"
+        );
+    }
+
+    #[test]
+    fn try_open_names_the_corrupt_fault_instead_of_starting_unsteered() {
+        // The silent in-module default is gone (issue #459): corrupt
+        // bytes reach the consumer as the fault they are, in either of
+        // the two records the handle loads.
+        let ws = temp_workspace();
+        let scope_path = scope_record_path(ws.path());
+        std::fs::create_dir_all(scope_path.parent().expect("analysis dir"))
+            .expect("create re/analysis");
+        std::fs::write(&scope_path, "{ not json").expect("corrupt the scope record");
+
+        let err = ScopeControl::try_open(ws.path()).expect_err("a corrupt record starts no handle");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "the corrupt fault reaches the consumer: {err}"
+        );
+
+        let ws = temp_workspace();
+        let constraints_path = constraints_record_path(ws.path());
+        std::fs::create_dir_all(constraints_path.parent().expect("analysis dir"))
+            .expect("create re/analysis");
+        std::fs::write(&constraints_path, "{ not json").expect("corrupt the constraints record");
+
+        let err = ScopeControl::try_open(ws.path()).expect_err("a corrupt record starts no handle");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "the corrupt constraints fault reaches the consumer: {err}"
+        );
+    }
+
+    #[test]
+    fn try_open_over_a_never_steered_workspace_is_the_clean_empty_state() {
+        // Missing stays the documented clean state — nothing steered
+        // yet — pinned apart from the corrupt fault (issue #459).
+        let ws = temp_workspace();
+        let control = ScopeControl::try_open(ws.path()).expect("a missing record is clean");
+        assert!(control.scope().binaries.is_empty());
+        assert_eq!(control.constraints().token_budget, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "refusing to open the workspace's translation scope records")]
+    fn open_names_the_corrupt_fault_rather_than_serving_an_empty_handle() {
+        // The infallible open stays infallible only over readable and
+        // missing records: corrupt bytes stop it and name the fault
+        // instead of handing back an empty handle (issue #459).
+        let ws = temp_workspace();
+        let path = scope_record_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the record");
+        let _ = ScopeControl::open(ws.path());
     }
 
     #[test]

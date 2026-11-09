@@ -755,9 +755,10 @@ pub async fn handle_auto(
     // obligation ledger joined with branch state, receipts, Accept
     // actions, and open unknowns. The terminal dashboard prints the same
     // lines from its own copy of that model. A target with no filed
-    // obligation ledger reads as *unknown* here, never as a clean run, and
-    // a broken read never fails the close.
-    calxgloss_reports::dashboard::print_run_conformance_audit(&workspace, &close_targets);
+    // obligation ledger reads as *unknown* here, never as a clean run,
+    // and a review record that cannot be read stops the close naming
+    // the fault (issue #459).
+    calxgloss_reports::dashboard::print_run_conformance_audit(&workspace, &close_targets)?;
 
     Ok(())
 }

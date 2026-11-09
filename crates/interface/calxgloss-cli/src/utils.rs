@@ -109,7 +109,10 @@ pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf
 /// parsed, which the normal flow reports as its own error. One record is
 /// the exception. The guard consults `read_classification_record`, and a
 /// record that exists but cannot be parsed stops the guard instead of
-/// letting the binary pass as unclassified (issue #458).
+/// letting the binary pass as unclassified (issue #458). The operator's
+/// override document is consulted the same way through its own shared
+/// read (issue #459): only a never-filed document means nothing is
+/// overridden, and corrupt bytes stop the guard naming their fault.
 ///
 /// Call it at the command entry points, before the analysis engine loads
 /// and before the LLM client is constructed, so a parked target starts
@@ -119,8 +122,24 @@ pub(super) fn guard_managed_binary(workspace: &Path, binary: &str, target: &Path
 
     // The operator's word outranks the PE fact (ADR 0003): an override
     // away from DotNetManaged makes the binary fully translatable again.
-    let overrides = calxgloss_types::ClassificationOverrideControl::open(workspace);
-    if let Some(o) = overrides.get(binary) {
+    // The override document is read through its shared module's read
+    // (issue #459): a never-filed document honestly means nothing
+    // overridden, while corrupt bytes stop the guard naming their
+    // fault — broken bytes never read as "the reviewer never overrode
+    // anything".
+    let overrides = match calxgloss_types::read_classification_overrides(workspace) {
+        Ok(overrides) => overrides,
+        Err(calxgloss_types::PersistError::NotFound { .. }) => {
+            calxgloss_types::ClassificationOverrides::default()
+        }
+        Err(fault) => {
+            return Err(anyhow::anyhow!(
+                "{binary}: cannot read the classification override records ({fault}) — repair \
+                 or remove re/analysis/classification_overrides.json before translating"
+            ));
+        }
+    };
+    if let Some(o) = overrides.overrides.get(binary) {
         if o.category != DllCategory::DotNetManaged {
             return Ok(());
         }
@@ -778,6 +797,26 @@ mod tests {
 
         guard_managed_binary(dir.path(), "managed_app.dll", &target)
             .expect("an overridden-away binary passes the guard");
+    }
+
+    #[test]
+    fn guard_stops_on_a_corrupt_override_document_naming_the_fault() {
+        // Corrupt override bytes never read as "the reviewer never
+        // overrode anything": the guard refuses and names the fault
+        // (issue #459).
+        let dir = fixture_workspace(&[("game_logic.dll", false)]);
+        let analysis = dir.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(analysis.join("classification_overrides.json"), "{ not json")
+            .expect("corrupt the override document");
+        let target = dir.path().join("target").join("game_logic.dll");
+
+        let err = guard_managed_binary(dir.path(), "game_logic.dll", &target)
+            .expect_err("a corrupt override document stops the guard");
+        assert!(
+            err.to_string().contains("classification_overrides.json"),
+            "the refusal names the unreadable document: {err}"
+        );
     }
 
     #[test]

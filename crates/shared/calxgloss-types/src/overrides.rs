@@ -24,7 +24,7 @@
 //!
 //! Records are keyed by unit key (`{binary}/{function}`, the same identity
 //! [`UnitKey`](crate::UnitKey) describes). When the handle is opened over a
-//! workspace ([`OverrideControl::open`]) every change saves the map to
+//! workspace ([`OverrideControl::try_open`]) every change saves the map to
 //! `re/analysis/unit_overrides.json`, so a restarted run honors the
 //! overrides without re-entering anything.
 
@@ -98,14 +98,26 @@ pub fn override_records_path(workspace: impl AsRef<Path>) -> PathBuf {
     analysis_dir(workspace).join("unit_overrides.json")
 }
 
+/// Read the reviewer's per-unit override document from the record tree.
+///
+/// The faults are named and distinct: no document at the record's path
+/// is [`PersistError::NotFound`], and bytes that do not parse as an
+/// override map are [`PersistError::Json`]. A corrupt document never
+/// comes back as a missing one, and neither reads as "the reviewer
+/// never overrode anything" (issue #459).
+pub fn read_unit_overrides(workspace: impl AsRef<Path>) -> Result<UnitOverrides, PersistError> {
+    load_json(&override_records_path(workspace))
+}
+
 /// A shared, cheaply cloneable per-unit override handle (issue #96, W2.7).
 ///
 /// The web router's override endpoints change it; the translator pipeline
 /// reads it in the context builder and at queue selection. Clones share the
 /// state, exactly like [`ScopeControl`](crate::ScopeControl). Build it with
 /// [`new`](OverrideControl::new) (in-memory only, the plain CLI path) or
-/// [`open`](OverrideControl::open) (loads the workspace's persisted records
-/// and saves every later change).
+/// [`try_open`](OverrideControl::try_open) (loads the workspace's persisted
+/// records, names any corrupt one as a fault, and saves every later
+/// change).
 #[derive(Debug, Clone)]
 pub struct OverrideControl {
     inner: Arc<Mutex<OverrideState>>,
@@ -129,29 +141,41 @@ impl OverrideControl {
         }
     }
 
-    /// Open a handle over a workspace. The persisted override map is loaded
-    /// when present (a missing record is an empty map, not an error — the
-    /// run simply has nothing overridden yet), and every later change is
-    /// saved again.
-    pub fn open(workspace: impl AsRef<Path>) -> Self {
+    /// Open a handle over a workspace, or name the fault that stopped it.
+    ///
+    /// A missing record is the documented clean state — the run simply
+    /// has nothing overridden yet — and yields an empty handle. A
+    /// corrupt record is a fault: no handle starts, and the named
+    /// [`PersistError`] comes back to the consumer, so corrupt bytes can
+    /// never masquerade as "the reviewer never overrode anything"
+    /// (issue #459). Every later change is saved again.
+    pub fn try_open(workspace: impl AsRef<Path>) -> Result<Self, PersistError> {
         let workspace = workspace.as_ref().to_path_buf();
-        let records = match load_json(&override_records_path(&workspace)) {
+        let records = match read_unit_overrides(&workspace) {
             Ok(records) => records,
             Err(PersistError::NotFound { .. }) => UnitOverrides::default(),
-            Err(e) => {
-                // tracing is not a dependency of calxgloss-types (see
-                // dashboard/review.rs). The corrupt record is named on
-                // stderr, then treated as no override at all.
-                eprintln!("warning: corrupt unit override records, starting unsteered: {e}");
-                UnitOverrides::default()
-            }
+            Err(fault) => return Err(fault),
         };
-        Self {
+        Ok(Self {
             inner: Arc::new(Mutex::new(OverrideState {
                 records,
                 workspace: Some(workspace),
             })),
-        }
+        })
+    }
+
+    /// Open a handle over a workspace, refusing a corrupt record loudly.
+    ///
+    /// This is the infallible path for fixtures and tests whose records
+    /// are known readable: a corrupt document panics naming the fault,
+    /// instead of being folded into an empty map inside this module
+    /// (issue #459). Production consumers call
+    /// [`try_open`](Self::try_open) and decide their fallback at the
+    /// call site.
+    pub fn open(workspace: impl AsRef<Path>) -> Self {
+        Self::try_open(workspace).unwrap_or_else(|fault| {
+            panic!("refusing to open the workspace's unit override records: {fault}")
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, OverrideState> {
@@ -490,5 +514,94 @@ mod tests {
         let control = OverrideControl::open(ws.path());
         assert!(control.records().overrides.is_empty());
         assert!(control.get("game_logic.dll", "DrawPrimitive").is_none());
+    }
+
+    #[test]
+    fn a_missing_override_document_reads_as_a_named_missing_fault() {
+        // Missing and corrupt are named apart (issue #417's split, now
+        // carried by the unit override document — issue #459).
+        let ws = temp_workspace();
+        let err = read_unit_overrides(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_override_document_reads_as_a_named_corrupt_fault() {
+        // Bytes that never parse fail loudly as corrupt — never the
+        // missing fault and never an empty map (issue #459).
+        let ws = temp_workspace();
+        let path = override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+
+        let err = read_unit_overrides(ws.path()).expect_err("bytes that never parse");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "a corrupt record reads as a fault, apart from a missing one: {err}"
+        );
+    }
+
+    #[test]
+    fn a_filed_override_document_reads_whole_through_the_shared_read() {
+        // What the override endpoints file, the shared read hands back.
+        let ws = temp_workspace();
+        let control = OverrideControl::open(ws.path());
+        control
+            .set(
+                "game_logic.dll",
+                "DrawPrimitive",
+                FunctionOverride {
+                    tier_override: Some(ContextTier::Disassembly),
+                    skip: true,
+                    ..Default::default()
+                },
+            )
+            .expect("override persists");
+
+        let records = read_unit_overrides(ws.path()).expect("the filed document reads");
+        assert_eq!(records, control.records(), "the whole map reads back");
+    }
+
+    #[test]
+    fn try_open_names_the_corrupt_fault_instead_of_starting_unsteered() {
+        // The silent in-module default is gone (issue #459): corrupt
+        // bytes reach the consumer as the fault they are.
+        let ws = temp_workspace();
+        let path = override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+
+        let err =
+            OverrideControl::try_open(ws.path()).expect_err("a corrupt document starts no handle");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "the corrupt fault reaches the consumer: {err}"
+        );
+    }
+
+    #[test]
+    fn try_open_over_a_never_steered_workspace_is_the_clean_empty_state() {
+        // Missing stays the documented clean state — nothing steered
+        // yet — pinned apart from the corrupt fault (issue #459).
+        let ws = temp_workspace();
+        let control = OverrideControl::try_open(ws.path()).expect("a missing record is clean");
+        assert!(control.records().overrides.is_empty());
+        assert!(control.get("game_logic.dll", "DrawPrimitive").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "refusing to open the workspace's unit override records")]
+    fn open_names_the_corrupt_fault_rather_than_serving_an_empty_handle() {
+        // The infallible open stays infallible only over readable and
+        // missing records: corrupt bytes stop it and name the fault
+        // instead of handing back an empty handle (issue #459).
+        let ws = temp_workspace();
+        let path = override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+        let _ = OverrideControl::open(ws.path());
     }
 }

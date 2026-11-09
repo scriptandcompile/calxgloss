@@ -6842,6 +6842,116 @@ async fn a_parked_classification_parks_the_roster_until_an_override_reopens_it()
     );
 }
 
+/// A corrupt review document stops the obligation filing instead of
+/// steering it: the parked check reads the classification record and the
+/// reviewer's override document through the shared named-fault reads, and
+/// bytes that do not parse make the batch refuse, naming the fault —
+/// never continue as if no override stood (issue #459, AC 4).
+#[tokio::test]
+async fn a_corrupt_classification_override_document_stops_the_batch_naming_the_fault() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    stage_document(
+        dir.path()
+            .join("re")
+            .join("classify")
+            .join(format!("{PROGRAM}.json")),
+        serde_json::json!({
+            "name": PROGRAM,
+            "category": "DotNetManaged",
+            "reason": "managed assembly: metadata, not machine code",
+        }),
+    );
+    let overrides = calxgloss_types::classification_override_records_path(dir.path());
+    std::fs::create_dir_all(overrides.parent().expect("analysis dir")).expect("analysis dir");
+    std::fs::write(&overrides, "{ not json").expect("corrupt the override document");
+
+    let err = pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect_err("a corrupt override document stops the batch");
+    let message = err.to_string();
+    assert!(
+        message.contains("classification_overrides.json"),
+        "the refusal names the unreadable document: {message}"
+    );
+    assert!(
+        !calxgloss_types::obligation_ledger_path(
+            dir.path(),
+            &calxgloss_types::BinaryIdentity::new(PROGRAM)
+        )
+        .is_file(),
+        "the refusal files no ledger on a guess"
+    );
+}
+
+/// The same refusal over the reviewer's per-unit override record: the
+/// filing consults it through the shared read, and corrupt bytes stop
+/// the batch naming their own path (issue #459).
+#[tokio::test]
+async fn a_corrupt_unit_override_record_stops_the_batch_naming_the_fault() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let record = calxgloss_types::override_records_path(dir.path());
+    std::fs::create_dir_all(record.parent().expect("analysis dir")).expect("analysis dir");
+    std::fs::write(&record, "{ not json").expect("corrupt the unit override record");
+
+    let err = pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect_err("a corrupt unit override record stops the batch");
+    assert!(
+        err.to_string().contains("unit_overrides.json"),
+        "the refusal names the unreadable record: {err}"
+    );
+}
+
+/// The batch also stops on a corrupt workspace scope record: a corrupt scope stops the
+/// batch too — the dispositions it files are steered by that record,
+/// so unreadable steering is a refusal, not an unsteered default
+/// (issue #459).
+#[tokio::test]
+async fn a_corrupt_translation_scope_record_stops_the_batch_naming_the_fault() {
+    let dir = TempDir::new().expect("temp workspace");
+    let (pipeline, _binary_file) = cached_pipeline(dir.path());
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let record = calxgloss_types::scope_record_path(dir.path());
+    std::fs::create_dir_all(record.parent().expect("analysis dir")).expect("analysis dir");
+    std::fs::write(&record, "{ not json").expect("corrupt the scope record");
+
+    let err = pipeline
+        .batch_translate(
+            PROGRAM,
+            &[],
+            &retry::RetryConfig::default(),
+            &verifier,
+            None,
+        )
+        .await
+        .expect_err("a corrupt scope record stops the batch");
+    assert!(
+        err.to_string().contains("translation_scope.json"),
+        "the refusal names the unreadable record: {err}"
+    );
+}
+
 /// A standing unit override record stamps *overridden*: the reviewer
 /// overruled a system judgment about that unit, and overruling is its
 /// own honest fact — the peers keep theirs (issue #422).

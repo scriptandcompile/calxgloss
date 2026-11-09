@@ -121,16 +121,30 @@ pub fn derive_binary_conformance(
 /// fails. Binaries are printed in the order named, deduplicated through
 /// the same verbatim-unique walk as [`derive_binary_unknown_ledgers`], so
 /// the two run-close sections key the same binaries by the same words.
-pub fn derive_run_conformance(workspace: &Path, binaries: &[String]) -> Vec<BinaryConformance> {
+pub fn derive_run_conformance(
+    workspace: &Path,
+    binaries: &[String],
+) -> anyhow::Result<Vec<BinaryConformance>> {
     let git = calxgloss_git::GitManager::open(workspace).ok();
     let unknown_rows = super::audit::derive_binary_unknown_ledgers(workspace, binaries);
     // The join reads the reviewer's live records through the same reader
     // functions the dashboard builder calls — one skip set, one
     // classification park-list, one override handle — so the two readers
-    // cannot decide a unit's disposition differently (issue #423).
+    // cannot decide a unit's disposition differently (issue #423). A
+    // record that cannot be read stops the close's conformance lines
+    // naming the fault; a never-filed record joins nothing, as the
+    // clean state (issue #459).
     let classified = super::builder::read_classification_records(workspace);
-    let class_overrides = super::builder::read_classification_overrides(workspace);
+    let class_overrides = super::builder::read_classification_overrides(workspace)?;
     let parked_map = super::builder::parked_classifications(&classified, &class_overrides);
+    let unit_overrides = match calxgloss_types::OverrideControl::try_open(workspace) {
+        Ok(control) => Some(control),
+        Err(err) => {
+            return Err(
+                anyhow::Error::from(err).context("reading the reviewer unit override record")
+            );
+        }
+    };
     let join = ConformanceJoin {
         skipped: super::builder::read_review_skips(workspace)
             .into_iter()
@@ -139,7 +153,7 @@ pub fn derive_run_conformance(workspace: &Path, binaries: &[String]) -> Vec<Bina
             .iter()
             .map(|(binary, reason)| (binary.as_str(), reason.clone()))
             .collect(),
-        overrides: Some(calxgloss_types::OverrideControl::open(workspace)),
+        overrides: unit_overrides,
     };
     let mut rows = Vec::new();
     for binary in super::audit::dedupe_verbatim(binaries) {
@@ -151,33 +165,35 @@ pub fn derive_run_conformance(workspace: &Path, binaries: &[String]) -> Vec<Bina
             &join,
         ));
     }
-    rows
+    Ok(rows)
 }
 
 /// The run-close conformance section as lines — the header, then every
 /// named binary's row, derived from the same reading the dashboard builder
 /// carries (issue #423). A run close with no target binaries produces no
 /// lines at all — the same shape the audit-ledger section keeps.
-pub fn run_conformance_lines(workspace: &Path, binaries: &[String]) -> Vec<String> {
+pub fn run_conformance_lines(workspace: &Path, binaries: &[String]) -> anyhow::Result<Vec<String>> {
     if binaries.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let rows = derive_run_conformance(workspace, binaries);
+    let rows = derive_run_conformance(workspace, binaries)?;
     let mut lines = vec![conformance_header(), String::new()];
     for row in &rows {
         lines.extend(conformance_lines(row));
         lines.push(String::new());
     }
-    lines
+    Ok(lines)
 }
 
 /// Print the run-close conformance section: the same lines
 /// [`run_conformance_lines`] derives, content-padded like every other
-/// dashboard surface (issue #423).
-pub fn print_run_conformance_audit(workspace: &Path, binaries: &[String]) {
-    for line in run_conformance_lines(workspace, binaries) {
+/// dashboard surface (issue #423). A review record that cannot be read
+/// stops the section naming the fault (issue #459).
+pub fn print_run_conformance_audit(workspace: &Path, binaries: &[String]) -> anyhow::Result<()> {
+    for line in run_conformance_lines(workspace, binaries)? {
         println_content(line);
     }
+    Ok(())
 }
 
 /// How one green claim (a *claimed-verified* entry) reads when its
@@ -1189,7 +1205,8 @@ mod tests {
         // workspace is not even a git repository, so the degradation is
         // total and quiet.
         let dir = tempfile::tempdir().expect("temp dir");
-        let lines = run_conformance_lines(dir.path(), &["game_logic.dll".to_string()]);
+        let lines = run_conformance_lines(dir.path(), &["game_logic.dll".to_string()])
+            .expect("the close section derives its lines");
         assert_eq!(lines[0], conformance_header());
         let joined = lines
             .iter()
@@ -1231,7 +1248,8 @@ mod tests {
             &ledger,
         )
         .expect("file the ledger");
-        let rows = derive_run_conformance(dir.path(), &["game_logic.dll".to_string()]);
+        let rows = derive_run_conformance(dir.path(), &["game_logic.dll".to_string()])
+            .expect("the close still derives its row");
         assert_eq!(rows.len(), 1, "the close still derives its row");
         assert_eq!(rows[0].verdict, ConformanceVerdict::Unknown);
         assert_eq!(
@@ -1266,7 +1284,8 @@ mod tests {
                 .collect()
         };
         let unknown = super::super::audit::run_audit_ledger_lines(dir.path(), &targets);
-        let conformance = run_conformance_lines(dir.path(), &targets);
+        let conformance = run_conformance_lines(dir.path(), &targets)
+            .expect("the close section derives its lines");
         assert_eq!(
             keys_in(&conformance),
             keys_in(&unknown),
@@ -1277,7 +1296,11 @@ mod tests {
             vec!["keyless_engine.dll", "game_logic.dll"],
             "named order, duplicate once"
         );
-        assert!(run_conformance_lines(dir.path(), &[]).is_empty());
+        assert!(
+            run_conformance_lines(dir.path(), &[])
+                .expect("no named binaries is no lines")
+                .is_empty()
+        );
     }
 
     #[test]

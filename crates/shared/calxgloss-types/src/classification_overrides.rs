@@ -25,7 +25,8 @@
 //! identity [`BinaryIdentity`](crate::BinaryIdentity) describes. Unlike the
 //! per-unit override keys, the match is exact: two spellings of a filename
 //! are two different binaries unless the operator overrides them separately.
-//! When the handle is opened over a workspace ([`ClassificationOverrideControl::open`])
+//! When the handle is opened over a workspace
+//! ([`ClassificationOverrideControl::try_open`])
 //! every change saves the map to `re/analysis/classification_overrides.json`,
 //! so a restarted run honors the overrides without re-entering anything.
 
@@ -122,14 +123,29 @@ pub fn classification_override_records_path(workspace: impl AsRef<Path>) -> Path
     analysis_dir(workspace).join("classification_overrides.json")
 }
 
+/// Read the operator's classification override document from the record
+/// tree.
+///
+/// The faults are named and distinct: no document at the record's path
+/// is [`PersistError::NotFound`], and bytes that do not parse as an
+/// override map are [`PersistError::Json`]. A corrupt document never
+/// comes back as a missing one, and neither reads as "the reviewer never
+/// overrode anything" (issue #459).
+pub fn read_classification_overrides(
+    workspace: impl AsRef<Path>,
+) -> Result<ClassificationOverrides, PersistError> {
+    load_json(&classification_override_records_path(workspace))
+}
+
 /// A shared, cheaply cloneable classification-override handle (issue #97, W2.8).
 ///
 /// The web router's classification endpoints change it; the analyzer reads it
 /// before choosing a classification strategy. Clones share the state, exactly
 /// like [`OverrideControl`](crate::OverrideControl). Build it with
 /// [`new`](ClassificationOverrideControl::new) (in-memory only) or
-/// [`open`](ClassificationOverrideControl::open) (loads the workspace's
-/// persisted records and saves every later change).
+/// [`try_open`](ClassificationOverrideControl::try_open) (loads the
+/// workspace's persisted records, names any corrupt one as a fault, and
+/// saves every later change).
 #[derive(Debug, Clone)]
 pub struct ClassificationOverrideControl {
     inner: Arc<Mutex<ClassificationOverrideState>>,
@@ -154,31 +170,41 @@ impl ClassificationOverrideControl {
         }
     }
 
-    /// Open a handle over a workspace. The persisted override map is loaded
-    /// when present (a missing record is an empty map, not an error — the
-    /// run simply has nothing overridden yet), and every later change is
-    /// saved again.
-    pub fn open(workspace: impl AsRef<Path>) -> Self {
+    /// Open a handle over a workspace, or name the fault that stopped it.
+    ///
+    /// A missing record is the documented clean state — the run simply
+    /// has nothing overridden yet — and yields an empty handle. A
+    /// corrupt record is a fault: no handle starts, and the named
+    /// [`PersistError`] comes back to the consumer, so corrupt bytes can
+    /// never masquerade as "the reviewer never overrode anything"
+    /// (issue #459). Every later change is saved again.
+    pub fn try_open(workspace: impl AsRef<Path>) -> Result<Self, PersistError> {
         let workspace = workspace.as_ref().to_path_buf();
-        let records = match load_json(&classification_override_records_path(&workspace)) {
+        let records = match read_classification_overrides(&workspace) {
             Ok(records) => records,
             Err(PersistError::NotFound { .. }) => ClassificationOverrides::default(),
-            Err(e) => {
-                // tracing is not a dependency of calxgloss-types (see
-                // dashboard/review.rs). The corrupt record is named on
-                // stderr, then treated as un-overridden.
-                eprintln!(
-                    "warning: corrupt classification override records, starting un-overridden: {e}"
-                );
-                ClassificationOverrides::default()
-            }
+            Err(fault) => return Err(fault),
         };
-        Self {
+        Ok(Self {
             inner: Arc::new(Mutex::new(ClassificationOverrideState {
                 records,
                 workspace: Some(workspace),
             })),
-        }
+        })
+    }
+
+    /// Open a handle over a workspace, refusing a corrupt record loudly.
+    ///
+    /// This is the infallible path for fixtures and tests whose records
+    /// are known readable: a corrupt document panics naming the fault,
+    /// instead of being folded into an empty map inside this module
+    /// (issue #459). Production consumers call
+    /// [`try_open`](Self::try_open) and decide their fallback at the
+    /// call site.
+    pub fn open(workspace: impl AsRef<Path>) -> Self {
+        Self::try_open(workspace).unwrap_or_else(|fault| {
+            panic!("refusing to open the workspace's classification override records: {fault}")
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ClassificationOverrideState> {
@@ -426,6 +452,94 @@ mod tests {
     fn open_over_a_never_overridden_workspace_is_clean_not_an_error() {
         let ws = temp_workspace();
         let control = ClassificationOverrideControl::open(ws.path());
+        assert!(control.records().overrides.is_empty());
+        assert!(control.get("fmod.dll").is_none());
+    }
+
+    #[test]
+    fn a_missing_override_document_reads_as_a_named_missing_fault() {
+        // The obligation-ledger split (issue #417), now carried by the
+        // override document too (issue #459): no document at all is a
+        // missing fault — never the fault a corrupt document gets.
+        let ws = temp_workspace();
+        let err = read_classification_overrides(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_override_document_reads_as_a_named_corrupt_fault() {
+        // Bytes that never parse fail loudly as corrupt — never the
+        // missing fault and never an empty map (issue #459).
+        let ws = temp_workspace();
+        let path = classification_override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+
+        let err = read_classification_overrides(ws.path()).expect_err("bytes that never parse");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "a corrupt record reads as a fault, apart from a missing one: {err}"
+        );
+    }
+
+    #[test]
+    fn a_filed_override_document_reads_whole_through_the_shared_read() {
+        // What the classification endpoints file, the shared read hands
+        // back — every record in the map, keyed as stored.
+        let ws = temp_workspace();
+        let control = ClassificationOverrideControl::open(ws.path());
+        control
+            .set(
+                "fmod.dll",
+                override_record(DllCategory::KnownThirdParty, Some("mlua"), false),
+            )
+            .expect("override persists");
+
+        let records = read_classification_overrides(ws.path()).expect("the filed document reads");
+        assert_eq!(records, control.records(), "the whole map reads back");
+    }
+
+    #[test]
+    fn try_open_names_the_corrupt_fault_instead_of_starting_unoverridden() {
+        // The silent in-module default is gone (issue #459): corrupt
+        // bytes reach the consumer as the fault they are, and the
+        // consumer — not this module — decides the fallback.
+        let ws = temp_workspace();
+        let path = classification_override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+
+        let err = ClassificationOverrideControl::try_open(ws.path())
+            .expect_err("a corrupt document starts no handle");
+        assert!(
+            matches!(err, PersistError::Json { .. }),
+            "the corrupt fault reaches the consumer: {err}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "refusing to open the workspace's classification override records")]
+    fn open_names_the_corrupt_fault_rather_than_serving_an_empty_handle() {
+        // The infallible open stays infallible only over readable and
+        // missing documents: corrupt bytes stop it and name the fault
+        // instead of handing back an empty handle (issue #459).
+        let ws = temp_workspace();
+        let path = classification_override_records_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "{ not json").expect("corrupt the document");
+        let _ = ClassificationOverrideControl::open(ws.path());
+    }
+
+    #[test]
+    fn try_open_over_a_never_overridden_workspace_is_the_clean_empty_state() {
+        // Missing stays the documented clean state — nothing overridden
+        // yet — pinned apart from the corrupt fault (issue #459).
+        let ws = temp_workspace();
+        let control =
+            ClassificationOverrideControl::try_open(ws.path()).expect("a missing record is clean");
         assert!(control.records().overrides.is_empty());
         assert!(control.get("fmod.dll").is_none());
     }

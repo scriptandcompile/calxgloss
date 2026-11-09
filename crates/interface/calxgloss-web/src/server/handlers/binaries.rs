@@ -49,8 +49,8 @@ use std::path::{Path, PathBuf};
 use axum::{Json, extract::Path as PathExtractor, extract::State};
 
 use calxgloss_types::{
-    BinaryClassificationOverride, ClassificationOverrides, ReviewStatus, TokenUsageLog, WorkKind,
-    classification_override_records_path,
+    BinaryClassificationOverride, ClassificationOverrides, PersistError, ReviewStatus,
+    TokenUsageLog, WorkKind,
 };
 
 use super::super::types::{
@@ -216,11 +216,9 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
 
     // The override layer in force, keyed by binary identity verbatim —
     // exact match, the same rule the override endpoints and the analyzer
-    // hold. A missing or corrupt override document is no overrides.
-    let overrides = load_json_or_default::<ClassificationOverrides>(
-        &classification_override_records_path(repo_path),
-    )
-    .overrides;
+    // hold. A never-filed document is no overrides; a corrupt one fails
+    // the list naming the document (issue #459).
+    let overrides = overrides_in_force(repo_path)?.overrides;
 
     let dashboard = super::super::build_dashboard(repo_path)
         .map_err(|e| ServerError::internal(&e.to_string()))?;
@@ -302,6 +300,20 @@ fn functions_for_binary(
     rows
 }
 
+/// The override layer in force, read through the shared module (issue
+/// #459). A never-filed document is no overrides — the clean state; a
+/// corrupt one is a server fault naming the document, never a silent
+/// "the reviewer never overrode anything".
+fn overrides_in_force(repo_path: &Path) -> Result<ClassificationOverrides, ServerError> {
+    match calxgloss_types::read_classification_overrides(repo_path) {
+        Ok(overrides) => Ok(overrides),
+        Err(PersistError::NotFound { .. }) => Ok(ClassificationOverrides::default()),
+        Err(fault) => Err(ServerError::internal(&format!(
+            "classification override document unreadable: {fault}"
+        ))),
+    }
+}
+
 /// Resolve the requested spelling to one readable classification record
 /// through the case-insensitive binary rule every other server
 /// comparison makes; no readable record under any spelling is an honest
@@ -333,10 +345,7 @@ fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, S
     let record = find_classification_record(&classifications, name)?;
     let name = record.binary.as_str();
 
-    let overrides = load_json_or_default::<ClassificationOverrides>(
-        &classification_override_records_path(repo_path),
-    )
-    .overrides;
+    let overrides = overrides_in_force(repo_path)?.overrides;
     let r#override = overrides.get(name);
 
     // The recorded reasoning and the runtime flag live only in the raw
@@ -475,10 +484,7 @@ fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, Serve
     let record = find_classification_record(&classifications, name)?;
     let name = record.binary.as_str();
 
-    let overrides = load_json_or_default::<ClassificationOverrides>(
-        &classification_override_records_path(repo_path),
-    )
-    .overrides;
+    let overrides = overrides_in_force(repo_path)?.overrides;
     let decision = in_force_decision(record, overrides.get(name), None);
 
     let artifacts = shim_artifact_dir(repo_path, name);
@@ -1317,6 +1323,62 @@ mod tests {
         assert!(
             !defines_trait(&joined, "ComObject"),
             "a shim test source is not a generated trait definition"
+        );
+    }
+
+    #[test]
+    fn no_override_document_is_no_overrides_and_not_a_fault() {
+        // A never-filed record is the documented clean state: the
+        // binary surfaces render an override as absent (issue #459).
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let overrides = overrides_in_force(dir.path()).expect("no document is the clean state");
+        assert!(overrides.overrides.is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_override_document_stops_the_binary_surfaces_naming_the_document() {
+        // Corrupt override bytes never render as "the reviewer never
+        // overrode anything": the surfaces that consult the document
+        // stop and name it (issue #459).
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let analysis = dir.path().join("re").join("analysis");
+        std::fs::create_dir_all(&analysis).expect("analysis dir");
+        std::fs::write(analysis.join("classification_overrides.json"), "{ not json")
+            .expect("corrupt the override document");
+
+        let err = overrides_in_force(dir.path()).expect_err("corrupt bytes are a fault");
+        assert!(
+            err.to_string().contains("classification_overrides.json"),
+            "the fault names the document: {err}"
+        );
+
+        // The detail and shim surfaces consult the same reader. File a
+        // classification record so their lookup reaches the override
+        // layer instead of answering 404 first.
+        let classify = dir.path().join("re").join("classify");
+        std::fs::create_dir_all(&classify).expect("classify dir");
+        std::fs::write(
+            classify.join("game_logic.dll.json"),
+            serde_json::json!({ "binary": "game_logic.dll", "category": "Application" })
+                .to_string(),
+        )
+        .expect("file the classification record");
+
+        let detail_err = binary_detail(dir.path(), "game_logic.dll")
+            .expect_err("the detail surface refuses and names the fault");
+        assert!(
+            detail_err
+                .to_string()
+                .contains("classification_overrides.json"),
+            "the detail surface names the document: {detail_err}"
+        );
+        let shim_err = shim_status(dir.path(), "game_logic.dll")
+            .expect_err("the shim surface refuses and names the fault");
+        assert!(
+            shim_err
+                .to_string()
+                .contains("classification_overrides.json"),
+            "the shim surface names the document: {shim_err}"
         );
     }
 }

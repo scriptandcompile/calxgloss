@@ -111,6 +111,19 @@ pub enum TranslatorError {
         #[source]
         source: calxgloss_types::PersistError,
     },
+
+    /// The obligation filing's review-record reads failed (issue #459):
+    /// the parked-classification check and the disposition join consult
+    /// the classification record, the reviewer's override documents, and
+    /// the workspace scope record through the shared named-fault reads.
+    /// A document whose bytes do not parse stops the filing naming the
+    /// fault — never a silent continue as if the document held nothing.
+    #[error("obligation filing for '{binary}' stopped on an unreadable review record: {source}")]
+    ReviewRecordUnreadable {
+        binary: String,
+        #[source]
+        source: calxgloss_types::PersistError,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TranslatorError>;
