@@ -8,10 +8,11 @@
 //! 503 when the live router was built without a classification-override
 //! handle attached, mirroring the scope and unit-override honesty rules.
 //!
-//! The binary in the path is the binary identity — the filename verbatim,
-//! the same key the override records are stored under.
-
-use std::path::Path;
+//! The record-and-override pair comes from the review-surface reader
+//! (issue #461) — the panel never joins record paths or guesses the
+//! document's shape itself. The binary in the path is the binary identity
+//! — the filename verbatim, the same key the override records are stored
+//! under.
 
 use super::super::{
     BinaryClassificationRequest, BinaryClassificationResponse, CombinedState, ServerError,
@@ -38,75 +39,22 @@ fn classification_handle(
         })
 }
 
-/// The classification artifact path for one binary — the same sanitization
-/// the classify command uses when it writes the file (`/` and `\` become `_`).
-pub(crate) fn classification_record_path(repo_path: &Path, binary: &str) -> std::path::PathBuf {
-    let sanitized: String = binary
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' => '_',
-            other => other,
-        })
-        .collect();
-    repo_path
-        .join("re")
-        .join("classify")
-        .join(format!("{sanitized}.json"))
-}
-
-/// The classification the run recorded for this binary, read from its
-/// `re/classify/{binary}.json` artifact. A missing, corrupt, or
-/// name/category-less record is no record at all — the response says so
-/// rather than guessing.
-fn recorded_classification(
-    repo_path: &Path,
-    binary: &str,
-) -> Option<super::super::types::RecordedClassification> {
-    let content = std::fs::read_to_string(classification_record_path(repo_path, binary)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let category = value.get("category").and_then(|v| v.as_str())?;
-    if category.is_empty() {
-        return None;
-    }
-    // Strategy is serialized from `calxgloss_analysis::Strategy`: unit
-    // variants become bare strings ("PalMapping"), struct variants become
-    // tagged objects ({"CrateReplacement": {…}}). Either way, the variant
-    // name is the strategy — the same reading the pipeline rows use.
-    let strategy = match value.get("strategy") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Object(obj)) => obj.keys().next().cloned().unwrap_or_default(),
-        _ => String::new(),
-    };
-    Some(super::super::types::RecordedClassification {
-        category: category.to_string(),
-        strategy,
-        crate_replacement: value
-            .get("crate_replacement")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        known_runtime: value
-            .get("known_runtime")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        reason: value
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-    })
-}
-
 /// The response both endpoints echo: the binary addressed, what the
-/// workspace recorded for it, and the override now in force.
+/// workspace recorded for it, and the override now in force — both read
+/// through the review-surface reader (issue #461). A corrupt record still
+/// lists the binary, its category honestly `unknown` and its reason
+/// naming the fault that stopped the read; a corrupt override document is
+/// a server fault naming the document, never a silent "no override".
 fn classification_response(
     combined: &CombinedState,
-    overrides: &ClassificationOverrideControl,
     binary: &str,
-) -> Json<BinaryClassificationResponse> {
-    Json(BinaryClassificationResponse {
+) -> Result<Json<BinaryClassificationResponse>, ServerError> {
+    let pair = combined.reader.classification_pair(binary)?;
+    Ok(Json(BinaryClassificationResponse {
         binary: binary.to_string(),
-        classification: recorded_classification(combined.server.repo_path(), binary),
-        r#override: overrides.get(binary),
-    })
+        classification: pair.recorded,
+        r#override: pair.r#override,
+    }))
 }
 
 /// Handle `GET /api/binaries/{name}/classification` — the current
@@ -116,8 +64,8 @@ pub async fn api_get_binary_classification(
     State(combined): State<CombinedState>,
     PathExtractor(binary): PathExtractor<String>,
 ) -> Result<Json<BinaryClassificationResponse>, ServerError> {
-    let overrides = classification_handle(&combined)?;
-    Ok(classification_response(&combined, &overrides, &binary))
+    classification_handle(&combined)?;
+    classification_response(&combined, &binary)
 }
 
 /// Handle `POST /api/binaries/{name}/classification` — apply (replace) the
@@ -156,5 +104,5 @@ pub async fn api_set_binary_classification(
             );
         }
     }
-    Ok(classification_response(&combined, &overrides, &binary))
+    classification_response(&combined, &binary)
 }

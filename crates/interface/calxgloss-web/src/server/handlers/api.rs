@@ -100,7 +100,7 @@ pub async fn api_get_dashboard(
         all_units.extend(dashboard.recent_activity.iter().cloned());
         super::summary::compute_quality_summary(&all_units)
     };
-    let binary_categories = super::summary::compute_binary_categories(server_state.repo_path());
+    let binary_categories = super::summary::compute_binary_categories(&combined.reader);
     let token_usage = super::summary::compute_token_usage(server_state.repo_path());
 
     // Manual queue overlay (issue #74): the persisted manual order and

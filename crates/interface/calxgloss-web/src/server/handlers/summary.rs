@@ -9,6 +9,7 @@ use std::path::Path;
 
 use calxgloss_types::{DllCategory, TokenUsageLog, UnitOfWork};
 
+use super::super::review_reader::ReviewSurfaceReader;
 use super::super::types::{CategoryCount, QualitySummary, TokenUsageSummary};
 use super::process::{load_json_or_default, token_usage_log_path};
 
@@ -26,26 +27,23 @@ pub const CATEGORY_ORDER: [DllCategory; 7] = [
 
 /// Counts the workspace's classified binaries per category.
 ///
-/// Reads every `re/classify/*.json` artifact and tallies its `category`
-/// field. All seven categories are always present in the result (count 0
-/// when nothing is classified into them) so the frontend can render a
-/// stable set of cards. Files with a missing, corrupt, or unrecognised
-/// category are skipped rather than guessed at.
-pub fn compute_binary_categories(repo_path: &Path) -> Vec<CategoryCount> {
-    let classify_dir = repo_path.join("re").join("classify");
+/// Reads every `re/classify/*.json` document through the review-surface
+/// reader's shared classification read (issue #461) and tallies its
+/// category. All seven categories are always present in the result
+/// (count 0 when nothing is classified into them) so the frontend can
+/// render a stable set of cards. The policy lives at this tally site: a
+/// document that is unreadable or names no known category is skipped
+/// rather than guessed at; a record that names no binary still tallies,
+/// because this count is per category, not per identity.
+pub fn compute_binary_categories(reader: &ReviewSurfaceReader) -> Vec<CategoryCount> {
     let mut counts = vec![0_usize; CATEGORY_ORDER.len()];
 
-    if let Ok(entries) = std::fs::read_dir(&classify_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            if let Some(category) = read_classification_category(&path)
-                && let Some(slot) = CATEGORY_ORDER.iter().position(|c| *c == category)
-            {
-                counts[slot] += 1;
-            }
+    for document in reader.classification_documents() {
+        if let Ok(reading) = document.reading
+            && let Some(category) = reading.category
+            && let Some(slot) = CATEGORY_ORDER.iter().position(|c| *c == category)
+        {
+            counts[slot] += 1;
         }
     }
 
@@ -57,14 +55,6 @@ pub fn compute_binary_categories(repo_path: &Path) -> Vec<CategoryCount> {
             count,
         })
         .collect()
-}
-
-/// Reads the `category` field of one classification artifact, returning it
-/// only when it names a known [`DllCategory`] variant.
-fn read_classification_category(path: &Path) -> Option<DllCategory> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    serde_json::from_value(value.get("category")?.clone()).ok()
 }
 
 /// Aggregates quality metrics over the dashboard's units.

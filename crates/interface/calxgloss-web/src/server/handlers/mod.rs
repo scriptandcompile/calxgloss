@@ -15,7 +15,7 @@ mod gc;
 mod llm_io;
 mod overrides;
 mod pipeline;
-mod process;
+pub(crate) mod process;
 mod queue;
 mod scope;
 mod r#static;

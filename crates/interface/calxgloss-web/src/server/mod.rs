@@ -350,6 +350,12 @@ impl FromRef<CombinedState> for ActionsState {
     }
 }
 
+impl FromRef<CombinedState> for ReviewSurfaceReader {
+    fn from_ref(c: &CombinedState) -> Self {
+        c.reader.clone()
+    }
+}
+
 /// Builds a [`ReviewDashboard`] from the state of a Git repository.
 pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Error> {
     let git = calxgloss_git::GitManager::open(repo_path)?;

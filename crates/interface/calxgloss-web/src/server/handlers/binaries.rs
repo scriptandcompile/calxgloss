@@ -11,8 +11,8 @@
 //! wire types in `types.rs`.
 //!
 //! The row set is the workspace's classification records (`re/classify/`,
-//! read through the pipeline handler's one `disk_classifications` shape);
-//! a record that is missing, corrupt, or has no name or category is no
+//! read through the review-surface reader, issue #461); a record that is
+//! missing, corrupt, or has no name or category is no
 //! record at all, so a workspace with none honestly answers an empty list
 //! rather than a wall of zero rows. Category and strategy show the decision
 //! actually in force: the persisted classification-override layer
@@ -48,19 +48,14 @@ use std::path::{Path, PathBuf};
 
 use axum::{Json, extract::Path as PathExtractor, extract::State};
 
-use calxgloss_types::{
-    BinaryClassificationOverride, ClassificationOverrides, PersistError, ReviewStatus,
-    TokenUsageLog, WorkKind,
-};
+use calxgloss_types::{BinaryIdentity, ReviewStatus, TokenUsageLog, WorkKind};
 
+use super::super::ServerError;
+use super::super::review_reader::ReviewSurfaceReader;
 use super::super::types::{
     BinariesListResponse, BinaryDetailResponse, BinaryFunctionRow, BinarySummaryRow,
-    ClassificationInfo, PalStatusResponse, PalTraitStatus, ShimBranchInfo, ShimStatusResponse,
-    ShimVerificationInfo,
+    PalStatusResponse, PalTraitStatus, ShimBranchInfo, ShimStatusResponse, ShimVerificationInfo,
 };
-use super::super::{ServerError, ServerState};
-use super::classification::classification_record_path;
-use super::pipeline::disk_classifications;
 use super::process::{binary_matches, load_json_or_default, token_usage_log_path};
 
 /// Per-binary function tallies built from the dashboard's units.
@@ -149,76 +144,19 @@ fn tokens_by_binary(repo_path: &Path) -> HashMap<String, usize> {
     totals
 }
 
-/// The classification decision actually in force for one record: the
-/// recorded classification with the persisted override layer applied on
-/// top. Computed in one place so the summary rows and the detail panel
-/// can never disagree about what the analyzer would act on.
-struct InForceDecision {
-    category: String,
-    strategy: String,
-    crate_replacement: Option<String>,
-    reason: Option<String>,
-    overridden: bool,
-}
-
-/// Combine one record with its override (exact-key match — the same rule
-/// the override endpoints and the analyzer hold). `recorded_reason` is the
-/// raw record's stored reason, used only when no override is in force.
-/// Under an override, the result matches what the analyzer would act on:
-/// it uses the override's synthesized reason, and it names a crate only in
-/// crate-replacement mode. There the recorded crate stands in for the
-/// analyzer's table fallback (the web crate does not link the
-/// classification table).
-fn in_force_decision(
-    record: &ClassificationInfo,
-    r#override: Option<&BinaryClassificationOverride>,
-    recorded_reason: Option<&str>,
-) -> InForceDecision {
-    match r#override {
-        Some(o) => InForceDecision {
-            category: serde_json::to_value(&o.category)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_else(|| record.category.clone()),
-            strategy: o.strategy_label().to_string(),
-            crate_replacement: if o.is_crate_replacement() {
-                o.crate_replacement
-                    .clone()
-                    .or_else(|| record.crate_replacement.clone())
-            } else {
-                None
-            },
-            reason: Some(o.override_reason()),
-            overridden: true,
-        },
-        None => InForceDecision {
-            category: record.category.clone(),
-            strategy: record.classification_strategy.clone(),
-            crate_replacement: record.crate_replacement.clone(),
-            reason: recorded_reason.map(str::to_string),
-            overridden: false,
-        },
-    }
-}
-
 /// Build the full binaries list payload from the workspace's persisted
 /// history. Split from the handler so the aggregation is testable and the
 /// follow-up W4 tickets extend the same shape.
-fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> {
+fn binaries_list(reader: &ReviewSurfaceReader) -> Result<BinariesListResponse, ServerError> {
+    let repo_path = reader.repo_path();
     // The classification records decide which binaries exist at all; with
     // none readable, nothing downstream is worth reading either.
-    let classifications = disk_classifications(repo_path);
-    if classifications.is_empty() {
+    let classifications = reader.binary_classifications()?;
+    if classifications.count() == 0 {
         return Ok(BinariesListResponse {
             binaries: Vec::new(),
         });
     }
-
-    // The override layer in force, keyed by binary identity verbatim —
-    // exact match, the same rule the override endpoints and the analyzer
-    // hold. A never-filed document is no overrides; a corrupt one fails
-    // the list naming the document (issue #459).
-    let overrides = overrides_in_force(repo_path)?.overrides;
 
     let dashboard = super::super::build_dashboard(repo_path)
         .map_err(|e| ServerError::internal(&e.to_string()))?;
@@ -235,15 +173,18 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
 
     let mut binaries: Vec<BinarySummaryRow> = classifications
         .values()
-        .map(|record| {
-            let name = record.binary.as_str();
-            let decision = in_force_decision(record, overrides.get(name), None);
+        .filter_map(|record| {
+            // The reader's kept records all name their binary — unpacking,
+            // not a second policy. The decision in force comes from the
+            // reader's single record-and-override fold.
+            let name = record.binary.as_deref()?;
+            let decision = classifications.in_force(record);
             let tally = counts
                 .get(&name.to_ascii_lowercase())
                 .copied()
                 .unwrap_or_default();
-            BinarySummaryRow {
-                binary: record.binary.clone(),
+            Some(BinarySummaryRow {
+                binary: BinaryIdentity::new(name),
                 category: decision.category,
                 strategy: decision.strategy,
                 crate_replacement: decision.crate_replacement,
@@ -254,7 +195,7 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
                 functions_failed: tally.failed,
                 unknowns_open: tally.unknowns_open,
                 tokens_used: tokens.get(&name.to_ascii_lowercase()).copied().unwrap_or(0),
-            }
+            })
         })
         .collect();
     // Alphabetical by binary name — persisted history has no run-plan
@@ -270,9 +211,9 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
 /// `serve` and `live` answer it, and a workspace with no readable
 /// classification records honestly answers an empty list.
 pub async fn api_get_binaries_list(
-    State(state): State<ServerState>,
+    State(reader): State<ReviewSurfaceReader>,
 ) -> Result<Json<BinariesListResponse>, ServerError> {
-    Ok(Json(binaries_list(state.repo_path())?))
+    Ok(Json(binaries_list(&reader)?))
 }
 
 /// Tally the binary's function-translation units into the detail panel's
@@ -300,80 +241,27 @@ fn functions_for_binary(
     rows
 }
 
-/// The override layer in force, read through the shared module (issue
-/// #459). A never-filed document is no overrides — the clean state; a
-/// corrupt one is a server fault naming the document, never a silent
-/// "the reviewer never overrode anything".
-fn overrides_in_force(repo_path: &Path) -> Result<ClassificationOverrides, ServerError> {
-    match calxgloss_types::read_classification_overrides(repo_path) {
-        Ok(overrides) => Ok(overrides),
-        Err(PersistError::NotFound { .. }) => Ok(ClassificationOverrides::default()),
-        Err(fault) => Err(ServerError::internal(&format!(
-            "classification override document unreadable: {fault}"
-        ))),
-    }
-}
-
-/// Resolve the requested spelling to one readable classification record
-/// through the case-insensitive binary rule every other server
-/// comparison makes; no readable record under any spelling is an honest
-/// 404, never an empty shell. Deterministic when several spellings of
-/// one name each hold a record: the alphabetically first verbatim
-/// identity wins.
-fn find_classification_record<'a>(
-    classifications: &'a HashMap<calxgloss_types::BinaryIdentity, ClassificationInfo>,
-    name: &str,
-) -> Result<&'a ClassificationInfo, ServerError> {
-    classifications
-        .values()
-        .filter(|c| binary_matches(c.binary.as_str(), name))
-        .min_by_key(|c| c.binary.as_str())
-        .ok_or_else(|| {
-            ServerError::not_found(&format!(
-                "no readable classification record for binary: {name}"
-            ))
-        })
-}
-
 /// Build the full detail payload for one binary from persisted history.
 /// The requested spelling resolves to the record's verbatim identity
 /// through the case-insensitive binary rule every other server
 /// comparison makes; no readable classification record under any
 /// spelling is an honest 404, never an empty shell.
-fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, ServerError> {
-    let classifications = disk_classifications(repo_path);
-    let record = find_classification_record(&classifications, name)?;
-    let name = record.binary.as_str();
-
-    let overrides = overrides_in_force(repo_path)?.overrides;
-    let r#override = overrides.get(name);
-
-    // The recorded reasoning and the runtime flag live only in the raw
-    // record — `disk_classifications` keeps the shape the pipeline rows
-    // need. A record the reader already accepted cannot realistically
-    // fail to re-read; if it does, those fields honestly stay
-    // absent/false.
-    let raw = std::fs::read_to_string(classification_record_path(repo_path, name))
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
-    let recorded_reason = raw
-        .as_ref()
-        .and_then(|v| v.get("reason"))
-        .and_then(|v| v.as_str());
-    let recorded_runtime = raw
-        .as_ref()
-        .and_then(|v| v.get("known_runtime"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let decision = in_force_decision(record, r#override, recorded_reason);
+fn binary_detail(
+    reader: &ReviewSurfaceReader,
+    name: &str,
+) -> Result<BinaryDetailResponse, ServerError> {
+    let repo_path = reader.repo_path();
+    let classifications = reader.binary_classifications()?;
+    let record = classifications.find(name)?;
+    let name = record.binary.as_deref().unwrap_or(name);
+    let decision = classifications.in_force(record);
 
     // The glossary rule as the analyzer applies it: an override answers
     // through `is_runtime`, and a `RuntimeLibrary` category always
     // implies the flag.
-    let known_runtime = match r#override {
+    let known_runtime = match classifications.override_for(record) {
         Some(o) => o.is_runtime(),
-        None => recorded_runtime || decision.category == "RuntimeLibrary",
+        None => record.known_runtime || decision.category == "RuntimeLibrary",
     };
 
     let dashboard = super::super::build_dashboard(repo_path)
@@ -387,15 +275,15 @@ fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, S
     );
 
     Ok(BinaryDetailResponse {
-        binary: record.binary.clone(),
+        binary: BinaryIdentity::new(name),
         category: decision.category,
         strategy: decision.strategy,
         crate_replacement: decision.crate_replacement,
         overridden: decision.overridden,
         known_runtime,
         reason: decision.reason,
-        exports_count: record.exported_symbols,
-        imports_count: record.imported_symbols,
+        exports_count: record.exports_count,
+        imports_count: record.imports_count,
         functions,
     })
 }
@@ -407,10 +295,10 @@ fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, S
 /// answer it from persisted history only. An unknown binary name — or
 /// one whose only record is corrupt — honestly 404s.
 pub async fn api_get_binary_detail(
-    State(state): State<ServerState>,
+    State(reader): State<ReviewSurfaceReader>,
     PathExtractor(name): PathExtractor<String>,
 ) -> Result<Json<BinaryDetailResponse>, ServerError> {
-    Ok(Json(binary_detail(state.repo_path(), &name)?))
+    Ok(Json(binary_detail(&reader, &name)?))
 }
 
 /// The workspace's shim artifact directory for one binary — the layout
@@ -479,13 +367,15 @@ fn shim_branch_state(
 /// artifacts honestly reports not generated; when the decision in force
 /// names no crate replacement, the binary honestly reports no shim
 /// expected.
-fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, ServerError> {
-    let classifications = disk_classifications(repo_path);
-    let record = find_classification_record(&classifications, name)?;
-    let name = record.binary.as_str();
-
-    let overrides = overrides_in_force(repo_path)?.overrides;
-    let decision = in_force_decision(record, overrides.get(name), None);
+fn shim_status(
+    reader: &ReviewSurfaceReader,
+    name: &str,
+) -> Result<ShimStatusResponse, ServerError> {
+    let repo_path = reader.repo_path();
+    let classifications = reader.binary_classifications()?;
+    let record = classifications.find(name)?;
+    let name = record.binary.as_deref().unwrap_or(name);
+    let decision = classifications.in_force(record);
 
     let artifacts = shim_artifact_dir(repo_path, name);
     let mappings: Option<calxgloss_types::ShimLayer> = artifacts
@@ -514,7 +404,7 @@ fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, Serve
     };
 
     Ok(ShimStatusResponse {
-        binary: record.binary.clone(),
+        binary: BinaryIdentity::new(name),
         shim_expected: decision.crate_replacement.is_some(),
         crate_replacement: decision.crate_replacement,
         generated: mappings.is_some(),
@@ -540,10 +430,10 @@ fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, Serve
 /// generated" with the derived fields absent; an unknown binary name
 /// honestly 404s like every other binaries read.
 pub async fn api_get_binary_shim_status(
-    State(state): State<ServerState>,
+    State(reader): State<ReviewSurfaceReader>,
     PathExtractor(name): PathExtractor<String>,
 ) -> Result<Json<ShimStatusResponse>, ServerError> {
-    Ok(Json(shim_status(state.repo_path(), &name)?))
+    Ok(Json(shim_status(&reader, &name)?))
 }
 
 // ─── PAL tracker (issue #134, W4.4) ────────────────────────────────────
@@ -733,10 +623,11 @@ pub(crate) fn defines_trait(source: &str, name: &str) -> bool {
 /// its functions' recorded API calls demand, whatever the decision in
 /// force says. A binary with no readable API-call artifacts honestly
 /// answers an empty trait list.
-fn pal_status(repo_path: &Path, name: &str) -> Result<PalStatusResponse, ServerError> {
-    let classifications = disk_classifications(repo_path);
-    let record = find_classification_record(&classifications, name)?;
-    let name = record.binary.as_str();
+fn pal_status(reader: &ReviewSurfaceReader, name: &str) -> Result<PalStatusResponse, ServerError> {
+    let repo_path = reader.repo_path();
+    let classifications = reader.binary_classifications()?;
+    let record = classifications.find(name)?;
+    let name = record.binary.as_deref().unwrap_or(name);
 
     let categories = recorded_api_categories(repo_path, name);
     let mut traits = needed_pal_traits(&categories);
@@ -750,7 +641,7 @@ fn pal_status(repo_path: &Path, name: &str) -> Result<PalStatusResponse, ServerE
     }
 
     Ok(PalStatusResponse {
-        binary: record.binary.clone(),
+        binary: BinaryIdentity::new(name),
         traits,
     })
 }
@@ -764,10 +655,10 @@ fn pal_status(repo_path: &Path, name: &str) -> Result<PalStatusResponse, ServerE
 /// list or missing markers — never a fabricated trait list; an unknown
 /// binary name honestly 404s like every other binaries read.
 pub async fn api_get_binary_pal_status(
-    State(state): State<ServerState>,
+    State(reader): State<ReviewSurfaceReader>,
     PathExtractor(name): PathExtractor<String>,
 ) -> Result<Json<PalStatusResponse>, ServerError> {
-    Ok(Json(pal_status(state.repo_path(), &name)?))
+    Ok(Json(pal_status(&reader, &name)?))
 }
 
 #[cfg(test)]
@@ -1021,88 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn in_force_decision_prefers_the_override_layer() {
-        // The same combination the summary rows and the analyzer honor: category,
-        // strategy label, crate, and reason come from the override;
-        // without one, the record answers verbatim.
-        let record = ClassificationInfo {
-            binary: "d3d9.dll".into(),
-            category: "MicrosoftSdk".into(),
-            classification_strategy: "CrateReplacement".into(),
-            crate_replacement: Some("wgpu".into()),
-            exported_symbols: 100,
-            imported_symbols: 5,
-        };
-        let plain = in_force_decision(&record, None, Some("heuristic reason"));
-        assert_eq!(plain.category, "MicrosoftSdk");
-        assert_eq!(plain.strategy, "CrateReplacement");
-        assert_eq!(plain.crate_replacement.as_deref(), Some("wgpu"));
-        assert_eq!(plain.reason.as_deref(), Some("heuristic reason"));
-        assert!(!plain.overridden);
-
-        let r#override = calxgloss_types::BinaryClassificationOverride {
-            category: calxgloss_types::DllCategory::KnownThirdParty,
-            crate_replacement: Some("wgpu-rs".into()),
-            known_runtime: false,
-        };
-        let steered = in_force_decision(&record, Some(&r#override), Some("heuristic reason"));
-        assert_eq!(steered.category, "KnownThirdParty");
-        assert_eq!(steered.strategy, "CrateReplacement");
-        assert_eq!(steered.crate_replacement.as_deref(), Some("wgpu-rs"));
-        // The reason is the analyzer's own account of an overridden
-        // decision — the recorded heuristic reason does not carry over.
-        assert_eq!(
-            steered.reason.as_deref(),
-            Some("operator override — KnownThirdParty (category set from the dashboard)")
-        );
-        assert!(steered.overridden);
-    }
-
-    #[test]
-    fn override_crate_follows_the_analyzers_category_rule() {
-        // A crate name means something only in crate-replacement modes:
-        // elsewhere the analyzer drops it, and in those modes an override
-        // naming no crate falls back to the recorded one (the web stand-in
-        // for the analyzer's table lookup).
-        let record = ClassificationInfo {
-            binary: "game_logic.dll".into(),
-            category: "ProjectSpecific".into(),
-            classification_strategy: "ReverseEngineer".into(),
-            crate_replacement: Some("recorded-crate".into()),
-            exported_symbols: 1,
-            imported_symbols: 1,
-        };
-        let steered = in_force_decision(
-            &record,
-            Some(&calxgloss_types::BinaryClassificationOverride {
-                category: calxgloss_types::DllCategory::ProjectSpecific,
-                crate_replacement: Some("ignored-crate".into()),
-                known_runtime: false,
-            }),
-            None,
-        );
-        assert_eq!(
-            steered.crate_replacement, None,
-            "a non-crate-replacement category drops the crate, as the analyzer does"
-        );
-
-        let steered = in_force_decision(
-            &record,
-            Some(&calxgloss_types::BinaryClassificationOverride {
-                category: calxgloss_types::DllCategory::KnownThirdParty,
-                crate_replacement: None,
-                known_runtime: false,
-            }),
-            None,
-        );
-        assert_eq!(
-            steered.crate_replacement.as_deref(),
-            Some("recorded-crate"),
-            "a crate-replacement override naming no crate keeps the recorded one"
-        );
-    }
-
-    #[test]
     fn shim_branch_state_folds_the_dashboard_verdicts() {
         // The shim unit's review status is the acceptance state: the
         // builder sets merged for an Accepted unit and sent_back for a
@@ -1323,62 +1132,6 @@ mod tests {
         assert!(
             !defines_trait(&joined, "ComObject"),
             "a shim test source is not a generated trait definition"
-        );
-    }
-
-    #[test]
-    fn no_override_document_is_no_overrides_and_not_a_fault() {
-        // A never-filed record is the documented clean state: the
-        // binary surfaces render an override as absent (issue #459).
-        let dir = tempfile::tempdir().expect("temp workspace");
-        let overrides = overrides_in_force(dir.path()).expect("no document is the clean state");
-        assert!(overrides.overrides.is_empty());
-    }
-
-    #[test]
-    fn a_corrupt_override_document_stops_the_binary_surfaces_naming_the_document() {
-        // Corrupt override bytes never render as "the reviewer never
-        // overrode anything": the surfaces that consult the document
-        // stop and name it (issue #459).
-        let dir = tempfile::tempdir().expect("temp workspace");
-        let analysis = dir.path().join("re").join("analysis");
-        std::fs::create_dir_all(&analysis).expect("analysis dir");
-        std::fs::write(analysis.join("classification_overrides.json"), "{ not json")
-            .expect("corrupt the override document");
-
-        let err = overrides_in_force(dir.path()).expect_err("corrupt bytes are a fault");
-        assert!(
-            err.to_string().contains("classification_overrides.json"),
-            "the fault names the document: {err}"
-        );
-
-        // The detail and shim surfaces consult the same reader. File a
-        // classification record so their lookup reaches the override
-        // layer instead of answering 404 first.
-        let classify = dir.path().join("re").join("classify");
-        std::fs::create_dir_all(&classify).expect("classify dir");
-        std::fs::write(
-            classify.join("game_logic.dll.json"),
-            serde_json::json!({ "binary": "game_logic.dll", "category": "Application" })
-                .to_string(),
-        )
-        .expect("file the classification record");
-
-        let detail_err = binary_detail(dir.path(), "game_logic.dll")
-            .expect_err("the detail surface refuses and names the fault");
-        assert!(
-            detail_err
-                .to_string()
-                .contains("classification_overrides.json"),
-            "the detail surface names the document: {detail_err}"
-        );
-        let shim_err = shim_status(dir.path(), "game_logic.dll")
-            .expect_err("the shim surface refuses and names the fault");
-        assert!(
-            shim_err
-                .to_string()
-                .contains("classification_overrides.json"),
-            "the shim surface names the document: {shim_err}"
         );
     }
 }
