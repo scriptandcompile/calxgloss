@@ -146,7 +146,7 @@ pub async fn api_get_unit(
     let state = combined.server.clone();
 
     let diff_summary = super::diff::compute_diff_summary(&state, unit);
-    let attempt_history = super::decomp::load_attempt_history(state.repo_path(), &unit_id);
+    let attempt_history = combined.reader.attempt_history(unit)?;
     let revision_count = super::decomp::compute_revision_count(&state, unit);
     let queue_position = super::queue::compute_queue_position(
         &dashboard,

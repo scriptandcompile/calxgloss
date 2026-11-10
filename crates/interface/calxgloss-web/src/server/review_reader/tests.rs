@@ -198,6 +198,173 @@ fn make_repo_with_unit() -> tempfile::TempDir {
     dir
 }
 
+// ── Patch-record reads (issue #463) ────────────────────────────────
+
+/// Where one unit's patch documents live: `re/patches/{binary}/{function}/`.
+fn patch_doc_path(workspace: &std::path::Path, binary: &str, function: &str) -> std::path::PathBuf {
+    workspace
+        .join("re")
+        .join("patches")
+        .join(binary)
+        .join(function)
+}
+
+/// File one patch document the way the pipeline and the patch actions
+/// file it: `re/patches/{binary}/{function}/v{attempt}.json`.
+fn file_patch_record(
+    workspace: &std::path::Path,
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    compilation_errors: &[&str],
+    test_failures: &[&str],
+) {
+    let patch_dir = patch_doc_path(workspace, binary, function);
+    std::fs::create_dir_all(&patch_dir).expect("patch dir");
+    let record = serde_json::json!({
+        "binary": binary,
+        "function": function,
+        "attempt": attempt,
+        "branch_name": format!("re/{binary}/{function}v{attempt}"),
+        "committed_at": "2025-09-28T10:00:00Z",
+        "error_message": "",
+        "compilation_errors": compilation_errors,
+        "test_failures": test_failures,
+        "commit_hash": format!("c{attempt}"),
+    });
+    std::fs::write(
+        patch_dir.join(format!("v{attempt}.json")),
+        record.to_string(),
+    )
+    .expect("patch document filed");
+}
+
+#[test]
+fn the_patch_documents_one_unit_owns_read_through_the_reader() {
+    let dir = temp_workspace();
+    file_patch_record(dir.path(), "game_logic.dll", "DrawPrimitive", 1, &[], &[]);
+    file_patch_record(dir.path(), "game_logic.dll", "DrawPrimitive", 2, &[], &[]);
+    file_patch_record(dir.path(), "game_logic.dll", "UpdateScene", 1, &[], &[]);
+    let reader = reader_over(dir.path());
+
+    let records = reader
+        .patch_records(&unit(
+            "game_logic.dll",
+            "DrawPrimitive",
+            ReviewStatus::PendingReview,
+        ))
+        .expect("filed patch documents read");
+    let attempts: Vec<u32> = records.iter().map(|r| r.attempt).collect();
+    assert_eq!(
+        attempts,
+        [1, 2],
+        "this unit's two patch documents, sorted by attempt"
+    );
+    assert_eq!(
+        records[0].branch_name, "re/game_logic.dll/DrawPrimitivev1",
+        "the record's own branch name rides through"
+    );
+}
+
+#[test]
+fn a_corrupt_patch_document_comes_back_as_a_named_fault() {
+    let dir = temp_workspace();
+    file_patch_record(dir.path(), "game_logic.dll", "DrawPrimitive", 1, &[], &[]);
+    let corrupt = patch_doc_path(dir.path(), "game_logic.dll", "DrawPrimitive").join("v2.json");
+    std::fs::write(&corrupt, "{ not json").expect("corrupt document filed");
+    let reader = reader_over(dir.path());
+
+    let Err(err) = reader.patch_records(&unit(
+        "game_logic.dll",
+        "DrawPrimitive",
+        ReviewStatus::PendingReview,
+    )) else {
+        panic!("an unreadable document is a fault, not a dropped fact");
+    };
+    assert!(
+        err.to_string().contains("v2.json"),
+        "the fault names the document: {err}"
+    );
+}
+
+#[test]
+fn the_attempt_history_renders_each_patch_document_in_attempt_order() {
+    let dir = temp_workspace();
+    file_patch_record(dir.path(), "game_logic.dll", "DrawPrimitive", 1, &[], &[]);
+    file_patch_record(
+        dir.path(),
+        "game_logic.dll",
+        "DrawPrimitive",
+        2,
+        &["mismatched types"],
+        &["shader_constant_map_wrong"],
+    );
+    let reader = reader_over(dir.path());
+
+    let history = reader
+        .attempt_history(&unit(
+            "game_logic.dll",
+            "DrawPrimitive",
+            ReviewStatus::PendingReview,
+        ))
+        .expect("filed attempts read");
+    let attempts: Vec<u32> = history.iter().map(|r| r.attempt).collect();
+    assert_eq!(attempts, [1, 2], "the attempts read in order");
+    assert!(
+        history[0].compiled,
+        "no compilation errors reads as compiled"
+    );
+    assert_eq!(history[0].commit_hash, "c1");
+    assert!(!history[1].compiled);
+    assert_eq!(history[1].compilation_errors, ["mismatched types"]);
+    assert_eq!(
+        history[1].tests_total, 1,
+        "the failure count stands in for a total no writer persisted"
+    );
+    assert_eq!(history[1].failed_tests, ["shader_constant_map_wrong"]);
+}
+
+#[test]
+fn a_corrupt_patch_document_names_its_fault_on_the_attempt_history_too() {
+    // The unit detail used to answer a broken document by quietly omitting
+    // the attempt (issue #463). Through the reader it names the fault.
+    let dir = temp_workspace();
+    file_patch_record(dir.path(), "game_logic.dll", "DrawPrimitive", 1, &[], &[]);
+    let corrupt = patch_doc_path(dir.path(), "game_logic.dll", "DrawPrimitive").join("v2.json");
+    std::fs::write(&corrupt, "{ not json").expect("corrupt document filed");
+    let reader = reader_over(dir.path());
+
+    let Err(err) = reader.attempt_history(&unit(
+        "game_logic.dll",
+        "DrawPrimitive",
+        ReviewStatus::PendingReview,
+    )) else {
+        panic!("an unreadable document is a fault, not a dropped fact");
+    };
+    assert!(
+        err.to_string().contains("v2.json"),
+        "the fault names the document: {err}"
+    );
+}
+
+#[test]
+fn a_unit_with_no_patch_documents_reads_as_an_empty_history() {
+    let dir = temp_workspace();
+    let reader = reader_over(dir.path());
+
+    let history = reader
+        .attempt_history(&unit(
+            "game_logic.dll",
+            "DrawPrimitive",
+            ReviewStatus::PendingReview,
+        ))
+        .expect("no filed documents is a clean absence, not a fault");
+    assert!(
+        history.is_empty(),
+        "a unit with no filed attempts shows no attempts"
+    );
+}
+
 // ── Classification reads (issue #461) ──────────────────────────────
 
 /// A workspace that exists and nothing else — the clean empty record tree.

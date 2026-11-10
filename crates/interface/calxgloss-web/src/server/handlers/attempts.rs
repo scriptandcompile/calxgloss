@@ -12,8 +12,8 @@
 //! The attempt set is exactly what the workspace persisted — the union of
 //! translation branches named for this unit (read through
 //! `GitManager::list_translation_branches` and parsed with
-//! `parse_branch_name`) and patch-record files under
-//! `re/patches/{binary}/{function}/` — nothing invented, nothing dropped.
+//! `parse_branch_name`) and the unit's patch documents (read through the
+//! review-surface reader, issue #463) — nothing invented, nothing dropped.
 //! Branch and patch sources are joined on the (binary, function, attempt)
 //! triple with the same case-insensitive binary comparison every other
 //! server comparison makes ([`binary_matches`]).
@@ -43,7 +43,7 @@ use calxgloss_types::{
 };
 
 use super::super::types::{AttemptDiffResponse, AttemptMetadata, UnitAttemptsResponse};
-use super::super::{ServerError, ServerState};
+use super::super::{ReviewSurfaceReader, ServerError};
 use super::process::{binary_matches, fault_log_path, load_json_or_default, token_usage_log_path};
 
 /// What one attempt's persisted sources said about it, combined before it
@@ -58,23 +58,26 @@ struct AttemptFacts {
 /// `GET /api/units/{id}/attempts` — the unit's attempt list with
 /// per-attempt metadata, joined from persisted history only.
 pub async fn api_get_unit_attempts(
-    state: State<ServerState>,
+    State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<UnitAttemptsResponse>, ServerError> {
-    let unit = super::queue::find_unit(&state, &unit_id)?;
-    let response = collect_unit_attempts(state.repo_path(), &unit)?;
+    let unit = super::queue::find_unit(&combined.server, &unit_id)?;
+    let response = collect_unit_attempts(&combined.reader, &unit)?;
     Ok(Json(response))
 }
 
 /// The full attempt join for one unit: discover the attempt set, add
 /// patch-record and log metadata, and return the attempts sorted ascending
-/// by attempt number.
+/// by attempt number. The unit's patch documents arrive through the reader,
+/// so a corrupt document reaches this endpoint as a named fault (issue
+/// #463).
 /// `comparable` is true exactly when at least two attempts exist — the
 /// honest precondition the detail panel uses to offer (or withhold) a diff.
 pub(crate) fn collect_unit_attempts(
-    repo_path: &std::path::Path,
+    reader: &ReviewSurfaceReader,
     unit: &UnitOfWork,
 ) -> Result<UnitAttemptsResponse, ServerError> {
+    let repo_path = reader.repo_path();
     let mut facts: BTreeMap<u32, AttemptFacts> = BTreeMap::new();
 
     // Source 1: translation branches named for this unit.
@@ -104,8 +107,9 @@ pub(crate) fn collect_unit_attempts(
             .branch = Some(branch);
     }
 
-    // Source 2: patch-record files under re/patches/{binary}/{function}/.
-    for record in scan_patch_records(repo_path, unit) {
+    // Source 2: the unit's patch documents, read through the reader (issue
+    // #463); a corrupt document arrives as a fault naming it.
+    for record in reader.patch_records(unit)? {
         let entry = facts.entry(record.attempt).or_insert_with(|| AttemptFacts {
             attempt: record.attempt,
             branch: None,
@@ -141,19 +145,19 @@ pub(crate) fn collect_unit_attempts(
 /// with no recorded branch returns an honest 404 naming it, never an
 /// empty fabricated diff.
 pub async fn api_get_unit_attempts_diff(
-    state: State<ServerState>,
+    State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<AttemptDiffResponse>, ServerError> {
-    let unit = super::queue::find_unit(&state, &unit_id)?;
+    let unit = super::queue::find_unit(&combined.server, &unit_id)?;
     let from = parse_attempt_param(&params, "from")?;
     let to = parse_attempt_param(&params, "to")?;
 
-    let attempts = collect_unit_attempts(state.repo_path(), &unit)?;
+    let attempts = collect_unit_attempts(&combined.reader, &unit)?;
     let from_branch = attempt_branch(&attempts, from)?;
     let to_branch = attempt_branch(&attempts, to)?;
 
-    let git = GitManager::open(state.repo_path())
+    let git = GitManager::open(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&format!("Failed to open repo: {e}")))?;
     let from_commit = attempt_commit(&git, from, &from_branch)?;
     let to_commit = attempt_commit(&git, to, &to_branch)?;
@@ -263,43 +267,6 @@ fn compute_attempt_diff(
     ))
 }
 
-/// Every patch-record file this unit owns, read from
-/// `re/patches/{binary_dir}/{function_dir}/`. The binary directory is
-/// matched with the same case-insensitive rule as the logs; a corrupt or
-/// unreadable record is no record at all.
-fn scan_patch_records(repo_path: &std::path::Path, unit: &UnitOfWork) -> Vec<PatchRecord> {
-    let patches = repo_path.join("re").join("patches");
-    let Some(binary_dirs) = std::fs::read_dir(&patches).ok() else {
-        return Vec::new();
-    };
-    let Some(function) = unit.function.as_deref() else {
-        return Vec::new();
-    };
-    let mut records = Vec::new();
-    for dir in binary_dirs.flatten() {
-        let dir_name = dir.file_name().to_string_lossy().into_owned();
-        if !binary_matches(&dir_name, unit.binary.as_str()) {
-            continue;
-        }
-        let Some(files) = std::fs::read_dir(dir.path().join(function)).ok() else {
-            continue;
-        };
-        for file in files.flatten() {
-            let name = file.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(file.path()) else {
-                continue;
-            };
-            if let Ok(record) = serde_json::from_str::<PatchRecord>(&text) {
-                records.push(record);
-            }
-        }
-    }
-    records
-}
-
 /// Combine one attempt's facts and log entries into its wire metadata.
 /// Absent sources leave their fields absent — the honest degradation the
 /// ticket demands.
@@ -400,6 +367,12 @@ mod tests {
     use super::*;
     use calxgloss_types::{BinaryIdentity, WorkKind};
 
+    /// The reader over a test workspace — the same type the handlers are
+    /// served, with no live store attached.
+    fn reader_over(repo_path: &std::path::Path) -> ReviewSurfaceReader {
+        ReviewSurfaceReader::new(repo_path.to_path_buf(), None)
+    }
+
     fn make_unit(binary: &str, function: &str) -> UnitOfWork {
         UnitOfWork {
             id: format!("{binary}/{function}/v2"),
@@ -491,9 +464,11 @@ mod tests {
     #[test]
     fn attempt_set_is_the_union_of_branches_and_patch_records() {
         let (_dir, repo_path) = seeded_workspace();
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let attempts: Vec<u32> = response.attempts.iter().map(|a| a.attempt).collect();
         assert_eq!(
             attempts,
@@ -564,9 +539,11 @@ mod tests {
         git.create_branch("other.dll", "DrawPrimitive", 1, None)
             .expect("other binary branch");
 
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let attempts: Vec<u32> = response.attempts.iter().map(|a| a.attempt).collect();
         assert_eq!(attempts, [1, 2, 3], "only this unit's attempts join");
     }
@@ -600,9 +577,11 @@ mod tests {
                 ]
             }),
         );
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let v2 = response
             .attempts
             .iter()
@@ -644,9 +623,11 @@ mod tests {
                 ]
             }),
         );
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let v1 = response
             .attempts
             .iter()
@@ -657,6 +638,30 @@ mod tests {
     }
 
     #[test]
+    fn a_corrupt_patch_document_reaches_the_attempt_join_as_a_named_fault() {
+        // The join no longer drops a patch document it cannot read (issue
+        // #463): the fault reaches this endpoint naming the document.
+        let (_dir, repo_path) = seeded_workspace();
+        let corrupt = repo_path
+            .join("re")
+            .join("patches")
+            .join("game_logic.dll")
+            .join("DrawPrimitive")
+            .join("v2.json");
+        std::fs::write(&corrupt, "{ not json").expect("corrupt document filed");
+        let Err(err) = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        ) else {
+            panic!("an unreadable patch document is a fault, not a dropped fact");
+        };
+        assert!(
+            err.to_string().contains("v2.json"),
+            "the fault names the document: {err}"
+        );
+    }
+
+    #[test]
     fn corrupt_logs_leave_metadata_absent_not_zeroed() {
         let (_dir, repo_path) = seeded_workspace();
         let analysis = repo_path.join("re").join("analysis");
@@ -664,9 +669,11 @@ mod tests {
         std::fs::write(analysis.join("token_usage.json"), "{ not json").expect("corrupt log");
         std::fs::write(analysis.join("fault_log.json"), "nope").expect("corrupt log");
 
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         for attempt in &response.attempts {
             assert_eq!(attempt.strategy, None);
             assert_eq!(attempt.context_tier, None);
@@ -696,9 +703,11 @@ mod tests {
                 ]
             }),
         );
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let v1 = response
             .attempts
             .iter()
@@ -736,9 +745,11 @@ mod tests {
         )
         .expect("record written");
 
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "DrawPrimitive"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "DrawPrimitive"),
+        )
+        .expect("join succeeds");
         let v4 = response
             .attempts
             .iter()
@@ -765,9 +776,11 @@ mod tests {
         let git = GitManager::init_repo(&repo_path, None).expect("init repo");
         git.create_branch("game_logic.dll", "UpdateScene", 1, None)
             .expect("branch");
-        let response =
-            collect_unit_attempts(&repo_path, &make_unit("game_logic.dll", "UpdateScene"))
-                .expect("join succeeds");
+        let response = collect_unit_attempts(
+            &reader_over(&repo_path),
+            &make_unit("game_logic.dll", "UpdateScene"),
+        )
+        .expect("join succeeds");
         assert_eq!(response.attempts.len(), 1);
         assert!(!response.comparable);
         assert_eq!(response.attempts[0].strategy, None);

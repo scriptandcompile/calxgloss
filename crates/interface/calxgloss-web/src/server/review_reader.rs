@@ -10,29 +10,33 @@
 //! The module grows one seam file per read family: `live_merge` for the
 //! live store's readings, `classification` for the classification records
 //! and the persisted override layer, `obligations` for the obligation
-//! ledger readings every review row carries (issue #462).
+//! ledger readings every review row carries (issue #462), and `patches`
+//! for the retained patch documents behind the unit detail and the attempt
+//! surfaces (issue #463).
 
 #![allow(unused_imports)] // header imports feed the seam files and the tests file through `use super::*;`
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use calxgloss_git::PatchRecord;
 use calxgloss_types::dashboard::ReviewDashboard;
 use calxgloss_types::{
     BinaryClassificationOverride, BinaryIdentity, ClassificationOverrides, DllCategory,
-    LiveUnitProgress, PersistError, classification_record_dir, read_classification_overrides,
-    read_classification_record,
+    LiveUnitProgress, PersistError, UnitOfWork, classification_record_dir,
+    read_classification_overrides, read_classification_record,
 };
 use tokio::sync::RwLock;
 
 use super::ServerError;
 use super::handlers::process::binary_matches;
 use super::live_store::ProgressState;
-use super::types::RecordedClassification;
+use super::types::{AttemptRecord, RecordedClassification};
 
 mod classification;
 mod live_merge;
 mod obligations;
+mod patches;
 
 pub use classification::{
     BinaryClassifications, ClassificationDocument, ClassificationPair, ClassificationReading,
@@ -45,6 +49,7 @@ pub use classification::{
 use classification::*;
 use live_merge::*;
 use obligations::*;
+use patches::*;
 
 /// One reader over the record tree and the live store, serving every
 /// review payload. Handlers receive it through [`super::CombinedState`]
