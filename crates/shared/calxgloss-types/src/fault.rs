@@ -306,7 +306,7 @@ impl ResourceExhaustionFault {
 /// Each event records *what* happened, *where* it happened (which function,
 /// which attempt, which strategy), *how severe* it is, and *what recovery*
 /// was taken or is recommended.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FaultEvent {
     /// The DLL containing the affected function.
     pub binary: BinaryIdentity,
@@ -681,6 +681,29 @@ pub fn fault_log_path(workspace: impl AsRef<std::path::Path>) -> std::path::Path
     crate::persist::analysis_dir(workspace).join("fault_log.json")
 }
 
+/// Read the run's persisted fault log from the record tree. The two
+/// faults are distinct: a log never filed is
+/// [`crate::PersistError::NotFound`], and unreadable bytes are
+/// [`crate::PersistError::Json`] naming the path — never a reading of
+/// an empty run.
+pub fn read_fault_log(
+    workspace: impl AsRef<std::path::Path>,
+) -> Result<FaultLog, crate::PersistError> {
+    crate::persist::load_json(&fault_log_path(workspace))
+}
+
+/// File the run's fault log beside the shared read (issue #467), written
+/// atomically like every other record document. A test's fixture calls
+/// this to seed a workspace the read can answer; the analysis crate's
+/// logger still writes the same path with its own code today and can
+/// move onto this writer when it converges.
+pub fn save_fault_log(
+    workspace: impl AsRef<std::path::Path>,
+    log: &FaultLog,
+) -> Result<(), crate::PersistError> {
+    crate::persist::save_json(&fault_log_path(workspace), log)
+}
+
 /// A persistent log of all detected faults.
 ///
 /// It is stored at `<workspace>/re/analysis/fault_log.json`.  Events can be
@@ -798,6 +821,62 @@ pub struct FaultStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the read (issue #467): a test states
+        // what the fault log records, and the shared read hands the
+        // events back with no fault.
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let event = FaultEvent {
+            binary: BinaryIdentity::new("game_logic.dll"),
+            function: "DrawSprite".to_string(),
+            attempt: 2,
+            strategy: "compile_fix".to_string(),
+            category: FaultCategory::Hallucination,
+            severity: FaultSeverity::Error,
+            description: "referenced a symbol the disassembly never shows".to_string(),
+            recovery: "re-prompt with the engine's own symbols".to_string(),
+            timestamp: 1_700_000_000,
+            metadata: None,
+        };
+        let log = FaultLog {
+            entries: vec![event.clone()],
+            trimmed: FaultTrim::default(),
+        };
+        save_fault_log(ws.path(), &log).expect("file the log");
+
+        let read_back = read_fault_log(ws.path()).expect("the filed log reads");
+        assert_eq!(
+            read_back.entries, log.entries,
+            "what the writer files, the shared read hands back whole"
+        );
+    }
+
+    #[test]
+    fn unreadable_bytes_at_the_log_path_read_as_a_corrupt_fault_naming_the_path() {
+        // AC: unreadable bytes never read as an absent log (issue #467).
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let path = fault_log_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "\u{0}not a log").expect("file unreadable bytes");
+
+        let err = read_fault_log(ws.path()).expect_err("bytes that never parse");
+        match err {
+            crate::PersistError::Json { path: named, .. } => assert_eq!(named, path),
+            other => panic!("unreadable bytes are a corrupt fault naming the path: {other}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_log_reads_as_a_named_missing_fault() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let err = read_fault_log(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, crate::PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+    }
 
     #[test]
     fn test_context_window_fault_over_limit() {

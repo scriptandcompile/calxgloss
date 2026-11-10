@@ -109,6 +109,17 @@ pub fn read_unit_overrides(workspace: impl AsRef<Path>) -> Result<UnitOverrides,
     load_json(&override_records_path(workspace))
 }
 
+/// File the reviewer's per-unit override document beside the shared read
+/// (issue #467), written atomically like every other record document —
+/// so a test that states what the overrides say cannot drift from the
+/// shape the read expects.
+pub fn save_unit_overrides(
+    workspace: impl AsRef<Path>,
+    records: &UnitOverrides,
+) -> Result<(), PersistError> {
+    save_json(&override_records_path(workspace), records)
+}
+
 /// A shared, cheaply cloneable per-unit override handle (issue #96, W2.7).
 ///
 /// The web router's override endpoints change it; the translator pipeline
@@ -279,6 +290,35 @@ mod tests {
 
     fn temp_workspace() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp workspace")
+    }
+
+    #[test]
+    fn an_override_document_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the reader (issue #467): a test states
+        // what the override document says, and the shared read hands it
+        // back whole — the fixture cannot drift from the read shape.
+        let ws = temp_workspace();
+        let records = UnitOverrides {
+            overrides: [(
+                unit_override_key("game_logic.dll", "DrawPrimitive"),
+                FunctionOverride {
+                    tier_override: Some(ContextTier::ModuleContext),
+                    retry_strategy_override: Some(RetryStrategy::CompileFix),
+                    custom_hints: vec!["check the calling convention".to_string()],
+                    skip: true,
+                    reviewer_notes: "parked until the shim lands".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        save_unit_overrides(ws.path(), &records).expect("file the override document");
+
+        let read_back = read_unit_overrides(ws.path()).expect("the filed document reads");
+        assert_eq!(
+            read_back, records,
+            "what the writer files, the shared read hands back whole"
+        );
     }
 
     #[test]
@@ -538,10 +578,13 @@ mod tests {
         std::fs::write(&path, "{ not json").expect("corrupt the document");
 
         let err = read_unit_overrides(ws.path()).expect_err("bytes that never parse");
-        assert!(
-            matches!(err, PersistError::Json { .. }),
-            "a corrupt record reads as a fault, apart from a missing one: {err}"
-        );
+        match err {
+            PersistError::Json { path: named, .. } => assert_eq!(
+                named, path,
+                "the corrupt fault names the unreadable document's path"
+            ),
+            other => panic!("a corrupt record is a named corrupt fault: {other}"),
+        }
     }
 
     #[test]

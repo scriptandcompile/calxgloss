@@ -159,6 +159,29 @@ fn the_three_free_text_fields_pass_through_their_documents_verbatim() {
 // --- the three readings of a ledger, never collapsed ------------------
 
 #[test]
+fn a_ledger_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+    // The writer lands beside the read (issue #467): a test states what
+    // the ledger says, and the matching shared read hands it back with no
+    // fault — and an explicitly empty list stays the explicit nothing.
+    let dir = tempfile::TempDir::new().expect("temp workspace");
+    let record = coverage_record("eqmain.dll", "F", "what does F do?", 100);
+    let ledger = filed_ledger("eqmain.dll", vec![record.clone()]);
+    save_unknown_ledger(dir.path(), &ledger).expect("file the ledger");
+
+    let reading = read_unknown_ledger(dir.path(), &ledger.binary).expect("the filed ledger reads");
+    let EffectiveLedger::Filed(records) = reading else {
+        panic!("a document the writer filed reads as filed");
+    };
+    assert_eq!(
+        records,
+        ledger
+            .records
+            .expect("the writer kept the envelope's records"),
+        "what the writer files, the shared read hands back whole"
+    );
+}
+
+#[test]
 fn an_unfiled_ledger_reads_as_unknown_never_as_no_gaps() {
     let dir = tempfile::TempDir::new().expect("temp workspace");
     let reading =
@@ -210,10 +233,13 @@ fn a_corrupt_ledger_stays_corrupt_and_never_reads_as_unknown() {
 
     let err = read_unknown_ledger(dir.path(), &BinaryIdentity::new("eqmain.dll"))
         .expect_err("a corrupt document fails loudly");
-    assert!(
-        matches!(err, PersistError::Json { .. }),
-        "corrupt is corrupt: {err}"
-    );
+    match err {
+        PersistError::Json { path: named, .. } => assert_eq!(
+            named, path,
+            "the corrupt fault names the unreadable ledger's path"
+        ),
+        other => panic!("a corrupt ledger is a named corrupt fault: {other}"),
+    }
 }
 
 #[test]

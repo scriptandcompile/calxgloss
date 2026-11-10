@@ -498,34 +498,12 @@ pub struct QueuePosition {
     pub total: usize,
 }
 
-/// Manual review priority for a queue unit (issue #74). The dependency
-/// ordering still governs; priority only breaks ties between units the
-/// dependency graph leaves at the same depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum QueuePriority {
-    /// Review this unit first among its tie group.
-    High,
-    /// The default — no manual preference recorded.
-    #[default]
-    Normal,
-    /// Review this unit last among its tie group.
-    Low,
-}
-
-/// The persisted manual layer over the dependency-ordered queue (issue #74).
-/// Stored at `re/review/queue_overlay.json` so both order and priorities
-/// survive a server restart.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct QueueOverlay {
-    /// Unit ids in the reviewer's manual order. Units missing from the list
-    /// keep their dependency-order position within their tie group.
-    #[serde(default)]
-    pub order: Vec<String>,
-    /// Per-unit priority; a unit with no entry is [`QueuePriority::Normal`].
-    #[serde(default)]
-    pub priorities: std::collections::HashMap<String, QueuePriority>,
-}
+/// Manual review priority and the persisted queue overlay record moved
+/// to the shared record module (`calxgloss_types::queue_overlay`) so the
+/// server and the tests file the document through one writer and read it
+/// through one read (issue #467). Re-exported here so every existing
+/// `server::types` import path keeps resolving.
+pub use calxgloss_types::{QueueOverlay, QueuePriority};
 
 /// Request body for `PUT /api/queue/overlay` (issue #74). Either field may
 /// be omitted — an omitted field keeps its persisted value, a present one

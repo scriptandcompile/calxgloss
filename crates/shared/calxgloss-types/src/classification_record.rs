@@ -15,11 +15,11 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dll::DllCategory;
 use crate::identity::BinaryIdentity;
-use crate::persist::{PersistError, load_json};
+use crate::persist::{PersistError, load_json, save_json};
 
 /// The directory classification records are filed in:
 /// `{workspace}/re/classify`.
@@ -50,33 +50,33 @@ pub fn classification_record_path(workspace: impl AsRef<Path>, binary: &BinaryId
 /// existed loads with the field absent rather than failing the whole
 /// document. A category string that is not one of the known categories
 /// is a corrupt document, not a category-less one.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClassificationRecord {
     /// The binary the record speaks for, named by the writer verbatim.
     #[serde(default)]
     pub binary: String,
 
     /// The strategy category the run chose for the binary.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<DllCategory>,
 
     /// The recommended strategy as filed: a bare variant name
     /// (`"PalMapping"`), or a tagged object when the strategy carries
     /// data (`{"CrateReplacement": …}`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<serde_json::Value>,
 
     /// The exported-symbol count the classification was made against.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exports_count: Option<usize>,
 
     /// The imported-symbol count the classification was made against.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imports_count: Option<usize>,
 
     /// The crate recommended as a replacement, when the strategy names
     /// one.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_replacement: Option<String>,
 
     /// Whether the record marks the binary a known runtime library —
@@ -86,7 +86,7 @@ pub struct ClassificationRecord {
 
     /// Why the classification was chosen, when the record stores one.
     /// Older records carry none, and the read invents nothing.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -101,6 +101,22 @@ pub fn read_classification_record(
     binary: &BinaryIdentity,
 ) -> Result<ClassificationRecord, PersistError> {
     load_json(&classification_record_path(workspace, binary))
+}
+
+/// File one binary's classification record in the record tree, beside
+/// the shared read (issue #467). The document is keyed by the record's
+/// own `binary` name, sanitized exactly as [`classification_record_path`]
+/// does, and written atomically like every other record document — so a
+/// test that states what the record says cannot drift from the shape
+/// the read expects.
+pub fn save_classification_record(
+    workspace: impl AsRef<Path>,
+    record: &ClassificationRecord,
+) -> Result<(), PersistError> {
+    save_json(
+        &classification_record_path(workspace, &(&record.binary).into()),
+        record,
+    )
 }
 
 #[cfg(test)]
@@ -191,6 +207,50 @@ mod tests {
             record.reason.as_deref(),
             Some("the import table matches fmod")
         );
+    }
+
+    #[test]
+    fn a_record_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the reader (issue #467): a test states
+        // what the record says, and the matching shared read hands it back
+        // with no fault — the fixture cannot drift from the read shape.
+        let workspace = tempfile::TempDir::new().expect("temp workspace");
+        let binary = BinaryIdentity::new("game_logic.dll");
+        let record = ClassificationRecord {
+            binary: "game_logic.dll".to_string(),
+            category: Some(DllCategory::KnownThirdParty),
+            strategy: Some(serde_json::json!({"CrateReplacement": {"crate_name": "fmod-rs"}})),
+            exports_count: Some(12),
+            imports_count: Some(34),
+            crate_replacement: Some("fmod-rs".to_string()),
+            known_runtime: false,
+            reason: Some("the import table matches fmod".to_string()),
+        };
+        save_classification_record(workspace.path(), &record).expect("file the record");
+
+        let read_back =
+            read_classification_record(workspace.path(), &binary).expect("the filed record reads");
+        assert_eq!(
+            read_back, record,
+            "what the writer files, the shared read hands back whole"
+        );
+    }
+
+    #[test]
+    fn unreadable_bytes_at_the_writer_path_read_as_a_corrupt_fault_naming_the_path() {
+        // AC: unreadable bytes never read as an absent record (issue #467).
+        let workspace = tempfile::TempDir::new().expect("temp workspace");
+        let binary = BinaryIdentity::new("game_logic.dll");
+        let path = classification_record_path(workspace.path(), &binary);
+        std::fs::create_dir_all(path.parent().expect("classify dir")).expect("create re/classify");
+        std::fs::write(&path, "\u{0}not a record").expect("file unreadable bytes");
+
+        let err = read_classification_record(workspace.path(), &binary)
+            .expect_err("bytes that never parse");
+        match err {
+            PersistError::Json { path: named, .. } => assert_eq!(named, path),
+            other => panic!("unreadable bytes are a corrupt fault naming the path: {other}"),
+        }
     }
 
     #[test]

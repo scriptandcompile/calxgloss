@@ -137,6 +137,16 @@ pub fn read_classification_overrides(
     load_json(&classification_override_records_path(workspace))
 }
 
+/// File the operator's classification override document beside the
+/// shared read (issue #467), written atomically like every other record
+/// document.
+pub fn save_classification_overrides(
+    workspace: impl AsRef<Path>,
+    records: &ClassificationOverrides,
+) -> Result<(), PersistError> {
+    save_json(&classification_override_records_path(workspace), records)
+}
+
 /// A shared, cheaply cloneable classification-override handle (issue #97, W2.8).
 ///
 /// The web router's classification endpoints change it; the analyzer reads it
@@ -281,6 +291,29 @@ mod tests {
 
     fn temp_workspace() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp workspace")
+    }
+
+    #[test]
+    fn an_override_document_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the reader (issue #467): a test states
+        // what the classification override document says, and the shared
+        // read hands it back whole.
+        let ws = temp_workspace();
+        let records = ClassificationOverrides {
+            overrides: [(
+                "game_logic.dll".to_string(),
+                override_record(DllCategory::KnownThirdParty, Some("fmod-rs"), false),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        save_classification_overrides(ws.path(), &records).expect("file the document");
+
+        let read_back = read_classification_overrides(ws.path()).expect("the filed document reads");
+        assert_eq!(
+            read_back, records,
+            "what the writer files, the shared read hands back whole"
+        );
     }
 
     #[test]
@@ -479,10 +512,13 @@ mod tests {
         std::fs::write(&path, "{ not json").expect("corrupt the document");
 
         let err = read_classification_overrides(ws.path()).expect_err("bytes that never parse");
-        assert!(
-            matches!(err, PersistError::Json { .. }),
-            "a corrupt record reads as a fault, apart from a missing one: {err}"
-        );
+        match err {
+            PersistError::Json { path: named, .. } => assert_eq!(
+                named, path,
+                "the corrupt fault names the unreadable document's path"
+            ),
+            other => panic!("a corrupt record is a named corrupt fault: {other}"),
+        }
     }
 
     #[test]

@@ -51,7 +51,7 @@ use thiserror::Error;
 
 use crate::display_serde_label;
 use crate::identity::BinaryIdentity;
-use crate::persist::{PersistError, load_json};
+use crate::persist::{PersistError, load_json, save_json};
 
 // ============================================================
 // The closed sets: kind and severity
@@ -550,6 +550,18 @@ pub fn read_unknown_ledger(
         Err(PersistError::NotFound { .. }) => Ok(EffectiveLedger::Unknown),
         Err(err) => Err(err),
     }
+}
+
+/// File one binary's unknown ledger beside the shared read (issue #467).
+/// The document is keyed by the ledger's own envelope binary, replaces
+/// the last outright, and is written atomically like every other record
+/// document — so a test that states what the ledger says cannot drift
+/// from the shape the read expects.
+pub fn save_unknown_ledger(
+    workspace: impl AsRef<Path>,
+    ledger: &UnknownLedger,
+) -> Result<(), PersistError> {
+    save_json(&unknown_ledger_path(workspace, &ledger.binary), ledger)
 }
 
 // ============================================================

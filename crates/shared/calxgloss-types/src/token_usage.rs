@@ -250,6 +250,28 @@ pub fn token_usage_log_path(workspace: impl AsRef<std::path::Path>) -> std::path
     crate::persist::analysis_dir(workspace).join("token_usage.json")
 }
 
+/// Read the run's persisted token-usage log from the record tree. The
+/// two faults are distinct: a log never filed is
+/// [`crate::PersistError::NotFound`], and unreadable bytes are
+/// [`crate::PersistError::Json`] naming the path.
+pub fn read_token_usage_log(
+    workspace: impl AsRef<std::path::Path>,
+) -> Result<TokenUsageLog, crate::PersistError> {
+    crate::persist::load_json(&token_usage_log_path(workspace))
+}
+
+/// File the run's token-usage log beside the shared read (issue #467),
+/// written atomically like every other record document. A test's fixture
+/// calls this to seed a workspace the read can answer; the analysis
+/// crate's logger still writes the same path with its own code today and
+/// can move onto this writer when it converges.
+pub fn save_token_usage_log(
+    workspace: impl AsRef<std::path::Path>,
+    log: &TokenUsageLog,
+) -> Result<(), crate::PersistError> {
+    crate::persist::save_json(&token_usage_log_path(workspace), log)
+}
+
 /// The complete token usage log: every entry recorded across all
 /// translation runs.
 ///
@@ -384,6 +406,57 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the read (issue #467): a test states
+        // what the run log records, and the shared read hands the entries
+        // back with no fault.
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let log = TokenUsageLog {
+            entries: vec![TokenUsageEntry::new(
+                "game_logic.dll",
+                "DrawSprite",
+                1,
+                "compile_fix",
+                1200,
+                true,
+            )],
+            trimmed: TokenUsageTrim::default(),
+        };
+        save_token_usage_log(ws.path(), &log).expect("file the log");
+
+        let read_back = read_token_usage_log(ws.path()).expect("the filed log reads");
+        assert_eq!(
+            read_back.entries, log.entries,
+            "what the writer files, the shared read hands back whole"
+        );
+    }
+
+    #[test]
+    fn unreadable_bytes_at_the_log_path_read_as_a_corrupt_fault_naming_the_path() {
+        // AC: unreadable bytes never read as an absent log (issue #467).
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let path = token_usage_log_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "\u{0}not a log").expect("file unreadable bytes");
+
+        let err = read_token_usage_log(ws.path()).expect_err("bytes that never parse");
+        match err {
+            crate::PersistError::Json { path: named, .. } => assert_eq!(named, path),
+            other => panic!("unreadable bytes are a corrupt fault naming the path: {other}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_log_reads_as_a_named_missing_fault() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let err = read_token_usage_log(ws.path()).expect_err("nothing has been filed");
+        assert!(
+            matches!(err, crate::PersistError::NotFound { .. }),
+            "absence is a named missing fault: {err}"
+        );
+    }
 
     #[test]
     fn test_entry_creation() {

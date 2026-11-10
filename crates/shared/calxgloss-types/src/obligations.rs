@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::display_serde_label;
 use crate::error::TypesError;
 use crate::identity::BinaryIdentity;
-use crate::persist::{PersistError, load_json};
+use crate::persist::{PersistError, load_json, save_json};
 
 // ============================================================
 // The closed sets: case kind and disposition
@@ -562,6 +562,18 @@ pub fn obligation_ledger_dir(workspace: impl AsRef<Path>) -> PathBuf {
 /// verbatim including extension.
 pub fn obligation_ledger_path(workspace: impl AsRef<Path>, binary: &BinaryIdentity) -> PathBuf {
     obligation_ledger_dir(workspace).join(format!("{binary}.json"))
+}
+
+/// File one binary's obligation ledger beside the shared read (issue #467).
+/// The document goes to the path keyed by the ledger's own envelope
+/// binary, written atomically. The sealed digest an
+/// [`ObligationLedger::file`] stamps rides through unchanged, so the
+/// reader's tamper check sees exactly what the producer sealed.
+pub fn save_obligation_ledger(
+    workspace: impl AsRef<Path>,
+    ledger: &ObligationLedger,
+) -> Result<(), PersistError> {
+    save_json(&obligation_ledger_path(workspace, &ledger.binary), ledger)
 }
 
 /// Read one binary's obligation ledger. The readings stay distinct the

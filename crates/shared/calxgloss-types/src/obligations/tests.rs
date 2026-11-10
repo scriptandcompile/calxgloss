@@ -258,10 +258,13 @@ fn a_missing_ledger_reads_as_recomputable_missing_and_corrupt_bytes_as_tampered(
     std::fs::write(&path, "{ not json").expect("corrupt the document");
     let err = read_obligation_ledger(workspace.path(), &binary)
         .expect_err("a corrupt document fails loudly");
-    assert!(
-        matches!(err, PersistError::Json { .. }),
-        "corrupt is corrupt: {err}"
-    );
+    match err {
+        PersistError::Json { path: named, .. } => assert_eq!(
+            named, path,
+            "the corrupt fault names the unreadable ledger's path"
+        ),
+        other => panic!("a corrupt ledger is a named corrupt fault: {other}"),
+    }
 }
 
 #[test]
@@ -286,6 +289,45 @@ fn a_content_edit_under_a_stale_digest_refuses_at_the_reader() {
     assert!(
         matches!(err, PersistError::Json { .. }),
         "a tampered ledger is corrupt, never a reading: {err}"
+    );
+}
+
+#[test]
+fn a_ledger_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+    // The writer lands beside the read (issue #467): the sealed ledger
+    // the writer files, the shared read hands back with no fault — the
+    // digest re-derives from the bytes the writer wrote.
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let binary = BinaryIdentity::new("game_logic.dll");
+    let filed = filed_obligation_ledger();
+    save_obligation_ledger(workspace.path(), &filed).expect("files");
+
+    let loaded =
+        read_obligation_ledger(workspace.path(), &binary).expect("the written document reads");
+    assert_eq!(loaded, filed, "the writer files what the read hands back");
+}
+
+#[test]
+fn a_tampered_ledger_re_filed_through_the_shared_writer_still_refuses_as_tampering() {
+    // The sealed digest refuses tampering written through the new writer
+    // exactly as it refuses the production producer's (issue #467): an
+    // edited entry under the stale stamp is an input error, never a reading.
+    let workspace = tempfile::TempDir::new().expect("temp workspace");
+    let binary = BinaryIdentity::new("game_logic.dll");
+    save_obligation_ledger(workspace.path(), &filed_obligation_ledger()).expect("files");
+
+    let path = obligation_ledger_path(workspace.path(), &binary);
+    let mut tampered: ObligationLedger =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("filed bytes"))
+            .expect("parses");
+    tampered.entries[0].disposition = ObligationDisposition::Skipped;
+    save_obligation_ledger(workspace.path(), &tampered).expect("rewrite keeps the stale stamp");
+
+    let err = read_obligation_ledger(workspace.path(), &binary)
+        .expect_err("the re-derived digest refuses the edit");
+    assert!(
+        matches!(err, PersistError::Json { .. }),
+        "a tampered ledger written through the writer is corrupt, never a reading: {err}"
     );
 }
 

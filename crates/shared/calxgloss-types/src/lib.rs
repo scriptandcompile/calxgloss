@@ -47,6 +47,10 @@
 //!   (`ClassificationRecord`) — what a run recorded about one binary,
 //!   filed per binary under the record tree at `re/classify/`, with the
 //!   one path and the one read that name missing and corrupt apart
+//! - [`queue_overlay`] — The queue overlay record (`QueueOverlay`,
+//!   `QueuePriority`) — the reviewer's persisted manual queue order and
+//!   priorities, filed at `re/review/queue_overlay.json`, with the one
+//!   path, read, and writer the server and the tests both call
 //! - [`retry_strategy`] — The retry-strategy closed set (`RetryStrategy`) —
 //!   how a failed attempt gets fixed, shared by the retry loop, the
 //!   reviewer overrides, and the dashboard
@@ -98,6 +102,7 @@ pub mod overrides;
 pub mod persist;
 pub mod pipeline_phase;
 pub mod progress;
+pub mod queue_overlay;
 pub mod retry_strategy;
 pub mod scan;
 pub mod scenario;
@@ -121,10 +126,11 @@ pub use capture::{
 pub use classification_overrides::{
     BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
     classification_override_records_path, read_classification_overrides,
+    save_classification_overrides,
 };
 pub use classification_record::{
     ClassificationRecord, classification_record_dir, classification_record_path,
-    read_classification_record,
+    read_classification_record, save_classification_record,
 };
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use confidence::Confidence;
@@ -142,11 +148,12 @@ pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, PromptStrategyTrim,
-    StrategyStats, prompt_strategy_log_path,
+    StrategyStats, prompt_strategy_log_path, read_prompt_strategy_log, save_prompt_strategy_log,
 };
 pub use fault::{
     ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats, FaultTrim,
-    ResourceExhaustionFault, ResourceExhaustionKind, fault_log_path,
+    ResourceExhaustionFault, ResourceExhaustionKind, fault_log_path, read_fault_log,
+    save_fault_log,
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
@@ -159,11 +166,11 @@ pub use obligations::{
     BinaryConformance, CaseKind, ConformanceOpenObligation, ConformanceTally,
     ConformanceUnknownCause, ConformanceVerdict, DECLARED_CASE_KINDS, DECLARED_DISPOSITIONS,
     ObligationDisposition, ObligationEntry, ObligationLedger, UnitObligation, UnitObligationEntry,
-    obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger,
+    obligation_ledger_dir, obligation_ledger_path, read_obligation_ledger, save_obligation_ledger,
 };
 pub use overrides::{
     FunctionOverride, OverrideControl, UnitOverrides, override_records_path, read_unit_overrides,
-    unit_override_key,
+    save_unit_overrides, unit_override_key,
 };
 pub use persist::{
     JsonStore, PersistError, analysis_artifact_path, analysis_dir, call_graph_record_path,
@@ -177,6 +184,9 @@ pub use progress::{
     NoUnitInFlight, PhaseRecord, PipelineControl, PipelineRunRequest, PipelineState,
     PipelineTransitionError, ProgressEvent, RunPhase, RunRequestSignal, RunScope, RunTarget,
     StopSignal, TranslationEvents, TranslationPhase, UnitCancellation,
+};
+pub use queue_overlay::{
+    QueueOverlay, QueuePriority, queue_overlay_path, read_queue_overlay, save_queue_overlay,
 };
 pub use retry_strategy::RetryStrategy;
 pub use scan::{
@@ -195,7 +205,8 @@ pub use scenario::{
 };
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,
-    read_constraints_record, read_scope_record, scope_record_path,
+    read_constraints_record, read_scope_record, save_constraints_record, save_scope_record,
+    scope_record_path,
 };
 pub use shim::{
     ComplexityScore, ReturnMapping, SHIM_MAPPINGS_FILE, SHIM_SOURCE_FILE, SHIM_VERIFICATION_FILE,
@@ -205,7 +216,7 @@ pub use shim::{
 pub use test::{CaseAuthority, CaseOrigin, SideEffect, SideEffectKind, TestCase, TestResult};
 pub use token_usage::{
     BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats, TokenUsageTrim,
-    token_usage_log_path,
+    read_token_usage_log, save_token_usage_log, token_usage_log_path,
 };
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use unknowns::{
@@ -213,7 +224,8 @@ pub use unknowns::{
     JoinedUnknown, UnitUnknown, UnitUnknowns, UnknownActionError, UnknownDisposition, UnknownKind,
     UnknownLedger, UnknownOrigin, UnknownRecord, UnknownResolution, UnknownResolutions,
     UnknownSeverity, landed_state, read_unknown_ledger, read_unknown_resolutions,
-    unknown_ledger_dir, unknown_ledger_path, unknown_resolutions_path, unknown_roster_faults,
+    save_unknown_ledger, unknown_ledger_dir, unknown_ledger_path, unknown_resolutions_path,
+    unknown_roster_faults,
 };
 pub use verification::{
     DimensionCounts, FailedTest, VerificationReceipt, VerificationResult, VerificationVerdict,

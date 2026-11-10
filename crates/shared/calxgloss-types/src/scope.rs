@@ -208,6 +208,26 @@ pub fn read_constraints_record(
     load_json(&constraints_record_path(workspace))
 }
 
+/// File the workspace's translation scope record beside the shared read
+/// (issue #467), written atomically like every other record document —
+/// so a test that states what the scope says cannot drift from the shape
+/// the read expects.
+pub fn save_scope_record(
+    workspace: impl AsRef<Path>,
+    scope: &TranslationScope,
+) -> Result<(), PersistError> {
+    save_json(&scope_record_path(workspace), scope)
+}
+
+/// File the workspace's translation constraints record beside the
+/// shared read, same pattern as the scope record (issue #467).
+pub fn save_constraints_record(
+    workspace: impl AsRef<Path>,
+    constraints: &TranslationConstraints,
+) -> Result<(), PersistError> {
+    save_json(&constraints_record_path(workspace), constraints)
+}
+
 /// Shared, cheaply-cloneable scope handle (issue #93, W2.5).
 ///
 /// The web router's scope endpoints mutate it; the translator pipeline reads
@@ -1035,6 +1055,61 @@ mod tests {
             matches!(err, PersistError::Json { .. }),
             "a corrupt record reads as a fault, apart from a missing one: {err}"
         );
+    }
+
+    #[test]
+    fn a_scope_record_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // The writer lands beside the reader (issue #467): a test states
+        // what the scope record says, and the shared read hands the whole
+        // steer back with no fault.
+        let ws = temp_workspace();
+        let scope = TranslationScope {
+            binaries: vec![BinaryIdentity::new("game_logic.dll")],
+            skipped_functions: vec![FunctionRef::new("game_logic.dll", "DrawPrimitive")],
+            priority_functions: vec![FunctionRef::new("game_logic.dll", "UpdateGame")],
+            paused: vec![BinaryIdentity::new("renderer.dll")],
+            focus: Some(BinaryIdentity::new("game_logic.dll")),
+        };
+        save_scope_record(ws.path(), &scope).expect("file the scope record");
+
+        let read_back = read_scope_record(ws.path()).expect("the filed record reads");
+        assert_eq!(
+            read_back, scope,
+            "what the writer files, the shared read hands back whole"
+        );
+    }
+
+    #[test]
+    fn a_constraints_record_filed_through_the_shared_writer_reads_whole_through_the_shared_read() {
+        // Same pin for the constraints record (issue #467).
+        let ws = temp_workspace();
+        let constraints = TranslationConstraints {
+            max_attempts: Some(3),
+            max_context_tier: Some(ContextTier::ModuleContext),
+            token_budget: Some(50_000),
+        };
+        save_constraints_record(ws.path(), &constraints).expect("file the constraints record");
+
+        let read_back = read_constraints_record(ws.path()).expect("the filed record reads");
+        assert_eq!(
+            read_back, constraints,
+            "what the writer files, the shared read hands back whole"
+        );
+    }
+
+    #[test]
+    fn unreadable_bytes_at_the_writer_path_read_as_a_corrupt_fault_naming_the_path() {
+        // AC: unreadable bytes never read as an absent record (issue #467).
+        let ws = temp_workspace();
+        let path = constraints_record_path(ws.path());
+        std::fs::create_dir_all(path.parent().expect("analysis dir")).expect("create re/analysis");
+        std::fs::write(&path, "\u{0}not a record").expect("file unreadable bytes");
+
+        let err = read_constraints_record(ws.path()).expect_err("bytes that never parse");
+        match err {
+            PersistError::Json { path: named, .. } => assert_eq!(named, path),
+            other => panic!("unreadable bytes are a corrupt fault naming the path: {other}"),
+        }
     }
 
     #[test]
