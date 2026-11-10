@@ -57,23 +57,23 @@ goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe
 chrono = { version = "0.4.45", features = ["serde"] }
 parking_lot = "0.13.0"
 askama = "0.16.1"
-sysinfo = "0.40.0"
+sysinfo = "0.40.1"
 # The Kuna decompiler engine (Apache-2.0, https://github.com/Noelo-Lab/kuna),
 # pinned to a release tag so a build is reproducible and the upstream contract
 # is a published one (ADR-0039). Only the crates the in-process loader needs
 # are pinned; `crates/integrations/calxgloss-kuna` consumes them.
-kuna-base = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.984" }
-kuna-console = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.984" }
+kuna-base = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.994" }
+kuna-console = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.994" }
 # The analysis tier (string inventory, xref walk) and the decompiler substrate
 # (the interned type factory), which the seam's remaining scan reads answer
 # from (issue #207).
-kuna-analysis = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.984" }
-kuna-decomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.984" }
+kuna-analysis = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.994" }
+kuna-decomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.994" }
 # The SLEIGH compiler, used by calxgloss-kuna's build script to compile the
 # embedded x86 specs; a build-dependency only.
-kuna-slacomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.984" }
+kuna-slacomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.994" }
 # Binary container reader (import/export tables, image base) for the Kuna
 # source's seam reads; pinned to the same version Kuna itself depends on, so
-# both read the same file through the same lens. Kuna v1.984 still requires
+# both read the same file through the same lens. Kuna v1.994 still requires
 # object 0.39 — do not bump this past what the pinned Kuna tag asks for.
 object = { version = "0.39", default-features = false, features = ["read_core", "elf", "pe", "macho", "coff", "std"] }
