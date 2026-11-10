@@ -7,7 +7,10 @@ use super::*;
 impl ReviewSurfaceReader {
     /// Builds the workspace's review dashboard and merges the live store's
     /// in-flight readings into it — the single fold both the dashboard and
-    /// the unit-detail endpoint serve through.
+    /// the unit-detail endpoint serve through. The fold asks the
+    /// obligations seam for each in-flight unit's obligation, so its row
+    /// carries the reading the filed ledger gives and never a hardcoded
+    /// unknown (issue #462).
     pub async fn review_dashboard(&self) -> Result<ReviewDashboard, ServerError> {
         let mut dashboard = super::super::build_dashboard(&self.repo_path)
             .map_err(|e| ServerError::internal(&e.to_string()))?;
@@ -15,7 +18,21 @@ impl ReviewSurfaceReader {
             // The store answers each read as one consistent snapshot
             // (P58's seam, kept as shipped).
             let entries = progress.read().await.snapshot().await;
-            merge_live_progress(&mut dashboard, &entries);
+            let binaries: std::collections::BTreeSet<String> = entries
+                .values()
+                .map(|entry| entry.binary.as_str().to_string())
+                .collect();
+            let readings = self.unit_obligations(&binaries)?;
+            merge_live_progress(&mut dashboard, &entries, &|binary, function, attempt| {
+                readings
+                    .get(binary)
+                    .and_then(|by_attempt| {
+                        function.and_then(|function| {
+                            by_attempt.get(&(function.to_string(), attempt)).cloned()
+                        })
+                    })
+                    .unwrap_or_default()
+            });
         }
         Ok(dashboard)
     }
@@ -27,9 +44,13 @@ impl ReviewSurfaceReader {
 /// in-flight unit the dashboard does not list yet arrives as exactly one
 /// synthetic `live/{key}/v{attempt}` row, named the way the live view
 /// names it. An accepted row keeps the timestamp its acceptance recorded.
+/// The synthetic rows' obligations come from `obligation_for` — the
+/// reader's derivation through the shared fold, never a constant (issue
+/// #462).
 pub(super) fn merge_live_progress(
     dashboard: &mut ReviewDashboard,
     entries: &HashMap<String, LiveUnitProgress>,
+    obligation_for: &dyn Fn(&str, Option<&str>, u32) -> calxgloss_types::UnitObligation,
 ) {
     let mut matched_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -89,7 +110,15 @@ pub(super) fn merge_live_progress(
             updated_at: chrono::Utc::now(),
             known_gaps: Vec::new(),
             unknowns: calxgloss_types::UnitUnknowns::unknown(),
-            obligation: calxgloss_types::UnitObligation::unknown(),
+            obligation: obligation_for(
+                entry.binary.as_str(),
+                if entry.function.is_empty() {
+                    None
+                } else {
+                    Some(entry.function.as_str())
+                },
+                entry.attempt,
+            ),
             stale: calxgloss_types::dashboard::Staleness::Fresh,
         });
     }

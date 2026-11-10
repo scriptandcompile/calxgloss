@@ -50,6 +50,18 @@ fn started(binary: &str, function: &str) -> calxgloss_types::ProgressEvent {
     }
 }
 
+/// The obligation answer the fold tests' fixtures deserve: no ledger is
+/// filed in those workspaces, so the reading each synthetic row carries
+/// is the unknown. The reader's real derivation is pinned below, through
+/// `review_dashboard`.
+fn no_ledger_obligations(
+    _binary: &str,
+    _function: Option<&str>,
+    _attempt: u32,
+) -> calxgloss_types::UnitObligation {
+    calxgloss_types::UnitObligation::unknown()
+}
+
 #[tokio::test]
 async fn a_matching_review_row_is_patched_to_in_progress() {
     let mut dashboard = ReviewDashboard::new(vec![unit(
@@ -59,7 +71,7 @@ async fn a_matching_review_row_is_patched_to_in_progress() {
     )]);
     let entries = store_entries(vec![started("game_logic.dll", "DrawPrimitive")]).await;
 
-    merge_live_progress(&mut dashboard, &entries);
+    merge_live_progress(&mut dashboard, &entries, &no_ledger_obligations);
 
     assert_eq!(
         dashboard.review_queue[0].status,
@@ -81,7 +93,7 @@ async fn an_in_flight_unit_the_dashboard_does_not_list_is_added_once() {
     ])
     .await;
 
-    merge_live_progress(&mut dashboard, &entries);
+    merge_live_progress(&mut dashboard, &entries, &no_ledger_obligations);
 
     let added: Vec<&UnitOfWork> = dashboard
         .review_queue
@@ -121,7 +133,7 @@ async fn an_accepted_unit_patched_in_place_keeps_its_recorded_timestamp() {
     ])
     .await;
 
-    merge_live_progress(&mut dashboard, &entries);
+    merge_live_progress(&mut dashboard, &entries, &no_ledger_obligations);
 
     assert_eq!(
         dashboard.recent_activity[0].status,
@@ -145,7 +157,7 @@ async fn a_unit_matched_in_recent_activity_is_not_added_again_as_synthetic() {
     let mut dashboard = ReviewDashboard::new(vec![accepted]);
     let entries = store_entries(vec![started("kernel32.dll", "CreateFile")]).await;
 
-    merge_live_progress(&mut dashboard, &entries);
+    merge_live_progress(&mut dashboard, &entries, &no_ledger_obligations);
 
     assert!(
         dashboard
@@ -510,6 +522,250 @@ fn a_corrupt_override_document_stops_the_binary_surfaces_naming_the_document() {
     assert!(
         err.to_string().contains("classification_overrides.json"),
         "the fault names the document: {err}"
+    );
+}
+
+// ── Obligation reads (issue #462) ──────────────────────────────────
+
+/// File the obligation ledger for `binary`, sealed the way the
+/// `obligations file` command files it at `re/obligations/{binary}.json`.
+fn stage_obligation_ledger(
+    workspace: &std::path::Path,
+    binary: &str,
+    entries: Vec<calxgloss_types::ObligationEntry>,
+) {
+    let ledger = calxgloss_types::ObligationLedger::file(binary, entries, 1_700_000_000)
+        .expect("the ledger seals");
+    calxgloss_types::save_json(
+        &calxgloss_types::obligation_ledger_path(workspace, &ledger.binary),
+        &ledger,
+    )
+    .expect("file the obligation ledger");
+}
+
+/// What a reviewer sees mid-flight for `game_logic.dll`'s late function:
+/// the workspace dashboard with the live store folded in.
+async fn view_with_live_unit(workspace: &std::path::Path) -> ReviewDashboard {
+    let store = super::super::ProgressState::new();
+    store
+        .apply(&started("game_logic.dll", "LateFunction"))
+        .await;
+    let reader = ReviewSurfaceReader::new(
+        workspace.to_path_buf(),
+        Some(std::sync::Arc::new(tokio::sync::RwLock::new(store))),
+    );
+    reader
+        .review_dashboard()
+        .await
+        .expect("the workspace dashboard builds")
+}
+
+/// The synthetic live row a dashboard carries for that in-flight unit.
+fn live_row(dashboard: &ReviewDashboard) -> &UnitOfWork {
+    dashboard
+        .review_queue
+        .iter()
+        .find(|u| u.id == "live/game_logic.dll/LateFunction/v1")
+        .expect("the in-flight row rides the queue")
+}
+
+/// The per-binary conformance row that build carries for `game_logic.dll`.
+fn conformance_row(dashboard: &ReviewDashboard) -> &calxgloss_types::BinaryConformance {
+    dashboard
+        .conformance
+        .iter()
+        .find(|row| row.binary == "game_logic.dll")
+        .expect("the per-binary row rides the same build")
+}
+
+#[tokio::test]
+async fn a_missing_ledger_leaves_the_live_row_unknown_and_names_the_cause_on_the_row() {
+    // Honest absence (issue #462, AC 3): the live row's obligation reads
+    // unknown — never a clean reading — and the same build's conformance
+    // row says why: no ledger was ever filed.
+    let dir = make_repo_with_unit();
+    let dashboard = view_with_live_unit(dir.path()).await;
+    let synthetic = live_row(&dashboard);
+    assert!(
+        synthetic.obligation.entry.is_none(),
+        "a never-filed ledger gives no entry"
+    );
+    let row = conformance_row(&dashboard);
+    assert!(
+        row.causes
+            .contains(&calxgloss_types::ConformanceUnknownCause::NoLedgerFiled),
+        "the row names the missing ledger: {row:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_corrupt_ledger_holds_the_live_row_unknown_and_names_the_tamper() {
+    // Corrupt bytes (issue #462, AC 3): the live row never reads a clean
+    // obligation, and the same build names the input error — a tampered
+    // document, never silence.
+    let dir = make_repo_with_unit();
+    let ledger_path = calxgloss_types::obligation_ledger_path(
+        dir.path(),
+        &calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+    );
+    std::fs::create_dir_all(ledger_path.parent().expect("ledger dir")).expect("obligations dir");
+    std::fs::write(&ledger_path, "{ not json").expect("corrupt the ledger");
+    let dashboard = view_with_live_unit(dir.path()).await;
+    let synthetic = live_row(&dashboard);
+    assert!(
+        synthetic.obligation.entry.is_none(),
+        "unreadable bytes give no entry, never a clean reading"
+    );
+    let row = conformance_row(&dashboard);
+    assert_eq!(
+        row.causes,
+        vec![calxgloss_types::ConformanceUnknownCause::DigestMismatch],
+        "the row names the tamper on the document"
+    );
+}
+
+#[tokio::test]
+async fn a_stale_digest_and_a_wrong_binaries_document_both_name_the_tamper() {
+    // A tampered ledger (issue #462, AC 4): a content edit under a stale
+    // digest and a replaced document from another binary each refuse at
+    // the reader. The live row keeps the unknown and the row names the
+    // refusal — on separate workspaces, so each fault reads alone.
+    for tamper in ["stale-digest", "wrong-binaries-document"] {
+        let dir = make_repo_with_unit();
+        match tamper {
+            "stale-digest" => {
+                stage_obligation_ledger(
+                    dir.path(),
+                    "game_logic.dll",
+                    vec![calxgloss_types::ObligationEntry::new(
+                        "LateFunction",
+                        1,
+                        "aaaa1111",
+                        calxgloss_types::ObligationDisposition::NoBaseline,
+                    )],
+                );
+                // An edit under the filed digest: the seal no longer
+                // re-derives from the bytes.
+                let path = calxgloss_types::obligation_ledger_path(
+                    dir.path(),
+                    &calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+                );
+                let mut doc: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&path).expect("read ledger"))
+                        .expect("the filed ledger parses");
+                doc["entries"][0]["owner_commit"] = serde_json::json!("ffff9999");
+                std::fs::write(&path, doc.to_string()).expect("edit under the stale digest");
+            }
+            _ => {
+                // game_logic's path holds another binary's document.
+                let ledger = calxgloss_types::ObligationLedger::file(
+                    "kernel32.dll",
+                    vec![calxgloss_types::ObligationEntry::new(
+                        "LateFunction",
+                        1,
+                        "aaaa1111",
+                        calxgloss_types::ObligationDisposition::NoBaseline,
+                    )],
+                    1_700_000_000,
+                )
+                .expect("the other ledger seals");
+                let path = calxgloss_types::obligation_ledger_path(
+                    dir.path(),
+                    &calxgloss_types::BinaryIdentity::new("game_logic.dll"),
+                );
+                std::fs::create_dir_all(path.parent().expect("ledger dir"))
+                    .expect("obligations dir");
+                calxgloss_types::save_json(&path, &ledger).expect("misfile the other document");
+            }
+        }
+        let dashboard = view_with_live_unit(dir.path()).await;
+        let synthetic = live_row(&dashboard);
+        assert!(
+            synthetic.obligation.entry.is_none(),
+            "{tamper}: a tampered ledger lends no entry"
+        );
+        let row = conformance_row(&dashboard);
+        assert_eq!(
+            row.causes,
+            vec![calxgloss_types::ConformanceUnknownCause::DigestMismatch],
+            "{tamper}: the row names the tamper, never a clean verdict"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_reviewers_live_records_decide_the_live_rows_obligation_at_the_read() {
+    // One derivation, one join (issue #462, AC 2): the reviewer's skip
+    // set stands for the in-flight unit, so its row reads *skipped* with
+    // that record's reason beside it — the same join the terminal build
+    // and the per-binary row already consult.
+    let dir = make_repo_with_unit();
+    let mut entry = calxgloss_types::ObligationEntry::new(
+        "LateFunction",
+        1,
+        "aaaa1111",
+        calxgloss_types::ObligationDisposition::ClaimedVerified,
+    );
+    entry.receipt_digest = Some("sha256:cafe".to_string());
+    stage_obligation_ledger(dir.path(), "game_logic.dll", vec![entry]);
+    std::fs::create_dir_all(dir.path().join("re").join("review")).expect("review dir");
+    std::fs::write(
+        dir.path().join("re").join("review").join("skips.json"),
+        serde_json::json!({ "skipped": ["game_logic.dll/LateFunction/v1"] }).to_string(),
+    )
+    .expect("file the skip set");
+    let dashboard = view_with_live_unit(dir.path()).await;
+    let synthetic = live_row(&dashboard);
+    let entry = synthetic
+        .obligation
+        .entry
+        .as_ref()
+        .expect("the filed entry still rides the live row");
+    assert_eq!(
+        entry.disposition,
+        calxgloss_types::ObligationDisposition::Skipped,
+        "the live skip record decides the live row's disposition"
+    );
+    let reason = entry
+        .disposition_reason
+        .as_deref()
+        .expect("the deciding record states its reason");
+    assert!(
+        reason.contains("skip set"),
+        "the reason names its source: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn an_in_flight_unit_a_readable_ledger_names_carries_the_real_obligation() {
+    // The constant is gone (issue #462): the live-merge fold's synthetic
+    // row takes the reader's derived obligation — the filed entry's real
+    // reading, the same fold the terminal build runs.
+    let dir = make_repo_with_unit();
+    stage_obligation_ledger(
+        dir.path(),
+        "game_logic.dll",
+        vec![calxgloss_types::ObligationEntry::new(
+            "LateFunction",
+            1,
+            "aaaa1111",
+            calxgloss_types::ObligationDisposition::NoBaseline,
+        )],
+    );
+    let dashboard = view_with_live_unit(dir.path()).await;
+    let synthetic = live_row(&dashboard);
+    let entry = synthetic.obligation.entry.as_ref().expect(
+        "a readable ledger's entry rides the in-flight row, never the old hardcoded unknown",
+    );
+    assert_eq!(
+        entry.attempt, 1,
+        "the entry speaks for the in-flight attempt"
+    );
+    assert_eq!(entry.owner_commit, "aaaa1111", "the owner digest rides");
+    assert_eq!(
+        entry.disposition,
+        calxgloss_types::ObligationDisposition::NoBaseline,
+        "the standing disposition reads from the ledger"
     );
 }
 

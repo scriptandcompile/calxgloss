@@ -90,6 +90,50 @@ impl ConformanceJoin<'_> {
     }
 }
 
+/// The reviewer's live records, opened once from the workspace's own
+/// documents (issue #462): the skip set, the parked classifications, and
+/// the unit-override handle. The model build composes its join from
+/// records it has already read, and the web reader's live-merge fold
+/// opens this one. Both go through the same read functions, so a unit can
+/// never read one disposition on the terminal build and another on a web
+/// page. A corrupt unit-override or classification-override document is a
+/// fault naming itself, never an empty join.
+pub struct OpenedConformanceJoin {
+    skipped: std::collections::HashSet<String>,
+    parked: HashMap<String, Option<String>>,
+    overrides: Option<OverrideControl>,
+}
+
+impl OpenedConformanceJoin {
+    /// Read the reviewer's live records from the workspace. Missing
+    /// documents are the clean state: no skips, no parks, no overrides.
+    /// An unreadable document refuses the open and names its fault.
+    pub fn open(workspace: &Path) -> Result<Self, PersistError> {
+        let classified = super::builder::read_classification_records(workspace);
+        let classification_overrides = super::builder::read_classification_overrides(workspace)?;
+        let unit_overrides = OverrideControl::try_open(workspace)?;
+        Ok(Self {
+            skipped: super::builder::read_review_skips(workspace),
+            parked: super::builder::parked_classifications(&classified, &classification_overrides),
+            overrides: Some(unit_overrides),
+        })
+    }
+
+    /// Borrow the opened records as the [`ConformanceJoin`] the read seam
+    /// consumes.
+    pub fn borrow(&self) -> ConformanceJoin<'_> {
+        ConformanceJoin {
+            skipped: self.skipped.iter().cloned().collect(),
+            parked: self
+                .parked
+                .iter()
+                .map(|(binary, reason)| (binary.as_str(), reason.clone()))
+                .collect(),
+            overrides: self.overrides.clone(),
+        }
+    }
+}
+
 /// Derive one conformance row per binary: the filed obligation ledger
 /// joined with branch state, the receipt pairs committed on the attempt
 /// branches, the Accept records, and the binary's open-unknown reading

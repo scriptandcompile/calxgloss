@@ -9,7 +9,8 @@
 //!
 //! The module grows one seam file per read family: `live_merge` for the
 //! live store's readings, `classification` for the classification records
-//! and the persisted override layer.
+//! and the persisted override layer, `obligations` for the obligation
+//! ledger readings every review row carries (issue #462).
 
 #![allow(unused_imports)] // header imports feed the seam files and the tests file through `use super::*;`
 use std::collections::HashMap;
@@ -31,6 +32,7 @@ use super::types::RecordedClassification;
 
 mod classification;
 mod live_merge;
+mod obligations;
 
 pub use classification::{
     BinaryClassifications, ClassificationDocument, ClassificationPair, ClassificationReading,
@@ -42,6 +44,7 @@ pub use classification::{
 // seams' and the tests file's `use super::*;` resolve names through them.
 use classification::*;
 use live_merge::*;
+use obligations::*;
 
 /// One reader over the record tree and the live store, serving every
 /// review payload. Handlers receive it through [`super::CombinedState`]

@@ -645,7 +645,7 @@ impl<'a> DashboardBuilder<'a> {
     /// one is a fault the build reports, never an empty map that would
     /// hide reviewer decisions.
     fn read_classification_overrides(&self) -> Result<ClassificationOverrides, anyhow::Error> {
-        read_classification_overrides(&self.repo_path)
+        Ok(read_classification_overrides(&self.repo_path)?)
     }
 
     fn is_branch_merged(&self, key: &str) -> bool {
@@ -881,13 +881,13 @@ pub(crate) fn read_classification_records(workspace: &std::path::Path) -> Vec<Cl
 /// conformance derivation (issue #423).
 pub(crate) fn read_classification_overrides(
     workspace: &std::path::Path,
-) -> Result<ClassificationOverrides, anyhow::Error> {
+) -> Result<ClassificationOverrides, PersistError> {
     match calxgloss_types::read_classification_overrides(workspace) {
         Ok(records) => Ok(records),
         // A never-overridden workspace is the documented clean state:
         // the records apply exactly as written.
         Err(PersistError::NotFound { .. }) => Ok(ClassificationOverrides::default()),
-        Err(fault) => Err(anyhow::Error::from(fault)),
+        Err(fault) => Err(fault),
     }
 }
 
