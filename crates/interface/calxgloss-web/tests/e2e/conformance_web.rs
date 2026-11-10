@@ -12,29 +12,19 @@
 use super::*;
 
 /// GET `/api/dashboard` and return the parsed body.
-async fn dashboard_body(port: u16) -> serde_json::Value {
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", port))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("dashboard body is JSON")
+async fn dashboard_body(world: &support::ReviewWorld) -> serde_json::Value {
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
+    body
 }
 
-/// GET `/api/units/{id}` and return the unit object, unit ids encoded
-/// the way the web UI's own client encodes them (they carry slashes).
-async fn unit_payload(port: u16, unit_id: &str) -> serde_json::Value {
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}",
-        port,
-        unit_id.replace('/', "%2F")
-    ))
-    .await
-    .expect("unit request succeeds");
-    assert_eq!(resp.status(), 200, "unit {unit_id} must still render");
-    resp.json::<serde_json::Value>()
-        .await
-        .expect("unit body is JSON")["unit"]
-        .clone()
+/// GET `/api/units/{id}` and return the unit object — the client encodes
+/// the unit id (which carries slashes) the way the route's path parameter
+/// expects.
+async fn unit_payload(world: &support::ReviewWorld, unit_id: &str) -> serde_json::Value {
+    let (status, body) = world.client().unit_detail(unit_id).await;
+    assert_eq!(status, 200, "unit {unit_id} must still render");
+    body["unit"].clone()
 }
 
 /// File the obligation ledger for `binary`, in the shape the `obligations
@@ -70,14 +60,10 @@ async fn the_unit_detail_payload_carries_the_filed_obligation_entry_whole() {
     // AC 2: the unit detail names the attempt the entry speaks for, its
     // owner digest, the required case kinds, the standing disposition,
     // and the receipt citation (issue #424).
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     stage_obligation_ledger(
-        fixture.repo_path().as_path(),
+        world.repo_path().as_path(),
         "game_logic.dll",
         vec![
             {
@@ -104,7 +90,7 @@ async fn the_unit_detail_payload_carries_the_filed_obligation_entry_whole() {
     );
 
     // Attempt 2's entry rides the open unit, whole and exactly as filed.
-    let unit = unit_payload(fixture.port(), "game_logic.dll/DrawPrimitive/v2").await;
+    let unit = unit_payload(&world, "game_logic.dll/DrawPrimitive/v2").await;
     assert_eq!(
         unit["obligation"],
         serde_json::json!({
@@ -121,7 +107,7 @@ async fn the_unit_detail_payload_carries_the_filed_obligation_entry_whole() {
 
     // Attempt 1's entry rides the merged unit — each attempt reads its
     // own ledger entry, not the newest one for the function.
-    let unit = unit_payload(fixture.port(), "game_logic.dll/DrawPrimitive/v1").await;
+    let unit = unit_payload(&world, "game_logic.dll/DrawPrimitive/v1").await;
     assert_eq!(
         unit["obligation"]["entry"]["attempt"],
         serde_json::json!(1),
@@ -136,15 +122,11 @@ async fn an_older_unit_payload_without_the_obligation_field_reads_unknown_never_
     // AC 4: the fixture's committed unit documents predate the field.
     // The unit must still render, reading *unknown* — never a clean
     // `[]`-style zero, never a closed obligation (issue #424).
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     // No ledger filed for the binary at all: the unit's reading is the
     // unknown, serialized whole as a null entry.
-    let unit = unit_payload(fixture.port(), "game_logic.dll/DrawPrimitive/v2").await;
+    let unit = unit_payload(&world, "game_logic.dll/DrawPrimitive/v2").await;
     assert_eq!(
         unit["obligation"],
         serde_json::json!({ "entry": null }),
@@ -159,7 +141,7 @@ async fn an_older_unit_payload_without_the_obligation_field_reads_unknown_never_
     // honest unknown — a closed reading for a neighbour is not a
     // reading for this unit.
     stage_obligation_ledger(
-        fixture.repo_path().as_path(),
+        world.repo_path().as_path(),
         "game_logic.dll",
         vec![calxgloss_types::ObligationEntry::new(
             "SomeOtherFunction",
@@ -168,7 +150,7 @@ async fn an_older_unit_payload_without_the_obligation_field_reads_unknown_never_
             calxgloss_types::ObligationDisposition::ClaimedVerified,
         )],
     );
-    let unit = unit_payload(fixture.port(), "game_logic.dll/DrawPrimitive/v2").await;
+    let unit = unit_payload(&world, "game_logic.dll/DrawPrimitive/v2").await;
     assert_eq!(
         unit["obligation"],
         serde_json::json!({ "entry": null }),
@@ -181,15 +163,11 @@ async fn the_dashboard_payload_carries_the_per_binary_conformance_verdict_and_ta
     // AC 1: the queue view's per-binary reading arrives whole in the
     // shared model's payload — one derivation, no second computation
     // (issue #424).
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     // Nothing filed: the only target binary's row reads unknown with
     // its named cause — never a clean verdict, never an absent row.
-    let body = dashboard_body(fixture.port()).await;
+    let body = dashboard_body(&world).await;
     assert_eq!(
         conformance_row(&body, "game_logic.dll"),
         serde_json::json!({
@@ -216,7 +194,7 @@ async fn the_dashboard_payload_carries_the_per_binary_conformance_verdict_and_ta
     // seal rides as the closure digest, and the dispositions stand
     // counted apart from the verified ones.
     stage_obligation_ledger(
-        fixture.repo_path().as_path(),
+        world.repo_path().as_path(),
         "game_logic.dll",
         vec![calxgloss_types::ObligationEntry::new(
             "DrawPrimitive",
@@ -225,7 +203,7 @@ async fn the_dashboard_payload_carries_the_per_binary_conformance_verdict_and_ta
             calxgloss_types::ObligationDisposition::NoBaseline,
         )],
     );
-    let body = dashboard_body(fixture.port()).await;
+    let body = dashboard_body(&world).await;
     let row = conformance_row(&body, "game_logic.dll");
     assert_eq!(
         row["verdict"], "incomplete",
@@ -251,11 +229,7 @@ async fn one_build_answers_the_unit_and_the_row_from_the_same_ledger_read() {
     // its filed disposition honestly on the unit while the same build
     // counts nothing verified on the row — the unit reading never
     // launders the row into a pass (issue #424).
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     {
         let mut entry = calxgloss_types::ObligationEntry::new(
@@ -268,9 +242,9 @@ async fn one_build_answers_the_unit_and_the_row_from_the_same_ledger_read() {
         // close walk breaks on this claim — the row cannot read
         // complete no matter what the filed entry says.
         entry.receipt_digest = Some("sha256:cafe".to_string());
-        stage_obligation_ledger(fixture.repo_path().as_path(), "game_logic.dll", vec![entry]);
+        stage_obligation_ledger(world.repo_path().as_path(), "game_logic.dll", vec![entry]);
     }
-    let body = dashboard_body(fixture.port()).await;
+    let body = dashboard_body(&world).await;
     let row = conformance_row(&body, "game_logic.dll");
     assert_ne!(
         row["verdict"], "complete",
@@ -326,13 +300,9 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
     // restated in ADR-0060): a conformance verdict is per-binary
     // evidence. It never moves a unit's review status, writes no action
     // record, and blocks no Accept on its own (issue #424, AC 3).
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    let before = dashboard_body(fixture.port()).await;
+    let before = dashboard_body(&world).await;
     let statuses = |body: &serde_json::Value| -> Vec<(String, String)> {
         body["dashboard"]["review_queue"]
             .as_array()
@@ -348,7 +318,7 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
     };
 
     stage_obligation_ledger(
-        fixture.repo_path().as_path(),
+        world.repo_path().as_path(),
         "game_logic.dll",
         vec![calxgloss_types::ObligationEntry::new(
             "DrawPrimitive",
@@ -357,7 +327,7 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
             calxgloss_types::ObligationDisposition::NoBaseline,
         )],
     );
-    let after = dashboard_body(fixture.port()).await;
+    let after = dashboard_body(&world).await;
 
     // The row went from unknown to incomplete — real movement at the
     // per-binary seam, so the statuses pin below is not vacuous.
@@ -375,14 +345,14 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
         "an incomplete conformance verdict leaves every unit's review status untouched"
     );
     assert!(
-        !fixture.repo_path().join("re").join("actions").exists(),
+        !world.repo_path().join("re").join("actions").exists(),
         "no review action record is ever written for a conformance verdict"
     );
 
     // The reading also never touches branch state: the open unit's
     // branch stays unmerged, the same half of the pattern the
     // unknown-disposition pin holds.
-    let git = GitManager::open(fixture.repo_path().as_path()).expect("open git");
+    let git = GitManager::open(world.repo_path().as_path()).expect("open git");
     assert!(
         !git.is_branch_merged_into_main("re/game_logic.dll/DrawPrimitivev2")
             .expect("merged check"),
@@ -397,17 +367,13 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
         .find(|(_, status)| status == "Queued" || status == "PendingReview")
         .expect("an open unit stands")
         .0;
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/units/{}/accept",
-            fixture.port(),
+    let (status, body) = world
+        .client()
+        .post_lifecycle(&format!(
+            "/api/units/{}/accept",
             unit_id.replace('/', "%2F")
         ))
-        .send()
-        .await
-        .expect("accept request succeeds");
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.expect("accept body is JSON");
+        .await;
     assert_eq!(
         status, 200,
         "accept is not blocked by a filed conformance verdict — \

@@ -12,12 +12,10 @@
 use super::*;
 
 /// GET `/api/dashboard` and return the parsed body.
-async fn dashboard_body(port: u16) -> serde_json::Value {
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", port))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("dashboard body is JSON")
+async fn dashboard_body(world: &support::ReviewWorld) -> serde_json::Value {
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
+    body
 }
 
 /// File the scenario documents the dashboard reads: a contract set for
@@ -115,23 +113,19 @@ fn eqgame_entry(body: &serde_json::Value) -> serde_json::Value {
 
 #[tokio::test]
 async fn scenario_status_renders_every_state_from_the_filed_documents() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     // Nothing filed: the surface names nothing — no binary with a unit
     // branch gets a fabricated checklist row.
-    let body = dashboard_body(fixture.port()).await;
+    let body = dashboard_body(&world).await;
     assert_eq!(
         body["dashboard"]["scenario_statuses"],
         serde_json::json!([]),
         "no filed scenario documents render no rows at all"
     );
 
-    file_scenario_records(fixture.repo_path().as_path());
-    let body = dashboard_body(fixture.port()).await;
+    file_scenario_records(world.repo_path().as_path());
+    let body = dashboard_body(&world).await;
     let eqgame = eqgame_entry(&body);
 
     // The exact payload for all five states, pinned whole: `boot` is
@@ -181,13 +175,9 @@ async fn scenario_status_renders_every_state_from_the_filed_documents() {
 
 #[tokio::test]
 async fn a_failing_scenario_verdict_triggers_no_per_unit_review_action() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    let before = dashboard_body(fixture.port()).await;
+    let before = dashboard_body(&world).await;
     let statuses = |body: &serde_json::Value| -> Vec<(String, String)> {
         body["dashboard"]["review_queue"]
             .as_array()
@@ -202,8 +192,8 @@ async fn a_failing_scenario_verdict_triggers_no_per_unit_review_action() {
             .collect()
     };
 
-    file_scenario_records(fixture.repo_path().as_path());
-    let after = dashboard_body(fixture.port()).await;
+    file_scenario_records(world.repo_path().as_path());
+    let after = dashboard_body(&world).await;
 
     // The boundary this track pins: a scenario verdict is target-binary-
     // level evidence. With a failing verdict filed, every unit's derived
@@ -214,7 +204,7 @@ async fn a_failing_scenario_verdict_triggers_no_per_unit_review_action() {
         "a failing scenario leaves every unit's review status untouched"
     );
     assert!(
-        !fixture.repo_path().join("re").join("actions").exists(),
+        !world.repo_path().join("re").join("actions").exists(),
         "no review action record is ever written for a scenario verdict"
     );
 
@@ -228,18 +218,14 @@ async fn a_failing_scenario_verdict_triggers_no_per_unit_review_action() {
         .find(|unit| unit["status"] == "Queued" || unit["status"] == "PendingReview")
         .expect("a queued unit stands");
     let unit_id = queued["id"].as_str().expect("unit id").to_string();
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/units/{}/accept",
-            fixture.port(),
+    let (status, body) = world
+        .client()
+        .post_lifecycle(&format!(
+            "/api/units/{}/accept",
             // Same encoding the web UI's own client uses: unit ids carry slashes.
             unit_id.replace('/', "%2F")
         ))
-        .send()
-        .await
-        .expect("accept request succeeds");
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.expect("accept body is JSON");
+        .await;
     assert_eq!(
         status, 200,
         "accept is not blocked by a filed failing scenario verdict — \
