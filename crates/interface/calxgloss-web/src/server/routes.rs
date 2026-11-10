@@ -17,7 +17,7 @@ use super::actions::ActionsState;
 use super::events::{SessionManager, UnitPhaseMessage, WsMessage};
 use super::handlers;
 use super::llm_io_log::LlmIoLog;
-use super::{CombinedState, ProgressState, ServerState};
+use super::{CombinedState, ProgressState, ReviewSurfaceReader, ServerState};
 
 /// Routes shared by **every** router — plain `serve`, `serve` with review
 /// actions, and `live`. An endpoint that reads live translation state must
@@ -347,24 +347,28 @@ fn assemble(state: CombinedState) -> Router {
 /// Build the axum router for plain `calxgloss serve` — the shared review
 /// surface, without the live-pipeline endpoints.
 pub fn build_router(state: ServerState) -> Router {
+    let reader = ReviewSurfaceReader::new(state.repo_path().to_path_buf(), None);
     assemble(CombinedState {
         server: state,
         manager: None,
         bridge: None,
         actions: None,
         progress: None,
+        reader,
     })
 }
 
 /// Build the router for `calxgloss serve` with the review-actions backend
 /// attached — still no live-pipeline endpoints.
 pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> Router {
+    let reader = ReviewSurfaceReader::new(state.repo_path().to_path_buf(), None);
     assemble(CombinedState {
         server: state,
         manager: None,
         bridge: None,
         actions: Some(actions),
         progress: None,
+        reader,
     })
 }
 
@@ -417,12 +421,15 @@ pub fn build_router_with_ws(
         let _ = tx.send(event.clone());
     });
 
+    let progress = Some(Arc::new(RwLock::new(progress)));
+    let reader = ReviewSurfaceReader::new(state.repo_path().to_path_buf(), progress.clone());
     assemble(CombinedState {
         server: state,
         manager: Some(manager),
         bridge: None,
         actions: Some(actions),
-        progress: Some(Arc::new(RwLock::new(progress))),
+        progress,
+        reader,
     })
 }
 

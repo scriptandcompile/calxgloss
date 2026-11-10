@@ -9,6 +9,7 @@ mod lifecycle;
 mod live_store;
 mod llm_io_log;
 mod metrics;
+mod review_reader;
 mod routes;
 mod types;
 mod unknown_actions;
@@ -18,6 +19,7 @@ pub use self::handlers::*;
 pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
 pub use self::live_store::*;
 pub use self::llm_io_log::{LlmIoEntry, LlmIoEntryType, LlmIoLog, MAX_LLM_IO_ENTRIES};
+pub use self::review_reader::*;
 pub use self::routes::*;
 pub use self::types::*;
 pub use self::unknown_actions::*;
@@ -318,6 +320,10 @@ pub struct CombinedState {
     pub actions: Option<ActionsState>,
     /// Live translation progress — tracks units currently being translated.
     pub progress: Option<Arc<RwLock<ProgressState>>>,
+    /// The review-surface reader (issue #460). It reads the record tree
+    /// and the live store for every review payload, and owns the single
+    /// live-merge fold.
+    pub reader: ReviewSurfaceReader,
 }
 
 impl FromRef<CombinedState> for ServerState {

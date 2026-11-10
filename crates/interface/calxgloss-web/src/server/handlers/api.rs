@@ -77,89 +77,11 @@ pub async fn api_get_dashboard(
     State(combined): State<super::super::CombinedState>,
 ) -> Result<Json<super::super::DashboardResponse>, ServerError> {
     let server_state = combined.server.clone();
-    let mut dashboard = super::super::build_dashboard(server_state.repo_path())
-        .map_err(|e| ServerError::internal(&e.to_string()))?;
-
-    // Merge live progress: update units currently being translated.
-    if let Some(progress) = &combined.progress {
-        let entries = progress.read().await.snapshot().await;
-        let in_progress_ids: std::collections::HashSet<&str> =
-            entries.keys().map(|k| k.as_str()).collect();
-
-        // Helper: match a dashboard unit against a progress entry.
-        let match_unit = |u: &calxgloss_types::UnitOfWork| -> bool {
-            let key = format!("{}/{}", u.binary, u.function.as_deref().unwrap_or(""));
-            in_progress_ids.contains(key.as_str())
-        };
-
-        // Update review_queue: mark matching units as InProgress.
-        let mut matched_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for unit in &mut dashboard.review_queue {
-            if match_unit(unit) {
-                let old =
-                    std::mem::replace(&mut unit.status, calxgloss_types::ReviewStatus::InProgress);
-                if !matches!(old, calxgloss_types::ReviewStatus::Accepted) {
-                    unit.updated_at = chrono::Utc::now();
-                }
-                let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
-                matched_keys.insert(key);
-            }
-        }
-
-        // Also check recent_activity
-        for unit in &mut dashboard.recent_activity {
-            if match_unit(unit) {
-                unit.status = calxgloss_types::ReviewStatus::InProgress;
-                unit.updated_at = chrono::Utc::now();
-                let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
-                matched_keys.insert(key);
-            }
-        }
-
-        // Add synthetic units for in-progress items not yet in the dashboard
-        for (key, entry) in &entries {
-            if matched_keys.contains(key) {
-                continue;
-            }
-            // Create a synthetic unit for this in-progress translation.
-            let name = if entry.function.is_empty() {
-                format!("Classify {}", entry.binary)
-            } else {
-                format!("{}!{}", entry.binary, entry.function)
-            };
-            let unit_id = format!("live/{}/v{}", key, entry.attempt);
-
-            dashboard.review_queue.push(calxgloss_types::UnitOfWork {
-                id: unit_id,
-                name,
-                kind: calxgloss_types::WorkKind::FunctionTranslation,
-                binary: entry.binary.clone(),
-                function: if entry.function.is_empty() {
-                    None
-                } else {
-                    Some(entry.function.clone())
-                },
-                attempt: entry.attempt,
-                status: calxgloss_types::ReviewStatus::InProgress,
-                accepted: false,
-                unit_confidence: None,
-                baseline_tests_passed: None,
-                baseline_tests_total: None,
-                verification_tests_passed: None,
-                verification_tests_total: None,
-                llm_model: None,
-                context_tier: None,
-                dependencies: Vec::new(),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                known_gaps: Vec::new(),
-                unknowns: calxgloss_types::UnitUnknowns::unknown(),
-                obligation: calxgloss_types::UnitObligation::unknown(),
-                stale: calxgloss_types::dashboard::Staleness::Fresh,
-            });
-        }
-    }
+    // The review-surface reader builds the dashboard and merges the live
+    // store's in-flight units (issue #460). The unit-detail endpoint calls
+    // the same fold, so both pages describe a running translation
+    // identically.
+    let dashboard = combined.reader.review_dashboard().await?;
 
     let queue_metadata = super::super::QueueMetadata {
         total: dashboard.review_queue.len(),
@@ -210,75 +132,9 @@ pub async fn api_get_unit(
     State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<UnitResponse>, ServerError> {
-    let mut dashboard = super::super::build_dashboard(combined.server.repo_path())
-        .map_err(|e| ServerError::internal(&e.to_string()))?;
-
-    // Merge live progress entries (in-progress translations not yet in the dashboard).
-    if let Some(progress) = &combined.progress {
-        let entries = progress.read().await.snapshot().await;
-        let in_progress_keys: std::collections::HashSet<&str> =
-            entries.keys().map(|k| k.as_str()).collect();
-
-        let mut matched_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // Update existing units that match progress entries
-        for unit in &mut dashboard.review_queue {
-            let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
-            if in_progress_keys.contains(key.as_str()) {
-                unit.status = calxgloss_types::ReviewStatus::InProgress;
-                unit.updated_at = chrono::Utc::now();
-                matched_keys.insert(key);
-            }
-        }
-        for unit in &mut dashboard.recent_activity {
-            let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
-            if in_progress_keys.contains(key.as_str()) {
-                unit.status = calxgloss_types::ReviewStatus::InProgress;
-                matched_keys.insert(key);
-            }
-        }
-
-        // Add synthetic units for in-progress entries not yet in the dashboard
-        for (key, entry) in &entries {
-            if matched_keys.contains(key.as_str()) {
-                continue;
-            }
-            let name = if entry.function.is_empty() {
-                format!("Classify {}", entry.binary)
-            } else {
-                format!("{}!{}", entry.binary, entry.function)
-            };
-            let synthetic_id = format!("live/{}/v{}", key, entry.attempt);
-            dashboard.review_queue.push(calxgloss_types::UnitOfWork {
-                id: synthetic_id,
-                name,
-                kind: calxgloss_types::WorkKind::FunctionTranslation,
-                binary: entry.binary.clone(),
-                function: if entry.function.is_empty() {
-                    None
-                } else {
-                    Some(entry.function.clone())
-                },
-                attempt: entry.attempt,
-                status: calxgloss_types::ReviewStatus::InProgress,
-                accepted: false,
-                unit_confidence: None,
-                baseline_tests_passed: None,
-                baseline_tests_total: None,
-                verification_tests_passed: None,
-                verification_tests_total: None,
-                llm_model: None,
-                context_tier: None,
-                dependencies: Vec::new(),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                known_gaps: Vec::new(),
-                unknowns: calxgloss_types::UnitUnknowns::unknown(),
-                obligation: calxgloss_types::UnitObligation::unknown(),
-                stale: calxgloss_types::dashboard::Staleness::Fresh,
-            });
-        }
-    }
+    // The same reader and fold the dashboard endpoint uses (issue #460):
+    // both pages describe a running translation identically.
+    let dashboard = combined.reader.review_dashboard().await?;
 
     let unit = dashboard
         .review_queue

@@ -1010,6 +1010,7 @@ mod tests {
             bridge: None,
             actions: with_actions.then(|| ActionsState::new(dir.to_path_buf(), spec_without_llm())),
             progress: None,
+            reader: super::super::ReviewSurfaceReader::new(dir.to_path_buf(), None),
         }
     }
 

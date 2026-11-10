@@ -10,7 +10,8 @@ use axum::extract::{Path, State};
 use calxgloss_git::GitManager;
 use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_web::{
-    ActionsState, CombinedState, ServerState, accept_unit, api_accept_unit, build_dashboard,
+    ActionsState, CombinedState, ReviewSurfaceReader, ServerState, accept_unit, api_accept_unit,
+    build_dashboard,
 };
 
 /// Builds a repo where `re/game_logic.dll/DrawSpritev1` is merged into main
@@ -103,6 +104,7 @@ async fn legacy_api_accept_of_conflicting_unit_reports_conflict() {
         bridge: None,
         actions: None,
         progress: None,
+        reader: ReviewSurfaceReader::new(dir.path().to_path_buf(), None),
     };
 
     let result = api_accept_unit(
