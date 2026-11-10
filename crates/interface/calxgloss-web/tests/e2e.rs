@@ -59,6 +59,8 @@ mod headless_queue_graph_live;
 mod pipeline_progress_and_llm_log;
 #[path = "e2e/scenario_status.rs"]
 mod scenario_status;
+#[path = "e2e/support.rs"]
+mod support;
 #[path = "e2e/unit_detail_and_server_basics.rs"]
 mod unit_detail_and_server_basics;
 

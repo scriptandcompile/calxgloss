@@ -21,8 +21,8 @@ use super::*;
 /// body never names (`OutputDebugStringA`) stays absent from the panel.
 #[tokio::test]
 async fn test_translation_artifact_reaches_api_mappings_panel() {
-    let fixture = TestFixture::new();
-    let repo = fixture.repo_path();
+    let world = support::ReviewWorld::boot().await;
+    let repo = world.repo_path();
     let binary = calxgloss_testfixtures::TARGET_FILE_NAME;
 
     let spec = PipelineSpec {
@@ -73,26 +73,10 @@ async fn test_translation_artifact_reaches_api_mappings_panel() {
     )
     .expect("commit translation");
 
-    // Serve the workspace and read the panel's section off the real
-    // endpoint.
-    let state = ServerState::new(repo);
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
+    // Read the panel's section off the endpoint the booted world serves.
     let unit_id = format!("{binary}/fixture_tick/v1");
-    let encoded_id = urlencoding::encode(&unit_id);
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}",
-        fixture.port(),
-        encoded_id
-    ))
-    .await
-    .expect("unit detail request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("unit detail body is JSON");
+    let (status, body) = world.client().unit_detail(&unit_id).await;
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 
     let mappings = body["unit"]["analysis"]["api_mappings"]
