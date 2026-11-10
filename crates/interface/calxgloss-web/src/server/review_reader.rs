@@ -10,9 +10,11 @@
 //! The module grows one seam file per read family: `live_merge` for the
 //! live store's readings, `classification` for the classification records
 //! and the persisted override layer, `obligations` for the obligation
-//! ledger readings every review row carries (issue #462), and `patches`
-//! for the retained patch documents behind the unit detail and the attempt
-//! surfaces (issue #463).
+//! ledger readings every review row carries (issue #462), `patches` for
+//! the retained patch documents behind the unit detail and the attempt
+//! surfaces (issue #463), `artifacts` for the pipeline artifacts behind
+//! the binary and unit pages (issue #464), and `queue_overlay` for the
+//! reviewer's persisted manual queue order (issue #464).
 
 #![allow(unused_imports)] // header imports feed the seam files and the tests file through `use super::*;`
 use std::collections::HashMap;
@@ -33,23 +35,27 @@ use super::handlers::process::binary_matches;
 use super::live_store::ProgressState;
 use super::types::{AttemptRecord, RecordedClassification};
 
+mod artifacts;
 mod classification;
 mod live_merge;
 mod obligations;
 mod patches;
+mod queue_overlay;
 
 pub use classification::{
     BinaryClassifications, ClassificationDocument, ClassificationPair, ClassificationReading,
-    InForceDecision,
+    InForceDecision, category_name,
 };
 
 // Each seam defines methods on this module's struct and free items the
 // other files use; the globs bring them back into scope here, and the
 // seams' and the tests file's `use super::*;` resolve names through them.
+use artifacts::*;
 use classification::*;
 use live_merge::*;
 use obligations::*;
 use patches::*;
+use queue_overlay::*;
 
 /// One reader over the record tree and the live store, serving every
 /// review payload. Handlers receive it through [`super::CombinedState`]

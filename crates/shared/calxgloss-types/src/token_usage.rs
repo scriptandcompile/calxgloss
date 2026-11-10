@@ -242,6 +242,14 @@ impl TokenUsageTrim {
     }
 }
 
+/// Where the token-usage log is filed inside a workspace:
+/// `re/analysis/token_usage.json`. The single spelling of the layout —
+/// the web's review surfaces read the log at this path through their
+/// review-surface reader (issue #464).
+pub fn token_usage_log_path(workspace: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    crate::persist::analysis_dir(workspace).join("token_usage.json")
+}
+
 /// The complete token usage log: every entry recorded across all
 /// translation runs.
 ///

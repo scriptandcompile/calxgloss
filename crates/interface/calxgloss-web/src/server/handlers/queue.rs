@@ -25,7 +25,7 @@ pub async fn api_get_queue(
 ) -> Result<Json<QueueResponse>, ServerError> {
     let dashboard = super::super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    let overlay = load_queue_overlay(combined.server.repo_path());
+    let overlay = combined.reader.queue_overlay();
     let ordered = queue_order(&dashboard, &overlay);
     let mut response = QueueResponse::from_ordered(&dashboard, &ordered);
     // The run's live readings, merged beside each row's persisted review
@@ -80,11 +80,11 @@ fn live_reading(record: &calxgloss_types::LiveUnitProgress) -> Option<String> {
 /// persisted queue overlay breaking ties, matching what the queue view
 /// shows (issue #74).
 pub async fn api_get_next_unit(
-    State(state): State<ServerState>,
+    State(combined): State<CombinedState>,
 ) -> Result<Json<Option<QueueEntry>>, ServerError> {
-    let dashboard = super::super::build_dashboard(state.repo_path())
+    let dashboard = super::super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    let overlay = load_queue_overlay(state.repo_path());
+    let overlay = combined.reader.queue_overlay();
     // queue_order puts the active (Queued + PendingReview) section first.
     let next = queue_order(&dashboard, &overlay)
         .into_iter()
@@ -112,11 +112,11 @@ pub async fn api_get_next_unit(
 /// nothing has been recorded yet. Registered in every router — it reads a
 /// persisted file, not live pipeline state.
 pub async fn api_get_queue_overlay(
-    State(state): State<ServerState>,
+    State(combined): State<CombinedState>,
 ) -> Result<Json<QueueOverlayResponse>, ServerError> {
-    let dashboard = super::super::build_dashboard(state.repo_path())
+    let dashboard = super::super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    let overlay = load_queue_overlay(state.repo_path());
+    let overlay = combined.reader.queue_overlay();
     Ok(Json(overlay_response(&dashboard, &overlay)))
 }
 
@@ -125,19 +125,19 @@ pub async fn api_get_queue_overlay(
 /// body field keeps its persisted value. Registered in every router — the
 /// overlay is review state the plain `serve` mode owns.
 pub async fn api_update_queue_overlay(
-    State(state): State<ServerState>,
+    State(combined): State<CombinedState>,
     Json(update): Json<QueueOverlayUpdate>,
 ) -> Result<Json<QueueOverlayResponse>, ServerError> {
-    let dashboard = super::super::build_dashboard(state.repo_path())
+    let dashboard = super::super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    let mut overlay = load_queue_overlay(state.repo_path());
+    let mut overlay = combined.reader.queue_overlay();
     if let Some(order) = update.order {
         overlay.order = order;
     }
     if let Some(priorities) = update.priorities {
         overlay.priorities = priorities;
     }
-    save_queue_overlay(state.repo_path(), &overlay)?;
+    combined.reader.save_queue_overlay(&overlay)?;
     Ok(Json(overlay_response(&dashboard, &overlay)))
 }
 
@@ -273,31 +273,8 @@ pub(crate) fn compute_queue_position(
     QueuePosition { index, total }
 }
 
-/// Path of the persisted queue overlay inside the repo — review-UI state,
-/// filed beside the other review records rather than under `re/analysis`
-/// (which holds pipeline artifacts).
-pub(crate) fn queue_overlay_path(repo_path: &std::path::Path) -> std::path::PathBuf {
-    repo_path
-        .join("re")
-        .join("review")
-        .join("queue_overlay.json")
-}
-
-/// Loads the persisted queue overlay, degrading to the empty overlay
-/// (pure dependency order) when the file is missing or corrupt.
-pub(crate) fn load_queue_overlay(repo_path: &std::path::Path) -> QueueOverlay {
-    super::process::load_json_or_default(&queue_overlay_path(repo_path))
-}
-
-/// Writes the queue overlay atomically so a manual order or priority set in
-/// the UI survives a server restart.
-pub(crate) fn save_queue_overlay(
-    repo_path: &std::path::Path,
-    overlay: &QueueOverlay,
-) -> Result<(), ServerError> {
-    calxgloss_types::save_json(&queue_overlay_path(repo_path), overlay)
-        .map_err(|e| ServerError::internal(&format!("Failed to save queue overlay: {e}")))
-}
+// The queue overlay path and its read and write live in the review-surface
+// reader (issue #464). The queue handlers ask the reader for the overlay.
 
 /// Path of the persisted skip set inside the repo (issue #75) — the shared
 /// [`ReviewSkips::path_in`] keeps the web writer and the builder reader
@@ -442,6 +419,17 @@ mod tests {
     use calxgloss_types::{
         DependencyEdge, DependencyGraph, DependencyNode, ReviewDashboard, UnitOfWork, WorkKind,
     };
+
+    /// The queue overlay reads and writes through the review-surface
+    /// reader (issue #464); the tests build one over a temp workspace.
+    fn overlay_reader(
+        workspace: &std::path::Path,
+    ) -> super::super::super::review_reader::ReviewSurfaceReader {
+        super::super::super::review_reader::ReviewSurfaceReader::new(
+            workspace.to_path_buf(),
+            None,
+        )
+    }
 
     fn make_unit(id: &str, kind: WorkKind, status: ReviewStatus) -> UnitOfWork {
         UnitOfWork {
@@ -656,8 +644,9 @@ mod tests {
             priorities: HashMap::from([("func_A".into(), QueuePriority::Low)]),
         };
 
-        save_queue_overlay(dir.path(), &overlay).expect("overlay saves");
-        let loaded = load_queue_overlay(dir.path());
+        let reader = overlay_reader(dir.path());
+        reader.save_queue_overlay(&overlay).expect("overlay saves");
+        let loaded = reader.queue_overlay();
         assert_eq!(loaded.order, overlay.order);
         assert_eq!(loaded.priorities, overlay.priorities);
     }
@@ -665,13 +654,18 @@ mod tests {
     #[test]
     fn load_queue_overlay_degrades_to_empty_when_missing_or_corrupt() {
         let dir = tempfile::tempdir().expect("temp workspace");
-        let missing = load_queue_overlay(dir.path());
+        let reader = overlay_reader(dir.path());
+        let missing = reader.queue_overlay();
         assert!(missing.order.is_empty() && missing.priorities.is_empty());
 
-        let path = queue_overlay_path(dir.path());
+        let path = dir
+            .path()
+            .join("re")
+            .join("review")
+            .join("queue_overlay.json");
         std::fs::create_dir_all(path.parent().expect("overlay dir")).expect("create re/review");
         std::fs::write(&path, "not json").expect("write corrupt overlay");
-        let corrupt = load_queue_overlay(dir.path());
+        let corrupt = reader.queue_overlay();
         assert!(corrupt.order.is_empty() && corrupt.priorities.is_empty());
     }
 

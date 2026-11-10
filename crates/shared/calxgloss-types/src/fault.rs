@@ -673,6 +673,14 @@ impl FaultTrim {
     }
 }
 
+/// Where the fault log is filed inside a workspace:
+/// `re/analysis/fault_log.json`. The single spelling of the layout —
+/// the web's review surfaces read the log at this path through their
+/// review-surface reader (issue #464).
+pub fn fault_log_path(workspace: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    crate::persist::analysis_dir(workspace).join("fault_log.json")
+}
+
 /// A persistent log of all detected faults.
 ///
 /// It is stored at `<workspace>/re/analysis/fault_log.json`.  Events can be

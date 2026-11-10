@@ -67,6 +67,27 @@ pub fn analysis_dir(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("analysis")
 }
 
+/// The per-function analysis artifact inside the shared analysis
+/// directory: `re/analysis/{binary}/{function}.json`, filed by the
+/// translate path for every unit it translates. The web's review
+/// surfaces read it through the review-surface reader (issue #464).
+pub fn analysis_artifact_path(
+    workspace: impl AsRef<Path>,
+    binary: &str,
+    function: &str,
+) -> PathBuf {
+    analysis_dir(workspace)
+        .join(binary)
+        .join(format!("{function}.json"))
+}
+
+/// The per-binary call-graph record inside the shared analysis
+/// directory: `re/analysis/{binary}_call_graph.json`, written by the
+/// analysis scan.
+pub fn call_graph_record_path(workspace: impl AsRef<Path>, binary: &str) -> PathBuf {
+    analysis_dir(workspace).join(format!("{binary}_call_graph.json"))
+}
+
 /// A monotonically increasing counter. It keeps each [`save_json`] temp file
 /// name unique within this process. Combined with the pid the name is unique
 /// per writer, so concurrent saves (threads or processes) never collide on

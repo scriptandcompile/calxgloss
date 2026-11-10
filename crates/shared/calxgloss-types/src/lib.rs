@@ -142,11 +142,11 @@ pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, PromptStrategyTrim,
-    StrategyStats,
+    StrategyStats, prompt_strategy_log_path,
 };
 pub use fault::{
     ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats, FaultTrim,
-    ResourceExhaustionFault, ResourceExhaustionKind,
+    ResourceExhaustionFault, ResourceExhaustionKind, fault_log_path,
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
@@ -165,7 +165,10 @@ pub use overrides::{
     FunctionOverride, OverrideControl, UnitOverrides, override_records_path, read_unit_overrides,
     unit_override_key,
 };
-pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
+pub use persist::{
+    JsonStore, PersistError, analysis_artifact_path, analysis_dir, call_graph_record_path,
+    load_json, save_json,
+};
 pub use pipeline_phase::{
     BinaryActivity, BinaryProgress, PalReadiness, PalTraitReadiness, PhaseProgress, PhaseState,
     PipelinePhase,
@@ -195,12 +198,14 @@ pub use scope::{
     read_constraints_record, read_scope_record, scope_record_path,
 };
 pub use shim::{
-    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
-    ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
+    ComplexityScore, ReturnMapping, SHIM_MAPPINGS_FILE, SHIM_SOURCE_FILE, SHIM_VERIFICATION_FILE,
+    ShimApiMapping, ShimLayer, ShimMappingTestResult, ShimSuggestion, ShimSuggestionReport,
+    ShimVerificationResult, dll_to_module_name, shim_artifacts_dir,
 };
 pub use test::{CaseAuthority, CaseOrigin, SideEffect, SideEffectKind, TestCase, TestResult};
 pub use token_usage::{
     BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats, TokenUsageTrim,
+    token_usage_log_path,
 };
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use unknowns::{

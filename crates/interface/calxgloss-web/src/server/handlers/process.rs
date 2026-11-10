@@ -8,8 +8,17 @@
 
 use std::path::Path;
 
-use calxgloss_types::{ContextTier, FaultLog, TokenUsageEntry, TokenUsageLog, detect_complexity};
+use calxgloss_types::{
+    ContextTier, FaultLog, TokenUsageEntry, TokenUsageLog, detect_complexity,
+};
 
+// The record tree's log layouts live with the shared record types
+// (issue #464). The review handlers reach them through these re-exports.
+pub(crate) use calxgloss_types::{
+    fault_log_path, prompt_strategy_log_path, token_usage_log_path,
+};
+
+use super::super::review_reader::ReviewSurfaceReader;
 use super::super::types::{
     FaultRecord, StrategyRecord, TierAttemptRecord, TierRationale, TierSection, TokenAttemptRecord,
     TokenSection, UnitProcess,
@@ -22,23 +31,18 @@ use super::super::types::{
 /// shared logs down to entries belonging to this unit. Every read failure
 /// (missing file, corrupt JSON) degrades that section to its empty value.
 pub(crate) fn build_unit_process(
-    repo_path: &Path,
+    reader: &ReviewSurfaceReader,
     unit: &calxgloss_types::UnitOfWork,
 ) -> UnitProcess {
     let function = unit.function.clone().unwrap_or_default();
 
-    let entries = load_json_or_default::<TokenUsageLog>(
-        &repo_path
-            .join("re")
-            .join("analysis")
-            .join("token_usage.json"),
-    )
-    .entries
-    .into_iter()
-    .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
-    .collect::<Vec<_>>();
+    let entries = load_json_or_default::<TokenUsageLog>(&token_usage_log_path(reader.repo_path()))
+        .entries
+        .into_iter()
+        .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
+        .collect::<Vec<_>>();
 
-    let faults = load_json_or_default::<FaultLog>(&fault_log_path(repo_path))
+    let faults = load_json_or_default::<FaultLog>(&fault_log_path(reader.repo_path()))
         .entries
         .iter()
         .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
@@ -46,7 +50,7 @@ pub(crate) fn build_unit_process(
         .collect();
 
     UnitProcess {
-        tier: build_tier_section(unit, &entries, repo_path),
+        tier: build_tier_section(unit, &entries, reader),
         faults,
         tokens: build_token_section(&entries),
         strategies: build_strategy_section(&entries),
@@ -61,7 +65,7 @@ pub(crate) fn build_unit_process(
 fn build_tier_section(
     unit: &calxgloss_types::UnitOfWork,
     entries: &[TokenUsageEntry],
-    repo_path: &Path,
+    reader: &ReviewSurfaceReader,
 ) -> TierSection {
     let sorted = sorted_entries(entries);
 
@@ -109,7 +113,7 @@ fn build_tier_section(
         description,
         escalated: distinct_tiers.len() > 1,
         rationale: load_tier_rationale(
-            repo_path,
+            reader,
             &unit.binary,
             &unit.function.clone().unwrap_or_default(),
         ),
@@ -121,42 +125,21 @@ fn build_tier_section(
 /// mirroring the signals the pipeline feeds to `select_context_tier`
 /// (complexity and Windows API call-site count).
 /// Returns `None` when the artifact is missing or unreadable.
-fn load_tier_rationale(repo_path: &Path, binary: &str, function: &str) -> Option<TierRationale> {
-    if function.is_empty() {
-        return None;
-    }
-    let artifact_path = repo_path
-        .join("re")
-        .join("analysis")
-        .join(binary)
-        .join(format!("{function}.json"));
+fn load_tier_rationale(
+    reader: &ReviewSurfaceReader,
+    binary: &str,
+    function: &str,
+) -> Option<TierRationale> {
+    let artifact = reader.function_artifact(binary, function)?;
 
-    #[derive(serde::Deserialize)]
-    struct RawApiCall {
-        #[serde(default)]
-        category: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RawFunctionArtifact {
-        #[serde(default)]
-        disassembly: String,
-        #[serde(default)]
-        windows_apis: Vec<RawApiCall>,
-    }
-
-    let artifact: RawFunctionArtifact = std::fs::read_to_string(&artifact_path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())?;
-
-    let categories: Vec<String> = artifact
-        .windows_apis
+    let api_calls = artifact.windows_apis.unwrap_or_default();
+    let categories: Vec<String> = api_calls
         .iter()
         .map(|api| api.category.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let api_call_count = artifact.windows_apis.len();
+    let api_call_count = api_calls.len();
     let complexity = detect_complexity(&artifact.disassembly, &categories);
 
     Some(TierRationale {
@@ -244,29 +227,9 @@ where
 
 // ─── Queue effort estimates (issue #64) ──────────────────────────────
 
-/// Path of the token-usage log artifact inside the repo — the single place
-/// the layout is spelled out, shared by every handler that reads it.
-pub(crate) fn token_usage_log_path(repo_path: &Path) -> std::path::PathBuf {
-    repo_path
-        .join("re")
-        .join("analysis")
-        .join("token_usage.json")
-}
-
-/// Path of the fault log artifact inside the repo — the single place the
-/// layout is spelled out, shared by every handler that reads it.
-pub(crate) fn fault_log_path(repo_path: &Path) -> std::path::PathBuf {
-    repo_path.join("re").join("analysis").join("fault_log.json")
-}
-
-/// Path of the prompt-strategy log artifact inside the repo — the single
-/// place the layout is spelled out, shared by every handler that reads it.
-pub(crate) fn prompt_strategy_log_path(repo_path: &Path) -> std::path::PathBuf {
-    repo_path
-        .join("re")
-        .join("analysis")
-        .join("prompt_strategy_log.json")
-}
+// The token-usage, fault, and prompt-strategy log paths are owned by the
+// shared record types (issue #464) and re-exported above, so the layout
+// is spelled out once outside the handlers.
 
 /// Estimates the effort per queued unit from the token-usage log's recorded
 /// attempt durations: unit_id → average seconds per attempt.
@@ -329,6 +292,17 @@ pub(crate) fn binary_matches(entry_binary: &str, unit_binary: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Process telemetry reads the record tree through the review-surface
+    /// reader (issue #464); the tests build one over a temp workspace.
+    fn unit_reader(
+        workspace: &std::path::Path,
+    ) -> super::super::super::review_reader::ReviewSurfaceReader {
+        super::super::super::review_reader::ReviewSurfaceReader::new(
+            workspace.to_path_buf(),
+            None,
+        )
+    }
+
     #[test]
     fn test_dll_matches_compares_verbatim() {
         assert!(binary_matches("game_logic.dll", "game_logic.dll"));
@@ -367,7 +341,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let process = build_unit_process(ws.path(), &unit);
+        let process = build_unit_process(&unit_reader(ws.path()), &unit);
 
         // Per-attempt detail honestly covers the retained window only.
         assert_eq!(process.tokens.attempts, 2);

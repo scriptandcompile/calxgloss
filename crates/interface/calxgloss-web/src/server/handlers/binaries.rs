@@ -44,7 +44,7 @@
 //! or missing markers, never a fabricated trait list.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use axum::{Json, extract::Path as PathExtractor, extract::State};
 
@@ -301,43 +301,6 @@ pub async fn api_get_binary_detail(
     Ok(Json(binary_detail(&reader, &name)?))
 }
 
-/// The workspace's shim artifact directory for one binary — the layout
-/// the shim pipeline persists (`calxgloss-analysis::shim_pipeline`):
-/// `re/shims/{binary}/` holding `mappings.json`, `shim.rs`,
-/// `shim_tests.rs`, and `verification.json`.
-fn shim_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
-    binary_artifact_dir(repo_path, "shims", name)
-}
-
-/// The per-binary artifact directory under `re/{root}/` whose directory
-/// name is the binary's — matched case-insensitively like every other
-/// server binary join; when several spellings match, the alphabetically
-/// first wins. If no directory matches, the result is `None` — the
-/// honest "no artifacts" answer.
-fn binary_artifact_dir(repo_path: &Path, root: &str, name: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(repo_path.join("re").join(root))
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|dir_name| binary_matches(dir_name, name))
-        })
-        .collect();
-    dirs.sort();
-    dirs.into_iter().next()
-}
-
-/// Reads one shim artifact, honestly `None` when the file is missing or
-/// corrupt — a corrupt artifact is no artifact, never a zeroed one.
-fn read_shim_artifact<T: serde::de::DeserializeOwned>(dir: &Path, file: &str) -> Option<T> {
-    std::fs::read_to_string(dir.join(file))
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-}
-
 /// Read the dashboard's shim unit for one crate into the tracker's
 /// branch state. The join is the same exact-crate-name rule the
 /// dashboard's own dependency wiring holds (shim units keyed by their
@@ -377,13 +340,11 @@ fn shim_status(
     let name = record.binary.as_deref().unwrap_or(name);
     let decision = classifications.in_force(record);
 
-    let artifacts = shim_artifact_dir(repo_path, name);
-    let mappings: Option<calxgloss_types::ShimLayer> = artifacts
-        .as_ref()
-        .and_then(|dir| read_shim_artifact(dir, "mappings.json"));
-    let verification: Option<calxgloss_types::ShimVerificationResult> = artifacts
-        .as_ref()
-        .and_then(|dir| read_shim_artifact(dir, "verification.json"));
+    // The reader walks the shim artifact directory (issue #464) — each
+    // filed document as its own reading.
+    let readout = reader.shim_readout(name);
+    let mappings = readout.mappings;
+    let verification = readout.verification;
 
     // Only a decision in force that names a crate has a shim branch to
     // look for; the branch model is the same dashboard the rest of this
@@ -500,102 +461,6 @@ pub(crate) fn needed_pal_traits(categories: &[String]) -> Vec<PalTraitStatus> {
         .collect()
 }
 
-/// The workspace's per-function analysis artifact directory for one
-/// binary — the layout the web's analysis readers read:
-/// `re/analysis/{binary}/` holding one `{function}.json` per translated
-/// function. The translate path files an artifact for every unit it
-/// translates (issue #379; see the `handlers::analysis` module note),
-/// so the directory covers the translated units; a missing one means
-/// this binary has never been translated in the workspace, or its
-/// artifact writes failed — the former is the normal case, and neither
-/// is a fault here.
-fn analysis_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
-    binary_artifact_dir(repo_path, "analysis", name)
-}
-
-/// The API-call categories the binary's persisted per-function analysis
-/// artifacts actually record — the honest input to the needed-trait
-/// derivation. A missing or unreadable directory is no categories; a
-/// corrupt function artifact is no artifact, contributing nothing while
-/// the readable ones still answer. Sorted and deduplicated verbatim.
-/// Read per binary only by the binaries tracker and by the pipeline
-/// poll's PalMapping rows (issue #243) — never for non-PAL rows.
-pub(crate) fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<String> {
-    // The shape the analysis pipeline persists per function — only the
-    // API-call categories matter here; everything else is ignored.
-    #[derive(serde::Deserialize)]
-    struct FunctionArtifact {
-        #[serde(default)]
-        windows_apis: Option<Vec<ApiCallRecord>>,
-    }
-    #[derive(serde::Deserialize)]
-    struct ApiCallRecord {
-        #[serde(default)]
-        category: String,
-    }
-
-    let Some(dir) = analysis_artifact_dir(repo_path, name) else {
-        return Vec::new();
-    };
-    let mut categories: Vec<String> = std::fs::read_dir(&dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .filter_map(|content| serde_json::from_str::<FunctionArtifact>(&content).ok())
-        .filter_map(|artifact| artifact.windows_apis)
-        .flatten()
-        .map(|api| api.category)
-        .filter(|category| !category.is_empty())
-        .collect();
-    categories.sort();
-    categories.dedup();
-    categories
-}
-
-/// The workspace's generated PAL/shim source texts — the honest input for
-/// trait existence, adding no new persistence format. The shared PAL crate
-/// verifier generates under `scratch/pal/src/` (every `.rs` in it) plus
-/// every binary's generated shim source (`re/shims/{binary}/shim.rs`,
-/// the layout `shim_pipeline` persists — test sources reference traits
-/// without defining them, so only `shim.rs` counts). Unreadable files
-/// are skipped; no sources is the honest empty answer. The pipeline poll
-/// scans once per request and shares the result across all PAL rows
-/// (issue #243) — the scan never runs per row.
-pub(crate) fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
-    let mut pal_files: Vec<PathBuf> =
-        std::fs::read_dir(repo_path.join("scratch").join("pal").join("src"))
-            .ok()
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
-            .collect();
-    pal_files.sort();
-
-    let mut shim_files: Vec<PathBuf> = std::fs::read_dir(repo_path.join("re").join("shims"))
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .map(|dir| dir.join("shim.rs"))
-        .filter(|path| path.is_file())
-        .collect();
-    shim_files.sort();
-
-    pal_files
-        .into_iter()
-        .chain(shim_files)
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .collect()
-}
-
 /// Whether a source text defines `trait {name}` — the `trait` keyword
 /// immediately followed by the exact trait name, with a word boundary on
 /// each side, so `trait GraphicsDevice2` never marks `GraphicsDevice` and
@@ -624,15 +489,17 @@ pub(crate) fn defines_trait(source: &str, name: &str) -> bool {
 /// force says. A binary with no readable API-call artifacts honestly
 /// answers an empty trait list.
 fn pal_status(reader: &ReviewSurfaceReader, name: &str) -> Result<PalStatusResponse, ServerError> {
-    let repo_path = reader.repo_path();
     let classifications = reader.binary_classifications()?;
     let record = classifications.find(name)?;
     let name = record.binary.as_deref().unwrap_or(name);
 
-    let categories = recorded_api_categories(repo_path, name);
+    // Both sides of the tracker read through the review-surface reader
+    // (issue #464): the recorded API-call categories from the binaries
+    // readable analysis artifacts, and the generated PAL/shim sources.
+    let categories = reader.api_call_categories(name);
     let mut traits = needed_pal_traits(&categories);
     if !traits.is_empty() {
-        let sources = generated_pal_source_texts(repo_path);
+        let sources = reader.pal_source_texts();
         for trait_status in &mut traits {
             trait_status.exists = sources
                 .iter()
@@ -956,30 +823,6 @@ mod tests {
     }
 
     #[test]
-    fn shim_artifact_dir_join_is_case_insensitive() {
-        // The shim directory is named with the binary name the pipeline
-        // wrote;
-        // the lookup matches case-insensitively like every other server
-        // binary join, and deterministically the alphabetically first
-        // spelling wins.
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let shims = workspace.path().join("re").join("shims");
-        std::fs::create_dir_all(shims.join("D3D9.dll")).expect("shim dir");
-        std::fs::create_dir_all(shims.join("d3d9.dll")).expect("shim dir");
-
-        let dir = shim_artifact_dir(workspace.path(), "d3d9.dll").expect("a matching dir");
-        assert_eq!(
-            dir.file_name().and_then(|n| n.to_str()),
-            Some("D3D9.dll"),
-            "alphabetically first spelling wins"
-        );
-        assert!(
-            shim_artifact_dir(workspace.path(), "other.dll").is_none(),
-            "no matching directory is honestly no artifacts"
-        );
-    }
-
-    #[test]
     fn category_trait_mapping_mirrors_the_tier_four_shape() {
         // Every category the translator's Tier-4 extraction maps, maps
         // to the same trait here — and the categories it leaves
@@ -1083,55 +926,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn analysis_artifact_dir_join_is_case_insensitive() {
-        // The analysis directory carries the binary name the pipeline
-        // wrote; the lookup matches case-insensitively like every other
-        // server binary join, and deterministically the alphabetically
-        // first spelling wins.
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let analysis = workspace.path().join("re").join("analysis");
-        std::fs::create_dir_all(analysis.join("D3D9.dll")).expect("analysis dir");
-        std::fs::create_dir_all(analysis.join("d3d9.dll")).expect("analysis dir");
-
-        let dir = analysis_artifact_dir(workspace.path(), "d3d9.dll").expect("a matching dir");
-        assert_eq!(
-            dir.file_name().and_then(|n| n.to_str()),
-            Some("D3D9.dll"),
-            "alphabetically first spelling wins"
-        );
-        assert!(
-            analysis_artifact_dir(workspace.path(), "other.dll").is_none(),
-            "no matching directory is honestly no artifacts"
-        );
-    }
-
-    #[test]
-    fn generated_sources_cover_scratch_pal_and_shim_sources_only() {
-        // The scratch PAL crate contributes every .rs; a shim directory
-        // only its generated shim.rs — a trait defined in shim_tests.rs
-        // is a reference, not a generated definition.
-        let workspace = tempfile::tempdir().expect("temp workspace");
-        let pal_src = workspace.path().join("scratch").join("pal").join("src");
-        std::fs::create_dir_all(&pal_src).expect("pal src dir");
-        std::fs::write(pal_src.join("stub_content.rs"), "pub trait WindowManager {")
-            .expect("stub content");
-        std::fs::write(pal_src.join("lib.rs"), "include!(\"stub_content.rs\");").expect("lib rs");
-        let shim_dir = workspace.path().join("re").join("shims").join("d3d9.dll");
-        std::fs::create_dir_all(&shim_dir).expect("shim dir");
-        std::fs::write(shim_dir.join("shim.rs"), "unsafe fn present() {}").expect("shim source");
-        std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {")
-            .expect("shim tests");
-
-        let sources = generated_pal_source_texts(workspace.path());
-        let joined = sources.join("\n");
-        assert!(
-            defines_trait(&joined, "WindowManager"),
-            "the generated PAL crate counts"
-        );
-        assert!(
-            !defines_trait(&joined, "ComObject"),
-            "a shim test source is not a generated trait definition"
-        );
-    }
+    // The record-directory walks these reads used to do now live in the
+    // review reader, beside its own seam tests (issue #464).
 }

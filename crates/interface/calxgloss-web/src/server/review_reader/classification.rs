@@ -264,7 +264,7 @@ pub(super) fn in_force_decision(
 
 /// The category's wire name — the serde variant name the record tree and
 /// every review surface spell categories with.
-pub(super) fn category_name(category: &DllCategory) -> String {
+pub fn category_name(category: &DllCategory) -> String {
     serde_json::to_value(category)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))

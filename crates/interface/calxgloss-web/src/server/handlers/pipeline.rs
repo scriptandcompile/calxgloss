@@ -3,7 +3,7 @@
 use super::super::{
     BatchInfo, BinaryFocusResponse, BinaryPauseResponse, ClassificationInfo, CombinedState,
     PipelineControl, PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressResponse, ServerError, UnitCancelResponse,
+    PipelineTimeEstimate, ProgressResponse, ReviewSurfaceReader, ServerError, UnitCancelResponse,
 };
 
 use super::process::binary_matches;
@@ -112,7 +112,7 @@ pub async fn api_get_pipeline(
     // A restarted run re-classifies nothing, so the persisted records are
     // the only account of what the workspace already knows; this run's own
     // events supersede them wherever both exist.
-    for (binary, info) in disk_classifications(combined.server.repo_path()) {
+    for (binary, info) in disk_classifications(&combined.reader) {
         classifications.entry(binary).or_insert(info);
     }
 
@@ -264,7 +264,7 @@ pub async fn api_get_pipeline(
             .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
     });
     let pal_sources = has_pal_row
-        .then(|| super::binaries::generated_pal_source_texts(combined.server.repo_path()));
+        .then(|| combined.reader.pal_source_texts());
 
     let mut binaries = derive_binaries(
         &dll_names_vec,
@@ -285,10 +285,7 @@ pub async fn api_get_pipeline(
                 .as_deref()
                 .is_some_and(is_pal_strategy)
             {
-                let categories = super::binaries::recorded_api_categories(
-                    combined.server.repo_path(),
-                    row.binary.as_str(),
-                );
+                let categories = combined.reader.api_call_categories(row.binary.as_str());
                 let traits: Vec<PalTraitReadiness> =
                     super::binaries::needed_pal_traits(&categories)
                         .into_iter()
@@ -329,64 +326,34 @@ pub async fn api_get_pipeline(
     })
 }
 
-/// Classification records persisted by earlier runs (`re/classify/*.json`).
+/// Classification records persisted by earlier runs (`re/classify/*.json`,
+/// read through the review-surface reader — issue #464).
 /// A restarted pipeline re-classifies nothing, so these artifacts are the
 /// only account of what the workspace already knows — the pipeline table
 /// fills its rows from them until this run's own events supersede them.
 /// Records missing a name or category are skipped rather than guessed at.
-/// The binaries view (issue #130) reads the same records through this one
-/// shape — one reader of the artifact format, not two.
+/// The binaries view (issue #130) reads the same records through the
+/// reader's own shape — one reader of the artifact format, not two.
 pub(crate) fn disk_classifications(
-    repo_path: &Path,
+    reader: &ReviewSurfaceReader,
 ) -> HashMap<BinaryIdentity, ClassificationInfo> {
     let mut found = HashMap::new();
-    let classify_dir = repo_path.join("re").join("classify");
-    let Ok(entries) = std::fs::read_dir(&classify_dir) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else {
+    for document in reader.classification_documents() {
+        let Ok(reading) = document.reading else {
             continue;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        let (Some(binary), Some(category)) = (reading.binary, reading.category) else {
             continue;
-        };
-        let binary = value.get("binary").and_then(|v| v.as_str()).unwrap_or("");
-        let category = value.get("category").and_then(|v| v.as_str()).unwrap_or("");
-        if binary.is_empty() || category.is_empty() {
-            continue;
-        }
-        // Strategy is serialized from `calxgloss_analysis::Strategy`:
-        // unit variants land as bare strings ("PalMapping"), struct
-        // variants as tagged objects ({"CrateReplacement": {…}}). The
-        // variant name is the strategy either way.
-        let strategy = match value.get("strategy") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Object(obj)) => obj.keys().next().cloned().unwrap_or_default(),
-            _ => String::new(),
         };
         found.insert(
-            binary.into(),
+            binary.clone().into(),
             ClassificationInfo {
-                binary: binary.to_string().into(),
-                category: category.to_string(),
-                classification_strategy: strategy,
-                crate_replacement: value
-                    .get("crate_replacement")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                exported_symbols: value
-                    .get("exports_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize,
-                imported_symbols: value
-                    .get("imports_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize,
+                binary: binary.clone().into(),
+                category: super::super::review_reader::category_name(&category),
+                classification_strategy: reading.strategy,
+                crate_replacement: reading.crate_replacement,
+                exported_symbols: reading.exports_count,
+                imported_symbols: reading.imports_count,
             },
         );
     }
@@ -783,7 +750,7 @@ async fn discovered_binaries(
         }
         names.extend(reading.ingestion.analyzed.iter().cloned());
     }
-    for (binary, _) in disk_classifications(combined.server.repo_path()) {
+    for (binary, _) in disk_classifications(&combined.reader) {
         names.insert(binary);
     }
     names

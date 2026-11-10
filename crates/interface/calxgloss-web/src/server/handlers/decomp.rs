@@ -1,7 +1,10 @@
 //! decompiler context helpers: loading analysis artifacts, parsing diff blocks,
 //! computing revision counts, and the `/api/units/:id/decomp` endpoint.
 
-use super::super::{DecompApiCall, DecompContext, DecompContextResponse, ServerError, ServerState};
+use super::super::{
+    CombinedState, DecompApiCall, DecompContext, DecompContextResponse, ReviewSurfaceReader,
+    ServerError, ServerState,
+};
 use axum::{
     Json,
     extract::{Path, State},
@@ -11,10 +14,10 @@ use axum::{
 
 /// Returns decompiler context (decompiler output, disassembly, API tags) for a unit's function.
 pub async fn api_get_unit_decomp(
-    state: State<ServerState>,
+    State(combined): State<CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<DecompContextResponse>, ServerError> {
-    let unit = super::queue::find_unit(&state, &unit_id)?;
+    let unit = super::queue::find_unit(&combined.server, &unit_id)?;
 
     let func_name = match unit.function {
         Some(ref f) if !f.is_empty() => f.clone(),
@@ -23,8 +26,10 @@ pub async fn api_get_unit_decomp(
 
     let binary = unit.binary.clone();
 
-    // Try to read the function's decompiler data from analysis artifacts on disk
-    if let Ok(ctx) = load_decomp_artifacts(state.repo_path(), &binary, &func_name) {
+    // The function's decompiler data reads through the review-surface
+    // reader (issue #464); an artifact the reader cannot read — missing
+    // or corrupt — is the honest not-found answer.
+    if let Some(ctx) = load_decomp_artifacts(&combined.reader, &binary, &func_name) {
         return Ok(Json(DecompContextResponse::ok(ctx)));
     }
 
@@ -33,39 +38,17 @@ pub async fn api_get_unit_decomp(
 
 // ─── Decompiler Context Helpers ──────────────────────────────────────────
 
-/// Load analysis artifacts from the analysis directory on disk.
+/// Load the function's analysis artifact through the review-surface
+/// reader (issue #464). A missing, unreadable, or corrupt artifact is
+/// `None` — the endpoint states its own not-found policy at the read site.
 pub(crate) fn load_decomp_artifacts(
-    repo_path: &std::path::Path,
+    reader: &ReviewSurfaceReader,
     binary: &str,
     function: &str,
-) -> Result<DecompContext, anyhow::Error> {
-    let analysis_dir = repo_path.join("re").join("analysis").join(binary);
-    let func_file = analysis_dir.join(format!("{function}.json"));
+) -> Option<DecompContext> {
+    let artifact = reader.function_artifact(binary, function)?;
 
-    if !func_file.exists() {
-        return Err(anyhow::anyhow!(
-            "Analysis file not found: {}",
-            func_file.display()
-        ));
-    }
-
-    let content = std::fs::read_to_string(&func_file)?;
-
-    // Deserialize through a local struct carrying only the fields this
-    // endpoint reads
-    #[derive(serde::Deserialize)]
-    struct DecompArtifact {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        decompiler_output: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        windows_apis: Option<Vec<DecompApiCall>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        function_name: Option<String>,
-    }
-
-    let artifact: DecompArtifact = serde_json::from_str(&content)?;
-
-    Ok(DecompContext {
+    Some(DecompContext {
         function_name: artifact
             .function_name
             .unwrap_or_else(|| function.to_string()),
@@ -73,7 +56,15 @@ pub(crate) fn load_decomp_artifacts(
         binary: Some(binary.to_string()),
         decompiler_output: artifact.decompiler_output,
         disassembly: None,
-        windows_apis: artifact.windows_apis,
+        windows_apis: artifact.windows_apis.map(|apis| {
+            apis.into_iter()
+                .map(|api| DecompApiCall {
+                    name: api.name,
+                    category: api.category,
+                    pal_mapping: api.pal_mapping,
+                })
+                .collect()
+        }),
         note: None,
     })
 }

@@ -18,61 +18,48 @@
 //! comes over the shared `GET /api/units/{id}` endpoint
 //! (registered in every router) — no new route is introduced.
 
-use std::path::Path;
-
 use calxgloss_types::UnitOfWork;
 
+use super::super::review_reader::ReviewSurfaceReader;
 use super::super::types::{ApiMappingRecord, CallGraphContext, UnitAnalysis};
-use super::process::load_json_or_default;
 
 /// Builds the analysis-context sections for a unit of work.
 ///
 /// Units without a function (DLL classification units) get empty sections,
-/// as do units whose artifacts are missing or corrupt.
-pub(crate) fn build_unit_analysis(repo_path: &Path, unit: &UnitOfWork) -> UnitAnalysis {
+/// as do units whose artifacts are missing or corrupt. Both sections read
+/// through the review-surface reader (issue #464) — the per-function
+/// artifact and the per-binary call-graph record are the seam's reads,
+/// and the degrade-to-empty policy stays here at the render site.
+pub(crate) fn build_unit_analysis(
+    reader: &ReviewSurfaceReader,
+    unit: &UnitOfWork,
+) -> UnitAnalysis {
     let function = unit.function.clone().unwrap_or_default();
     if function.is_empty() {
         return UnitAnalysis::default();
     }
     UnitAnalysis {
-        api_mappings: load_api_mappings(repo_path, &unit.binary, &function),
-        call_graph: load_call_graph(repo_path, &unit.binary, &function),
+        api_mappings: load_api_mappings(reader, &unit.binary, &function),
+        call_graph: load_call_graph(reader, &unit.binary, &function),
     }
 }
 
 // ─── Windows API mappings ────────────────────────────────────────────
 
-/// One identified API call as recorded in the function analysis artifact.
-#[derive(serde::Deserialize)]
-struct RawApiCall {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    category: String,
-    #[serde(default)]
-    pal_mapping: String,
-}
-
-/// The subset of the function analysis artifact this section reads.
-#[derive(Default, serde::Deserialize)]
-struct RawFunctionArtifact {
-    #[serde(default)]
-    windows_apis: Vec<RawApiCall>,
-}
-
 /// Reads the identified Windows API calls (with category and PAL mapping)
-/// from `re/analysis/{binary}/{function}.json`, in artifact order.
-/// Missing or corrupt artifacts yield an empty list.
-fn load_api_mappings(repo_path: &Path, binary: &str, function: &str) -> Vec<ApiMappingRecord> {
-    let artifact = load_json_or_default::<RawFunctionArtifact>(
-        &repo_path
-            .join("re")
-            .join("analysis")
-            .join(binary)
-            .join(format!("{function}.json")),
-    );
+/// from the function analysis artifact, in artifact order. A missing or
+/// corrupt artifact yields an empty list.
+fn load_api_mappings(
+    reader: &ReviewSurfaceReader,
+    binary: &str,
+    function: &str,
+) -> Vec<ApiMappingRecord> {
+    let Some(artifact) = reader.function_artifact(binary, function) else {
+        return Vec::new();
+    };
     artifact
         .windows_apis
+        .unwrap_or_default()
         .into_iter()
         .map(|api| ApiMappingRecord {
             name: api.name,
@@ -84,37 +71,8 @@ fn load_api_mappings(repo_path: &Path, binary: &str, function: &str) -> Vec<ApiM
 
 // ─── Call graph context ──────────────────────────────────────────────
 
-/// One callee edge as recorded in the call-graph artifact.
-#[derive(serde::Deserialize)]
-struct RawCallEdge {
-    #[serde(default)]
-    target: u64,
-    #[serde(default)]
-    callee_name: String,
-}
-
-/// One function node as recorded in the call-graph artifact.
-#[derive(serde::Deserialize)]
-struct RawGraphNode {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    address: u64,
-    #[serde(default)]
-    callers: Vec<u64>,
-    #[serde(default)]
-    callees: Vec<RawCallEdge>,
-}
-
-/// The subset of the per-binary call-graph artifact this section reads.
-#[derive(Default, serde::Deserialize)]
-struct RawCallGraph {
-    #[serde(default)]
-    functions: Vec<RawGraphNode>,
-}
-
-/// Reads caller and callee names for `function` from
-/// `re/analysis/{binary}_call_graph.json`. Callers are stored as entry
+/// Reads caller and callee names for `function` from the per-binary
+/// call-graph record. Callers are stored as entry
 /// addresses, so they are resolved to names through the graph's own
 /// function list; callees prefer the edge's recorded name and fall back to
 /// the same address resolution. Names that cannot be resolved render as hex
@@ -122,13 +80,8 @@ struct RawCallGraph {
 /// deduplicated (multiple call sites to one function list it once).
 /// Missing or corrupt artifacts, or a function absent from the graph, yield
 /// empty lists.
-fn load_call_graph(repo_path: &Path, binary: &str, function: &str) -> CallGraphContext {
-    let graph = load_json_or_default::<RawCallGraph>(
-        &repo_path
-            .join("re")
-            .join("analysis")
-            .join(format!("{binary}_call_graph.json")),
-    );
+fn load_call_graph(reader: &ReviewSurfaceReader, binary: &str, function: &str) -> CallGraphContext {
+    let graph = reader.call_graph_record(binary);
     let Some(node) = graph.functions.iter().find(|n| n.name == function) else {
         return CallGraphContext::default();
     };
@@ -163,6 +116,18 @@ fn dedupe_names(names: impl Iterator<Item = String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    /// Handlers read the record tree through the review-surface reader
+    /// (issue #464), so the tests build one over a temp workspace.
+    fn unit_reader(
+        workspace: &std::path::Path,
+    ) -> super::super::super::review_reader::ReviewSurfaceReader {
+        super::super::super::review_reader::ReviewSurfaceReader::new(
+            workspace.to_path_buf(),
+            None,
+        )
+    }
 
     /// A function-translation unit for `game_logic.dll!DrawPrimitive`.
     fn sample_unit() -> UnitOfWork {
@@ -254,7 +219,7 @@ mod tests {
         let ws = tempfile::tempdir().expect("temp workspace");
         write_function_artifact(ws.path());
 
-        let analysis = build_unit_analysis(ws.path(), &sample_unit());
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &sample_unit());
 
         assert_eq!(
             analysis.api_mappings.len(),
@@ -276,7 +241,7 @@ mod tests {
         let ws = tempfile::tempdir().expect("temp workspace");
         write_call_graph_artifact(ws.path());
 
-        let analysis = build_unit_analysis(ws.path(), &sample_unit());
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &sample_unit());
 
         assert_eq!(
             analysis.call_graph.callers,
@@ -318,7 +283,7 @@ mod tests {
         )
         .expect("write call graph artifact");
 
-        let analysis = build_unit_analysis(ws.path(), &sample_unit());
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &sample_unit());
 
         assert_eq!(
             analysis.call_graph.callers,
@@ -334,7 +299,7 @@ mod tests {
     fn test_missing_artifacts_degrade_to_empty() {
         let ws = tempfile::tempdir().expect("temp workspace");
 
-        let analysis = build_unit_analysis(ws.path(), &sample_unit());
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &sample_unit());
 
         assert!(analysis.api_mappings.is_empty());
         assert!(analysis.call_graph.callers.is_empty());
@@ -355,7 +320,7 @@ mod tests {
         )
         .expect("write corrupt call graph artifact");
 
-        let analysis = build_unit_analysis(ws.path(), &sample_unit());
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &sample_unit());
 
         assert!(analysis.api_mappings.is_empty());
         assert!(analysis.call_graph.callers.is_empty());
@@ -369,7 +334,7 @@ mod tests {
 
         let mut unit = sample_unit();
         unit.function = Some("NotInTheGraph".to_string());
-        let analysis = build_unit_analysis(ws.path(), &unit);
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &unit);
 
         assert!(analysis.call_graph.callers.is_empty());
         assert!(analysis.call_graph.callees.is_empty());
@@ -383,7 +348,7 @@ mod tests {
 
         let mut unit = sample_unit();
         unit.function = None;
-        let analysis = build_unit_analysis(ws.path(), &unit);
+        let analysis = build_unit_analysis(&unit_reader(ws.path()), &unit);
 
         assert!(analysis.api_mappings.is_empty());
         assert!(analysis.call_graph.callers.is_empty());

@@ -106,7 +106,7 @@ pub async fn api_get_dashboard(
     // Manual queue overlay (issue #74): the persisted manual order and
     // priorities, plus the effective order they produce over this dashboard
     // — dependency order with the overlay breaking same-depth ties.
-    let queue_overlay = super::queue::load_queue_overlay(server_state.repo_path());
+    let queue_overlay = combined.reader.queue_overlay();
     let queue_order = super::queue::queue_order(&dashboard, &queue_overlay)
         .into_iter()
         .map(|u| u.id.clone())
@@ -151,10 +151,10 @@ pub async fn api_get_unit(
     let queue_position = super::queue::compute_queue_position(
         &dashboard,
         unit,
-        &super::queue::load_queue_overlay(state.repo_path()),
+        &combined.reader.queue_overlay(),
     );
-    let process = super::process::build_unit_process(state.repo_path(), unit);
-    let analysis = super::analysis::build_unit_analysis(state.repo_path(), unit);
+    let process = super::process::build_unit_process(&combined.reader, unit);
+    let analysis = super::analysis::build_unit_analysis(&combined.reader, unit);
 
     Ok(Json(UnitResponse {
         success: true,

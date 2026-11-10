@@ -16,9 +16,36 @@
 //!    (code generator, test generator, verifier) use it to produce
 //!    shim source code, shim tests, and verification harnesses.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::FailedTest;
+
+/// Where the shim pipeline files one binary's shim artifacts: the
+/// `re/shims/` root of the record tree. The pipeline files each binary's
+/// set in a directory named after the binary — `mappings.json`
+/// ([`SHIM_MAPPINGS_FILE`]), the generated source (`shim.rs`,
+/// [`SHIM_SOURCE_FILE`]), its tests, and the verification result
+/// ([`SHIM_VERIFICATION_FILE`]) — under this root. The web's shim and
+/// PAL trackers read them through the review-surface reader, which
+/// matches the directory name case-insensitively like every other
+/// review comparison (issue #464).
+pub fn shim_artifacts_dir(workspace: impl AsRef<Path>) -> PathBuf {
+    workspace.as_ref().join("re").join("shims")
+}
+
+/// The shim layer's API mappings inside a binary's shim artifact
+/// directory.
+pub const SHIM_MAPPINGS_FILE: &str = "mappings.json";
+
+/// The generated shim source inside a binary's shim artifact directory.
+/// Only this file defines traits — the test sources reference traits
+/// without defining them.
+pub const SHIM_SOURCE_FILE: &str = "shim.rs";
+
+/// The verification result inside a binary's shim artifact directory.
+pub const SHIM_VERIFICATION_FILE: &str = "verification.json";
 
 /// A single API mapping between an original DLL export and a target crate API.
 ///

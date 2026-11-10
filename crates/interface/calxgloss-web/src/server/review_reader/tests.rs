@@ -976,3 +976,314 @@ async fn the_reader_serves_the_workspaces_dashboard_with_the_live_store_folded_i
     );
     assert_eq!(synthetic[0].id, "live/game_logic.dll/LateFunction/v1");
 }
+
+// ─── The artifact reads behind the binary pages (issue #464) ──────────
+
+/// Filed shim artifacts come back through the reader exactly as the
+/// shim pipeline files them: mappings and verification are separate
+/// documents, and the pipeline's directory name is matched
+/// case-insensitively like every other review comparison.
+#[test]
+fn filed_shim_artifacts_read_back_as_their_own_documents() {
+    let dir = temp_workspace();
+    let shim_dir = dir.path().join("re").join("shims").join("D3D9.dll");
+    std::fs::create_dir_all(&shim_dir).expect("shim dir");
+    let layer = calxgloss_types::ShimLayer {
+        source_dll: "D3D9.dll".to_string(),
+        target_crate: "wgpu".to_string(),
+        mappings: Vec::new(),
+    };
+    std::fs::write(
+        shim_dir.join("mappings.json"),
+        serde_json::to_string(&layer).expect("mappings serialize"),
+    )
+    .expect("mappings filed");
+    std::fs::write(
+        shim_dir.join("verification.json"),
+        serde_json::to_string(&calxgloss_types::ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings: Vec::new(),
+            tests_passed: 4,
+            tests_total: 5,
+            edge_tests_passed: 1,
+            edge_tests_total: 2,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        })
+        .expect("verification serializes"),
+    )
+    .expect("verification filed");
+    let reader = reader_over(dir.path());
+
+    let readout = reader.shim_readout("d3d9.dll");
+    assert_eq!(
+        readout.mappings.expect("mappings read").target_crate,
+        "wgpu",
+        "the requested spelling finds the pipeline's directory"
+    );
+    let verification = readout.verification.expect("verification reads");
+    assert!(verification.compiled);
+    assert_eq!(verification.tests_passed, 4);
+
+    let absent = reader.shim_readout("other.dll");
+    assert!(
+        absent.mappings.is_none() && absent.verification.is_none(),
+        "no matching shim directory is honestly no artifacts"
+    );
+}
+
+/// A corrupt artifact is no artifact — never a zeroed one — and it
+/// never takes the readable document beside it down with it. When two
+/// spellings of one binary name each hold a directory, the
+/// alphabetically first wins, deterministically.
+#[test]
+fn a_corrupt_shim_artifact_reads_as_no_artifact_not_a_zeroed_one() {
+    let dir = temp_workspace();
+    let shims = dir.path().join("re").join("shims");
+    std::fs::create_dir_all(shims.join("d3d9.dll")).expect("shim dir");
+    std::fs::write(shims.join("d3d9.dll").join("mappings.json"), "{ not json")
+        .expect("corrupt mappings filed");
+    let reader = reader_over(dir.path());
+
+    let readout = reader.shim_readout("d3d9.dll");
+    assert!(readout.mappings.is_none(), "a corrupt artifact is no artifact");
+    assert!(
+        readout.verification.is_none(),
+        "a never-filed document reads absent, not zeroed"
+    );
+}
+
+#[test]
+fn the_alphabetically_first_shim_directory_spelling_wins() {
+    let dir = temp_workspace();
+    let shims = dir.path().join("re").join("shims");
+    std::fs::create_dir_all(shims.join("D3D9.dll")).expect("shim dir");
+    std::fs::create_dir_all(shims.join("d3d9.dll")).expect("shim dir");
+    let layer = calxgloss_types::ShimLayer {
+        source_dll: "D3D9.dll".to_string(),
+        target_crate: "wgpu".to_string(),
+        mappings: Vec::new(),
+    };
+    std::fs::write(
+        shims.join("D3D9.dll").join("mappings.json"),
+        serde_json::to_string(&layer).expect("mappings serialize"),
+    )
+    .expect("mappings filed in the uppercase spelling");
+    std::fs::write(
+        shims.join("d3d9.dll").join("mappings.json"),
+        serde_json::to_string(&calxgloss_types::ShimLayer {
+            source_dll: "d3d9.dll".to_string(),
+            target_crate: "wgpu-old".to_string(),
+            mappings: Vec::new(),
+        })
+        .expect("mappings serialize"),
+    )
+    .expect("mappings filed in the lowercase spelling");
+    let reader = reader_over(dir.path());
+
+    let readout = reader.shim_readout("d3d9.dll");
+    assert_eq!(
+        readout.mappings.expect("mappings read").target_crate,
+        "wgpu",
+        "the alphabetically first spelling wins"
+    );
+}
+
+/// The PAL tracker's per-binary analysis reading: every readable
+/// `{function}.json` artifact under the binary's `re/analysis/`
+/// directory contributes its recorded API-call categories — sorted and
+/// deduplicated, empties dropped, a corrupt artifact contributing
+/// nothing while the readable ones still answer.
+#[test]
+fn p_a_l_categories_come_from_the_binaries_readable_analysis_artifacts() {
+    let dir = temp_workspace();
+    let analysis = dir.path().join("re").join("analysis").join("Game_Logic.dll");
+    std::fs::create_dir_all(&analysis).expect("analysis dir");
+    std::fs::write(
+        analysis.join("DrawSprite.json"),
+        serde_json::json!({
+            "windows_apis": [
+                { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" },
+                { "name": "CreateTexture", "category": "DirectX", "pal_mapping": "wgpu::Device::create_texture" },
+                { "name": "BitBlt", "category": "Gdi", "pal_mapping": "" },
+                { "name": "Mystery", "category": "", "pal_mapping": "" }
+            ]
+        })
+        .to_string(),
+    )
+    .expect("artifact filed");
+    std::fs::write(
+        analysis.join("PlaySound.json"),
+        serde_json::json!({ "windows_apis": [{ "category": "Audio" }] }).to_string(),
+    )
+    .expect("artifact filed");
+    std::fs::write(analysis.join("Broken.json"), "{ not json").expect("corrupt artifact filed");
+    let reader = reader_over(dir.path());
+
+    assert_eq!(
+        reader.api_call_categories("game_logic.dll"),
+        ["Audio", "DirectX", "Gdi"],
+        "sorted, deduplicated, empty categories dropped, the corrupt artifact skipped, \
+         the directory matched case-insensitively"
+    );
+    assert!(
+        reader.api_call_categories("never_translated.dll").is_empty(),
+        "a binary with no analysis directory has no recorded categories"
+    );
+}
+
+/// The PAL-trait existence scan: the scratch PAL crate contributes
+/// every `.rs`, a shim directory only its generated `shim.rs` — a
+/// trait defined in `shim_tests.rs` is a reference, not a generated
+/// definition.
+#[test]
+fn p_a_l_source_texts_cover_scratch_pal_and_generated_shim_sources_only() {
+    let dir = temp_workspace();
+    let pal_src = dir.path().join("scratch").join("pal").join("src");
+    std::fs::create_dir_all(&pal_src).expect("pal src dir");
+    std::fs::write(pal_src.join("stub_content.rs"), "pub trait WindowManager {")
+        .expect("stub content");
+    std::fs::write(pal_src.join("notes.txt"), "pub trait ComObject {").expect("not a source");
+    let shim_dir = dir.path().join("re").join("shims").join("d3d9.dll");
+    std::fs::create_dir_all(&shim_dir).expect("shim dir");
+    std::fs::write(shim_dir.join("shim.rs"), "pub trait GraphicsDevice {").expect("shim source");
+    std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {")
+        .expect("shim tests");
+    let reader = reader_over(dir.path());
+
+    let joined = reader.pal_source_texts().join("\n");
+    assert!(joined.contains("WindowManager") && joined.contains("GraphicsDevice"));
+    assert!(
+        !joined.contains("ComObject"),
+        "a shim test source and a stray non-.rs file are not generated definitions"
+    );
+}
+
+/// One unit's analysis artifact, read once for every review surface
+/// that consumes it — the API-mapping section, the tier rationale, and
+/// the decomp panel each used to parse the same document through their
+/// own private shape. Absent, unreadable, or corrupt is `None`; the
+/// surfaces state their own degrade policy at the read site.
+#[test]
+fn one_function_artifact_read_serves_every_review_surface_that_needs_it() {
+    let dir = temp_workspace();
+    let analysis = dir.path().join("re").join("analysis").join("game_logic.dll");
+    std::fs::create_dir_all(&analysis).expect("analysis dir");
+    std::fs::write(
+        analysis.join("DrawSprite.json"),
+        serde_json::json!({
+            "windows_apis": [
+                { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" }
+            ],
+            "disassembly": "push rbp; ret",
+            "function_name": "DrawSprite",
+            "decompiler_output": "void DrawSprite() {}"
+        })
+        .to_string(),
+    )
+    .expect("artifact filed");
+    std::fs::write(analysis.join("Broken.json"), "{ not json").expect("corrupt artifact filed");
+    let reader = reader_over(dir.path());
+
+    let artifact = reader
+        .function_artifact("game_logic.dll", "DrawSprite")
+        .expect("the filed artifact reads");
+    assert_eq!(artifact.disassembly, "push rbp; ret");
+    assert_eq!(artifact.function_name.as_deref(), Some("DrawSprite"));
+    assert_eq!(
+        artifact.decompiler_output.as_deref(),
+        Some("void DrawSprite() {}")
+    );
+    let api = &artifact.windows_apis.expect("apis recorded")[0];
+    assert_eq!(api.name, "Present");
+    assert_eq!(api.category, "DirectX");
+    assert_eq!(api.pal_mapping, "wgpu::Surface::present");
+
+    assert!(
+        reader.function_artifact("game_logic.dll", "NeverTranslated")
+            .is_none(),
+        "a never-filed artifact is an honest absence"
+    );
+    assert!(
+        reader.function_artifact("game_logic.dll", "Broken").is_none(),
+        "a corrupt artifact names nothing"
+    );
+    assert!(
+        reader.function_artifact("game_logic.dll", "").is_none(),
+        "a unit with no function owns no artifact"
+    );
+}
+
+/// The per-binary call-graph record, read whole; a never-filed or
+/// corrupt record is an empty graph, the honest no-context answer the
+/// unit detail renders as empty sections.
+#[test]
+fn the_call_graph_record_reads_whole_or_reads_empty() {
+    let dir = temp_workspace();
+    let analysis = dir.path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis).expect("analysis dir");
+    std::fs::write(
+        analysis.join("game_logic.dll_call_graph.json"),
+        serde_json::json!({
+            "functions": [
+                { "name": "DrawSprite", "address": 100, "callers": [200],
+                  "callees": [{ "target": 300, "callee_name": "Present" }] }
+            ]
+        })
+        .to_string(),
+    )
+    .expect("call graph filed");
+    let reader = reader_over(dir.path());
+
+    let graph = reader.call_graph_record("game_logic.dll");
+    assert_eq!(graph.functions.len(), 1);
+    assert_eq!(graph.functions[0].name, "DrawSprite");
+    assert_eq!(graph.functions[0].callers, [200]);
+    assert_eq!(graph.functions[0].callees[0].callee_name, "Present");
+
+    assert!(
+        reader.call_graph_record("other.dll").functions.is_empty(),
+        "a never-filed graph reads as no graph, not a fault"
+    );
+}
+
+/// The P59 end-state check (issue #464): no review handler spells out a
+/// record-tree path by hand. Every record read in `src/server/handlers/`
+/// goes through the review-surface reader or a shared record module that
+/// owns its layout (`calxgloss-types`, `review_reader`). The check cuts
+/// each source at the first `#[cfg(test)]` — tests name tree paths when
+/// they file their own fixtures — and fails on any `.join("re")` left in
+/// production handler code.
+#[test]
+fn no_review_handler_spells_out_a_record_tree_path_by_hand() {
+    let handlers_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("server")
+        .join("handlers");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&handlers_dir).expect("handlers dir") {
+        let path = entry.expect("handler entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("handler source");
+        let production = source.split("#[cfg(test)]").next().unwrap_or("");
+        for (line_no, line) in production.lines().enumerate() {
+            // One prefix check catches every hand-joined spelling of a
+            // record-tree path: `.join("re")`, `.join("re/…")`, or any
+            // other string literal rooted at the tree's `re` segment.
+            if line.contains(r#".join("re"#) {
+                offenders.push(format!(
+                    "{}:{}",
+                    path.file_name().expect("file name").to_string_lossy(),
+                    line_no + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "handlers spell out record-tree paths by hand at {offenders:?}"
+    );
+}

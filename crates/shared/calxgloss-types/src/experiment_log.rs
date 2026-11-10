@@ -197,6 +197,14 @@ impl PromptStrategyTrim {
     }
 }
 
+/// Where the prompt-strategy log is filed inside a workspace:
+/// `re/analysis/prompt_strategy_log.json`. The single spelling of the
+/// layout — the web's review surfaces read the log at this path through
+/// their review-surface reader (issue #464).
+pub fn prompt_strategy_log_path(workspace: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    crate::persist::analysis_dir(workspace).join("prompt_strategy_log.json")
+}
+
 /// A complete experiment log collecting entries across all translation runs.
 ///
 /// This struct is the in-memory representation that the logger serializes
