@@ -8,7 +8,7 @@
 //! Browser tests skip themselves at runtime when no Chrome/Chromium is
 //! installed; set `$CHROME` to name a browser binary outside the usual search.
 
-use calxgloss_git::{GitManager, InitConfig};
+use calxgloss_git::{FailureRecord, GitManager, InitConfig};
 use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_types::{
     ApiCategory, BinaryClassificationOverride, ClassificationOverrides, ClassificationRecord,
@@ -844,14 +844,6 @@ fn sample_fault_entries() -> Vec<FaultEvent> {
     ]
 }
 
-/// GETs a URL and returns the status with the parsed body.
-async fn get_json(url: &str) -> (reqwest::StatusCode, serde_json::Value) {
-    let resp = reqwest::get(url).await.expect("request reaches server");
-    let status = resp.status();
-    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
-    (status, body)
-}
-
 // ─────────────────────────────────────────────────────────────
 // Token usage analytics (issue #126, W3.2)
 // ─────────────────────────────────────────────────────────────
@@ -1537,32 +1529,15 @@ fn write_pal_tracker_fixtures(fixture: &TestFixture) {
     .expect("shim source written");
 }
 
-/// Wait for the panel's shim tracker to finish its own read and render.
-async fn wait_for_shim_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool {
+/// Wait until a binaries-detail tracker's own text contains `needle`. The
+/// panel draws the tracker before its read lands (issue #471), so the test
+/// waits for the settled text instead of sleeping. `kind` is the tracker
+/// family: "shim" or "pal".
+async fn wait_for_tracker(tab: &support::DashboardTab, kind: &str, needle: &str) -> bool {
     let expr = format!(
-        "document.querySelector('#binaries-table-body .binaries-detail-shim .binaries-shim-tracker')?.textContent.includes({needle:?}) === true"
+        "document.querySelector('#binaries-table-body .binaries-detail-{kind} .binaries-{kind}-tracker')?.textContent.includes({needle:?}) === true"
     );
-    for _ in 0..25 {
-        if eval_bool(tab, &expr) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    false
-}
-
-/// Wait for the panel's PAL tracker to finish its own read and render.
-async fn wait_for_pal_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool {
-    let expr = format!(
-        "document.querySelector('#binaries-table-body .binaries-detail-pal .binaries-pal-tracker')?.textContent.includes({needle:?}) === true"
-    );
-    for _ in 0..25 {
-        if eval_bool(tab, &expr) {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    false
+    tab.wait_for_bool(&expr).await
 }
 // ─────────────────────────────────────────────────────────────
 // Unit process detail tests (issue #62)

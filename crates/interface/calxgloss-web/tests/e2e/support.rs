@@ -143,12 +143,12 @@ impl ReviewWorld {
     /// with the review-actions backend attached, still without the
     /// live-pipeline endpoints (issue #468).
     pub async fn boot_with_actions() -> Self {
-        Self::boot_actions(&TestFixture::new(), None, false).await
+        Self::boot_actions(&TestFixture::new(), None, false, None).await
     }
 
     /// The actions-wired serve router over a caller-supplied fixture.
     pub async fn boot_with_actions_on(fixture: &TestFixture) -> Self {
-        Self::boot_actions(fixture, None, false).await
+        Self::boot_actions(fixture, None, false, None).await
     }
 
     /// The actions-wired serve router with a reloadable tracing filter
@@ -158,7 +158,15 @@ impl ReviewWorld {
         fixture: &TestFixture,
         filter: calxgloss_web::LogLevelControl,
     ) -> Self {
-        Self::boot_actions(fixture, Some(filter), false).await
+        Self::boot_actions(fixture, Some(filter), false, None).await
+    }
+
+    /// The actions-wired serve router over a fixture, served with a
+    /// caller-supplied actions backend. The default backend names no LLM
+    /// selection and no target directory; a test whose request drives a real
+    /// assembled pass needs both, so it builds its own backend and boots here.
+    pub async fn boot_with_actions_backend(fixture: &TestFixture, actions: ActionsState) -> Self {
+        Self::boot_actions(fixture, None, false, Some(actions)).await
     }
 
     /// Boot through the plain-serve router — the shared review surface
@@ -271,11 +279,14 @@ impl ReviewWorld {
         .await
     }
 
-    /// Assemble the actions-wired serve router over `fixture` and serve it.
+    /// Assemble the actions-wired serve router over `fixture` and serve
+    /// it, with the default settings-backed backend unless the caller
+    /// hands in its own.
     async fn boot_actions(
         fixture: &TestFixture,
         filter: Option<calxgloss_web::LogLevelControl>,
         graceful: bool,
+        actions: Option<ActionsState>,
     ) -> Self {
         let mut state = ServerState::new(fixture.repo_path())
             .with_stop_signal(calxgloss_types::StopSignal::new());
@@ -283,7 +294,8 @@ impl ReviewWorld {
             state = state.with_log_level("warn").with_log_filter(filter);
         }
         let events = TranslationEvents::new(256);
-        let router = build_router_with_actions(state.clone(), ws_actions(fixture));
+        let actions = actions.unwrap_or_else(|| ws_actions(fixture));
+        let router = build_router_with_actions(state.clone(), actions);
         Self::spawn(
             fixture.clone(),
             state,
@@ -756,6 +768,15 @@ impl DashboardTab {
     pub fn reload(&self) {
         self.tab.reload(false, None).expect("reload the tab");
         self.tab.wait_until_navigated().expect("wait for reload");
+    }
+
+    /// Run a side-effecting script on the page — a reviewer's input that a
+    /// click cannot express, like setting a filter select and firing its
+    /// `change` event. Panics, naming `label`, if the DevTools call fails.
+    pub fn run(&self, script: &str, label: &str) {
+        self.tab
+            .evaluate(script, false)
+            .unwrap_or_else(|e| panic!("run `{label}`: {e}"));
     }
 
     /// Evaluate `expr` and read the result as a boolean; an evaluation

@@ -87,6 +87,19 @@ pub struct PatchRecord {
     pub patch_request: Option<String>,
 }
 
+/// Where one attempt's patch record document lives:
+/// `re/patches/{binary}/{function}/v{attempt}.json`. This is the exact path
+/// [`GitManager::store_failure`] files to, so a test can assert on the record's
+/// location without spelling out the layout itself.
+pub fn patch_record_path(repo_path: &std::path::Path, branch: &GitBranch) -> PathBuf {
+    repo_path
+        .join("re")
+        .join("patches")
+        .join(&branch.binary)
+        .join(&branch.function)
+        .join(format!("v{}.json", branch.attempt))
+}
+
 /// The failure fields of one attempt, bundled into a single record for
 /// [`GitManager::store_failure`] instead of loose positional arguments (issue
 /// #268) — adjacent same-typed lists can no longer be swapped in the call.
@@ -784,17 +797,14 @@ impl GitManager {
         branch: &GitBranch,
         failure: FailureRecord,
     ) -> Result<PathBuf, TypesError> {
-        let patch_dir = self
-            .repo_path
-            .join("re")
-            .join("patches")
-            .join(&branch.binary);
-        let function_dir = patch_dir.join(&branch.function);
-        std::fs::create_dir_all(&function_dir).map_err(|e| {
+        let patch_path = patch_record_path(&self.repo_path, branch);
+        let function_dir = patch_path
+            .parent()
+            .ok_or_else(|| TypesError::InvalidBranchName("Patch path has no parent".to_string()))?;
+        std::fs::create_dir_all(function_dir).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to create patch dir: {}", e))
         })?;
 
-        let patch_path = function_dir.join(format!("v{}.json", branch.attempt));
         let record = PatchRecord {
             binary: branch.binary.clone(),
             function: branch.function.clone(),

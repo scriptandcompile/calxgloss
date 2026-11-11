@@ -35,7 +35,9 @@ pub use dependency::{
     BranchCreationPolicy, DependencyCheckResult, DependencyChecker, DependencyPolicy,
     ShimDependencyMap,
 };
-pub use git_manager::{BranchResult, FailureRecord, GitManager, MergeResult, PatchRecord};
+pub use git_manager::{
+    BranchResult, FailureRecord, GitManager, MergeResult, PatchRecord, patch_record_path,
+};
 
 // Re-export types used by the public API
 pub use calxgloss_types::{BinaryIdentity, DllCategory, GitBranch, GitCommit, TypesError};
