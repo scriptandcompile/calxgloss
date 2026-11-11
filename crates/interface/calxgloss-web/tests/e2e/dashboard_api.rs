@@ -1,4 +1,10 @@
 //! Scenario tests split from `tests/e2e.rs`.
+//!
+//! Converted to the `support::ReviewWorld` boot (issue #469): the boot,
+//! fixture, and settle-sleep preamble is one adapter call; the websocket
+//! cases read through a connected handle, and only the tests that
+//! deliberately exercise the raw protocol touch the socket or reqwest
+//! directly.
 
 use super::*;
 
@@ -9,29 +15,14 @@ use super::*;
 /// `/api/progress/enhanced`. Raw pipeline events keep flowing unchanged.
 #[tokio::test]
 async fn test_ws_pushes_unit_phase_records() {
-    use futures_util::StreamExt;
-    use tokio_tungstenite::tungstenite::Message;
-
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("websocket upgrade succeeds");
-    // Let the Register command drain before any event is emitted.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
+    let mut ws = world.websocket().await;
 
     // Walk one unit through the pipeline: start, tests, tier, LLM call, done.
+    // Each applied unit event is followed by its `unit_phase` record — the
+    // router applies the event before pushing, so receiving the push is the
+    // proof the event was applied (issue #469).
+    let mut records: Vec<serde_json::Value> = Vec::new();
     for event in [
         ProgressEvent::TranslationStarted {
             binary: "game_logic.dll".into(),
@@ -63,30 +54,13 @@ async fn test_ws_pushes_unit_phase_records() {
             success_strategy: Some("decompose".into()),
         },
     ] {
-        events.emit(event);
-    }
-
-    // Collect wire messages: raw events keep their `event` tag; each applied
-    // unit event is followed by a `unit_phase` record.
-    let mut raw_events: Vec<String> = Vec::new();
-    let mut records: Vec<serde_json::Value> = Vec::new();
-    for _ in 0..40 {
-        if records.len() >= 5 {
-            break;
-        }
-        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            Ok(Some(Ok(m))) => m,
-            _ => continue,
-        };
-        if let Message::Text(text) = msg {
-            let v: serde_json::Value =
-                serde_json::from_str(text.as_str()).expect("wire message is JSON");
-            match v["event"].as_str() {
-                Some("unit_phase") => records.push(v["unit"].clone()),
-                Some(name) => raw_events.push(name.to_string()),
-                None => {}
-            }
-        }
+        world.emitter().emit(event.clone());
+        records.push(
+            ws.wait_for_unit_phase_push(&event, |unit| {
+                unit["binary"] == "game_logic.dll" && unit["function"] == "DrawPrimitive"
+            })
+            .await,
+        );
     }
 
     // Backward compatibility: the raw pipeline events still arrive tagged.
@@ -98,8 +72,9 @@ async fn test_ws_pushes_unit_phase_records() {
         "translation_completed",
     ] {
         assert!(
-            raw_events.iter().any(|e| e == expected),
-            "raw event {expected} should still reach WS clients, got: {raw_events:?}"
+            ws.raw_events().iter().any(|e| e == expected),
+            "raw event {expected} should still reach WS clients, got: {:?}",
+            ws.raw_events()
         );
     }
 
@@ -145,6 +120,8 @@ async fn test_ws_pushes_unit_phase_records() {
 /// buffer fills and the server drops its connection. Meanwhile the fast
 /// client receives **every** message — proof the broadcast loop never waited
 /// on the stalled peer and the upstream event channel never overflowed.
+/// This test deliberately drives the raw protocol, so it reads the sockets
+/// themselves (issue #469).
 #[tokio::test]
 async fn test_stalled_ws_client_is_evicted() {
     use futures_util::StreamExt;
@@ -152,31 +129,16 @@ async fn test_stalled_ws_client_is_evicted() {
 
     const EVENTS: usize = 400;
 
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(1024);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let ws_url = format!("ws://127.0.0.1:{}/api/events/upgrade", fixture.port());
-    let (mut fast, _) = tokio_tungstenite::connect_async(&ws_url)
-        .await
-        .expect("fast client websocket upgrade succeeds");
-    let (mut stalled, _) = tokio_tungstenite::connect_async(&ws_url)
-        .await
-        .expect("stalled client websocket upgrade succeeds");
-    // Let both Register commands drain before any event is emitted.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
+    let mut fast = world.websocket_named("fast").await;
+    let mut stalled = world.websocket_named("stalled").await;
 
     // Drain the fast client in its own task so the test itself is never the
     // slow consumer; a cheap substring check tells raw events (tagged
     // `translation_started`) from the `unit_phase` records interleaved with
     // them.
     let fast_task = tokio::spawn(async move {
+        let fast = fast.raw_mut();
         let mut raw_started = 0usize;
         while raw_started < EVENTS {
             match tokio::time::timeout(Duration::from_secs(10), fast.next()).await {
@@ -198,9 +160,10 @@ async fn test_stalled_ws_client_is_evicted() {
     // (400 events × 2 messages × ~16 KB) comfortably exceeds the 128-slot
     // per-client buffer plus both sockets' kernel buffers, so the stalled
     // client's buffer is guaranteed to fill while the test runs, while the
-    // bursts leave the fast client room to keep draining.
+    // bursts leave the fast client room to keep draining. The pacing sleep
+    // stays: the delay is itself part of what this test puts under test.
     for i in 0..EVENTS {
-        events.emit(ProgressEvent::TranslationStarted {
+        world.emitter().emit(ProgressEvent::TranslationStarted {
             binary: "game_logic.dll".into(),
             function: format!("DrawPrimitive_{i}_{}", "x".repeat(16384)),
         });
@@ -219,14 +182,7 @@ async fn test_stalled_ws_client_is_evicted() {
     // The stalled client never read a frame; the server must have closed its
     // connection once its buffer filled. Reading now drains whatever the
     // kernel still holds, then surfaces the close.
-    let mut closed = false;
-    while !closed {
-        match tokio::time::timeout(Duration::from_secs(5), stalled.next()).await {
-            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => closed = true,
-            Ok(Some(Ok(_))) => {}
-            Err(_) => panic!("stalled client was never disconnected"),
-        }
-    }
+    stalled.drain_until_closed().await;
 }
 
 /// `POST /api/server/shutdown` on the live router with a canned in-flight
@@ -242,45 +198,29 @@ async fn test_stalled_ws_client_is_evicted() {
 /// `calxgloss-translator`.
 #[tokio::test]
 async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
-    let fixture = TestFixture::new();
-    let stop = calxgloss_types::StopSignal::new();
-    let state = ServerState::new(fixture.repo_path()).with_stop_signal(stop.clone());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(
-        state.clone(),
-        manager,
-        progress.clone(),
-        ws_actions(&fixture),
-    );
-    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut world = support::ReviewWorld::boot_graceful().await;
+    let stop = world.stop_signal();
 
     // A unit in flight (fed exactly how live mode feeds ProgressState).
-    events.emit(ProgressEvent::TranslationStarted {
+    let started = ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(
-        progress.in_flight_count().await == 1,
+    };
+    world.emitter().emit(started.clone());
+    world
+        .wait_until_unit_applied(&started, "game_logic.dll", "DrawPrimitive", |record| {
+            !record.finished
+        })
+        .await;
+    assert_eq!(
+        world.progress_state().in_flight_count().await,
+        1,
         "a unit must be in flight before the request"
     );
     assert!(!stop.is_stopped(), "no stop before the request");
 
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/server/shutdown",
-            fixture.port()
-        ))
-        .send()
-        .await
-        .expect("shutdown request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().post_lifecycle("/api/server/shutdown").await;
+    assert_eq!(status, 200);
     assert_eq!(body["status"], "shutting_down");
     assert_eq!(body["restart_required"], false);
     assert!(
@@ -296,38 +236,35 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     // unfinished, and the completion the pipeline emits at the boundary is
     // still recorded (that is the state the shutdown is meant to save).
     assert_eq!(
-        progress.in_flight_count().await,
+        world.progress_state().in_flight_count().await,
         1,
         "the in-flight unit must survive the stop request"
     );
-    events.emit(ProgressEvent::TranslationCompleted {
+    let completed = ProgressEvent::TranslationCompleted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let snapshot = progress.snapshot().await;
-    let entry = snapshot
-        .get("game_logic.dll/DrawPrimitive")
-        .expect("the in-flight unit is tracked");
-    assert!(entry.finished, "the unit completes and is recorded");
+    };
+    world.emitter().emit(completed.clone());
+    // The accept loop has stopped, so this applied wait reads the live-view
+    // store directly — the event consumer keeps applying after shutdown.
+    let record = world
+        .wait_until_unit_applied(&completed, "game_logic.dll", "DrawPrimitive", |record| {
+            record.finished
+        })
+        .await;
+    assert!(record.finished, "the unit completes and is recorded");
     assert_eq!(
-        progress.in_flight_count().await,
+        world.progress_state().in_flight_count().await,
         0,
         "nothing is left running once the boundary unit is done"
     );
 
     // The server's side: the accept loop exits gracefully — subsequent
     // connections are refused.
-    server
-        .await
-        .expect("server task exits after graceful shutdown");
-    let after = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await;
+    world.wait_for_server_shutdown().await;
+    let after = reqwest::get(world.client().url("/api/server/status")).await;
     assert!(after.is_err(), "server must stop accepting requests");
 }
 
@@ -335,25 +272,10 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
 /// the process — no forking, the operator restarts the command.
 #[tokio::test]
 async fn test_server_restart_returns_manual_restart_signal() {
-    let fixture = TestFixture::new();
-    let stop = calxgloss_types::StopSignal::new();
-    let state = ServerState::new(fixture.repo_path()).with_stop_signal(stop.clone());
-    let router = build_router(state.clone());
-    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
+    let mut world = support::ReviewWorld::boot_plain_graceful().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/server/restart",
-            fixture.port()
-        ))
-        .send()
-        .await
-        .expect("restart request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().post_lifecycle("/api/server/restart").await;
+    assert_eq!(status, 200);
     assert_eq!(body["status"], "stopping");
     assert_eq!(
         body["restart_required"], true,
@@ -365,13 +287,11 @@ async fn test_server_restart_returns_manual_restart_signal() {
         "message must tell the operator how to restart, got: {message}"
     );
     assert!(
-        stop.is_stopped(),
+        world.stop_signal().is_stopped(),
         "the pipeline must be paused at a boundary"
     );
 
-    server
-        .await
-        .expect("server task exits after graceful shutdown");
+    world.wait_for_server_shutdown().await;
 }
 
 /// `PATCH /api/server/log-level`: an invalid level name is rejected with
@@ -385,71 +305,51 @@ async fn test_server_log_level_patch_validates_and_updates() {
     // only needs the handle to reload the filter.
     let (_filter, handle) =
         tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("warn"));
-    let state = ServerState::new(fixture.repo_path())
-        .with_log_level("warn")
-        .with_log_filter(calxgloss_web::LogLevelControl::new(handle));
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{}/api/server/log-level", fixture.port());
+    let world = support::ReviewWorld::boot_plain_with_log_filter(
+        &fixture,
+        calxgloss_web::LogLevelControl::new(handle),
+    )
+    .await;
 
     // Invalid names → 4xx, and the active level is unchanged.
     for bad in ["verbose", "everything", ""] {
-        let resp = client
-            .patch(&url)
-            .json(&serde_json::json!({ "level": bad }))
-            .send()
-            .await
-            .expect("patch request succeeds");
+        let (status, _) = world
+            .client()
+            .patch_json("/api/server/log-level", serde_json::json!({ "level": bad }))
+            .await;
         assert!(
-            resp.status().is_client_error(),
-            "invalid level '{bad}' must be rejected with 4xx, got {}",
-            resp.status()
+            status.is_client_error(),
+            "invalid level '{bad}' must be rejected with 4xx, got {status}"
         );
     }
 
     // Valid name (case-insensitive) → 200 with the normalized level…
-    let resp = client
-        .patch(&url)
-        .json(&serde_json::json!({ "level": "DEBUG" }))
-        .send()
-        .await
-        .expect("patch request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .patch_json(
+            "/api/server/log-level",
+            serde_json::json!({ "level": "DEBUG" }),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["level"], "debug");
 
     // …and the status endpoint now reports it.
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("status request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    let (status, body) = world.client().get_json("/api/server/status").await;
+    assert_eq!(status, 200);
     assert_eq!(body["log_level"], "debug");
 
     // A server with no reloadable filter attached must not pretend.
-    let bare_fixture = TestFixture::new();
-    let bare_port = TestFixture::find_free_port();
-    let bare_router = build_router(ServerState::new(bare_fixture.repo_path()));
-    let _bare_server = spawn_server(bare_router, bare_port).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let resp = client
-        .patch(format!(
-            "http://127.0.0.1:{}/api/server/log-level",
-            bare_port
-        ))
-        .json(&serde_json::json!({ "level": "debug" }))
-        .send()
-        .await
-        .expect("patch request succeeds");
+    let bare_world = support::ReviewWorld::boot_plain().await;
+    let (status, _) = bare_world
+        .client()
+        .patch_json(
+            "/api/server/log-level",
+            serde_json::json!({ "level": "debug" }),
+        )
+        .await;
     assert_eq!(
-        resp.status(),
-        503,
+        status, 503,
         "no filter attached must report 503, not a silent success"
     );
 }
@@ -478,13 +378,11 @@ async fn test_log_level_patch_changes_running_filter() {
     tracing::subscriber::set_global_default(subscriber).expect("install global subscriber");
 
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_log_level("warn")
-        .with_log_filter(calxgloss_web::LogLevelControl::new(handle));
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain_with_log_filter(
+        &fixture,
+        calxgloss_web::LogLevelControl::new(handle),
+    )
+    .await;
 
     tracing::debug!("log-level-probe");
     assert_eq!(
@@ -493,16 +391,14 @@ async fn test_log_level_patch_changes_running_filter() {
         "debug records must be filtered out at warn"
     );
 
-    let resp = reqwest::Client::new()
-        .patch(format!(
-            "http://127.0.0.1:{}/api/server/log-level",
-            fixture.port()
-        ))
-        .json(&serde_json::json!({ "level": "debug" }))
-        .send()
-        .await
-        .expect("patch request succeeds");
-    assert_eq!(resp.status(), 200);
+    let (status, _) = world
+        .client()
+        .patch_json(
+            "/api/server/log-level",
+            serde_json::json!({ "level": "debug" }),
+        )
+        .await;
+    assert_eq!(status, 200);
 
     tracing::debug!("log-level-probe");
     assert_eq!(
@@ -526,64 +422,46 @@ async fn test_lifecycle_endpoints_registered_in_all_routers() {
         tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("info"));
     let _layers = [layer_a, layer_b, layer_c];
 
-    let routers: Vec<(&str, axum::Router)> = vec![
-        ("plain", {
-            let fixture = TestFixture::new();
-            build_router(
-                ServerState::new(fixture.repo_path())
-                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_a)),
-            )
-        }),
-        ("actions", {
-            let fixture = TestFixture::new();
-            let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
-            build_router_with_actions(
-                ServerState::new(fixture.repo_path())
-                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_b)),
-                actions,
-            )
-        }),
-        ("live", {
-            let fixture = TestFixture::new();
-            let (manager, _tx) = SessionManager::new();
-            build_router_with_ws(
-                ServerState::new(fixture.repo_path())
-                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_c)),
-                manager,
-                ProgressState::new(),
-                ws_actions(&fixture),
-            )
-        }),
-    ];
+    let plain_fixture = TestFixture::new();
+    let actions_fixture = TestFixture::new();
+    let live_fixture = TestFixture::new();
+    let world_plain = support::ReviewWorld::boot_plain_with_log_filter(
+        &plain_fixture,
+        calxgloss_web::LogLevelControl::new(handle_a),
+    )
+    .await;
+    let world_actions = support::ReviewWorld::boot_with_actions_and_log_filter(
+        &actions_fixture,
+        calxgloss_web::LogLevelControl::new(handle_b),
+    )
+    .await;
+    let world_live = support::ReviewWorld::boot_with_log_filter(
+        &live_fixture,
+        calxgloss_web::LogLevelControl::new(handle_c),
+    )
+    .await;
 
-    for (name, router) in routers {
-        let port = TestFixture::find_free_port();
-        let _server = spawn_server(router, port).await;
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let client = reqwest::Client::new();
-
-        let resp = client
-            .patch(format!("http://127.0.0.1:{port}/api/server/log-level"))
-            .json(&serde_json::json!({ "level": "info" }))
-            .send()
-            .await
-            .expect("log-level patch reaches the router");
+    for (name, world) in [
+        ("plain", &world_plain),
+        ("actions", &world_actions),
+        ("live", &world_live),
+    ] {
+        let (status, _) = world
+            .client()
+            .patch_json(
+                "/api/server/log-level",
+                serde_json::json!({ "level": "info" }),
+            )
+            .await;
         assert_eq!(
-            resp.status(),
-            200,
+            status, 200,
             "log-level must be registered in the {name} router"
         );
 
         for path in ["/api/server/shutdown", "/api/server/restart"] {
-            let resp = client
-                .post(format!("http://127.0.0.1:{port}{path}"))
-                .send()
-                .await
-                .expect("lifecycle post reaches the router");
+            let (status, _) = world.client().post_lifecycle(path).await;
             assert_eq!(
-                resp.status(),
-                200,
+                status, 200,
                 "{path} must be registered in the {name} router"
             );
         }
@@ -594,19 +472,9 @@ async fn test_lifecycle_endpoints_registered_in_all_routers() {
 /// the expected units, status counts, and dependency graph.
 #[tokio::test]
 async fn test_dashboard_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     // Top-level shape
     assert_eq!(body["success"], true);
@@ -679,18 +547,9 @@ async fn test_dashboard_endpoint() {
 /// quality summary both join on the verbatim `{file}/{func}` key.
 #[tokio::test]
 async fn test_dashboard_baseline_counts_attached() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, json) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     let all_units: Vec<serde_json::Value> = [
         json["dashboard"]["review_queue"]
@@ -726,18 +585,9 @@ async fn test_dashboard_baseline_counts_attached() {
 
 #[tokio::test]
 async fn test_dashboard_binary_categories() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, json) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     // The fixture classifies game_logic.dll.json as ProjectSpecific and
     // d3d9.dll.json as MicrosoftSdk; every category is listed, even at zero.
@@ -760,18 +610,9 @@ async fn test_dashboard_binary_categories() {
 
 #[tokio::test]
 async fn test_dashboard_quality_summary() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, json) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     // Fixture unit confidences: 0.5, 0.5 (DrawPrimitive v1/v2), 0.95, 0.95
     // (classify) → average 0.725. Baseline counts reach the units (issue #67):
@@ -805,17 +646,11 @@ async fn test_dashboard_quality_summary() {
 #[tokio::test]
 async fn test_dashboard_token_usage_summary() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // No token log yet → token_usage is null, not zeros.
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, json) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     assert!(
         json["token_usage"].is_null(),
         "token_usage should be null when no log exists"
@@ -824,10 +659,8 @@ async fn test_dashboard_token_usage_summary() {
     // write_token_usage_log: attempt 1 failed (4096 tokens), attempt 2
     // succeeded (3072 tokens) → total 7168 across 2 calls.
     write_token_usage_log(&fixture, false);
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, json) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     let tu = &json["token_usage"];
     assert_eq!(tu["total_tokens"].as_u64(), Some(7168));
     assert_eq!(tu["successful_tokens"].as_u64(), Some(3072));
@@ -838,25 +671,11 @@ async fn test_dashboard_token_usage_summary() {
 /// Verify that a single unit detail endpoint returns expected fields.
 #[tokio::test]
 async fn test_unit_detail_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
     let unit_id = "game_logic.dll/DrawPrimitive/v2";
-    let encoded_id = urlencoding::encode(unit_id);
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}",
-        fixture.port(),
-        encoded_id
-    ))
-    .await
-    .expect("unit detail request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("unit detail body is JSON");
+    let (status, body) = world.client().unit_detail(unit_id).await;
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 
     let unit = body["unit"].as_object().expect("unit is object");
@@ -883,19 +702,9 @@ async fn test_unit_detail_endpoint() {
 /// Verify that the queue endpoint returns units sorted by dependency order.
 #[tokio::test]
 async fn test_queue_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/queue", fixture.port()))
-        .await
-        .expect("queue request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, body) = world.client().get_json("/api/queue").await;
+    assert_eq!(status, 200);
 
     let queue = body["queue"].as_array().expect("queue is array");
     assert!(!queue.is_empty());
@@ -910,19 +719,11 @@ async fn test_queue_endpoint() {
 #[tokio::test]
 async fn test_queue_overlay_round_trip_and_persistence() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // No overlay yet: empty, but the effective order is still computed.
-    let resp = reqwest::get(format!("{base}/api/queue/overlay"))
-        .await
-        .expect("overlay request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("overlay body is JSON");
+    let (status, body) = world.client().get_json("/api/queue/overlay").await;
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
     assert!(
         body["overlay"]["order"].as_array().unwrap().is_empty(),
@@ -934,25 +735,24 @@ async fn test_queue_overlay_round_trip_and_persistence() {
     );
 
     // Record a manual order and a priority.
-    let client = reqwest::Client::new();
-    let resp = client
-        .put(format!("{base}/api/queue/overlay"))
-        .json(&serde_json::json!({
-            "order": ["game_logic.dll/DrawPrimitive/v2"],
-            "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
-        }))
-        .send()
-        .await
-        .expect("overlay put succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("overlay put body is JSON");
+    let (status, body) = world
+        .client()
+        .put_json(
+            "/api/queue/overlay",
+            serde_json::json!({
+                "order": ["game_logic.dll/DrawPrimitive/v2"],
+                "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
+            }),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"],
         "high"
     );
 
     // The overlay lives in the repo, beside the other review records.
-    let overlay_file = fixture
+    let overlay_file = world
         .repo_path()
         .join("re")
         .join("review")
@@ -962,18 +762,10 @@ async fn test_queue_overlay_round_trip_and_persistence() {
         "overlay persisted to re/review/queue_overlay.json"
     );
 
-    // A fresh router over the same repo — a server restart — reads it back.
-    let restart_port = TestFixture::find_free_port();
-    let restart_state = ServerState::new(fixture.repo_path());
-    let restart_router = build_router(restart_state);
-    let _restart_server = spawn_server(restart_router, restart_port).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{restart_port}/api/queue/overlay"))
-        .await
-        .expect("overlay request after restart succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("restart overlay is JSON");
+    // A fresh world over the same repo — a server restart — reads it back.
+    let restart = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = restart.client().get_json("/api/queue/overlay").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"], "high",
         "priority survives a server restart"
@@ -985,10 +777,8 @@ async fn test_queue_overlay_round_trip_and_persistence() {
     );
 
     // The dashboard response includes the overlay and the effective order.
-    let resp = reqwest::get(format!("http://127.0.0.1:{restart_port}/api/dashboard"))
-        .await
-        .expect("dashboard request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = restart.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["queue_overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"], "high",
         "dashboard carries the persisted overlay"
@@ -1008,46 +798,37 @@ async fn test_queue_overlay_round_trip_and_persistence() {
 async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-    let client = reqwest::Client::new();
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let hud = "game_logic.dll/RenderHUD/v1";
 
-    let queue_ids = || async {
-        let resp = reqwest::get(format!("{base}/api/queue"))
-            .await
-            .expect("queue request succeeds");
-        assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+    async fn queue_ids(world: &support::ReviewWorld) -> Vec<String> {
+        let (status, body) = world.client().get_json("/api/queue").await;
+        assert_eq!(status, 200);
         body["queue"]
             .as_array()
             .unwrap()
             .iter()
             .map(|e| e["id"].as_str().unwrap().to_string())
             .collect::<Vec<String>>()
-    };
-
-    let draw = "game_logic.dll/DrawPrimitive/v2";
-    let hud = "game_logic.dll/RenderHUD/v1";
+    }
 
     // Both units depend on the same classification, so the graph leaves
     // them tied; the baseline order is the dependency order's own tie-break.
-    let ids = queue_ids().await;
+    let ids = queue_ids(&world).await;
     assert!(ids.iter().any(|id| id == draw), "DrawPrimitive queued");
     assert!(ids.iter().any(|id| id == hud), "RenderHUD queued");
 
     // A manual order flips the tie.
-    let resp = client
-        .put(format!("{base}/api/queue/overlay"))
-        .json(&serde_json::json!({ "order": [hud, draw] }))
-        .send()
-        .await
-        .expect("overlay put succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("overlay put body is JSON");
+    let (status, body) = world
+        .client()
+        .put_json(
+            "/api/queue/overlay",
+            serde_json::json!({ "order": [hud, draw] }),
+        )
+        .await;
+    assert_eq!(status, 200);
     let order = body["queue_order"].as_array().unwrap();
     let hud_at_new = order
         .iter()
@@ -1062,7 +843,7 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
         "manual order puts RenderHUD first, got {order:?}"
     );
 
-    let ids = queue_ids().await;
+    let ids = queue_ids(&world).await;
     let hud_at = ids
         .iter()
         .position(|id| id == hud)
@@ -1074,10 +855,8 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
     assert!(hud_at < draw_at, "/api/queue follows the manual order");
 
     // The "next unit" flow follows the same effective order.
-    let resp = reqwest::get(format!("{base}/api/queue/next"))
-        .await
-        .expect("next request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    let (status, body) = world.client().get_json("/api/queue/next").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["id"].as_str(),
         Some(hud),
@@ -1085,16 +864,17 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
     );
 
     // A priority flips it back without touching the manual order.
-    let resp = client
-        .put(format!("{base}/api/queue/overlay"))
-        .json(&serde_json::json!({
-            "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
-        }))
-        .send()
-        .await
-        .expect("priority put succeeds");
-    assert_eq!(resp.status(), 200);
-    let ids = queue_ids().await;
+    let (status, _) = world
+        .client()
+        .put_json(
+            "/api/queue/overlay",
+            serde_json::json!({
+                "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
+            }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let ids = queue_ids(&world).await;
     let hud_at = ids
         .iter()
         .position(|id| id == hud)
@@ -1105,10 +885,8 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
         .expect("DrawPrimitive queued");
     assert!(draw_at < hud_at, "HIGH priority sorts first, got {ids:?}");
 
-    let resp = reqwest::get(format!("{base}/api/queue/next"))
-        .await
-        .expect("next request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    let (status, body) = world.client().get_json("/api/queue/next").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["id"].as_str(),
         Some(draw),
@@ -1116,27 +894,27 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
     );
 
     // The order field was untouched by the priorities-only update.
-    let resp = reqwest::get(format!("{base}/api/queue/overlay"))
-        .await
-        .expect("overlay request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("overlay body is JSON");
+    let (status, body) = world.client().get_json("/api/queue/overlay").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["overlay"]["order"],
         serde_json::json!([hud, draw]),
         "priorities-only update keeps the persisted order"
     );
 
-    // An unknown priority name is rejected, not silently accepted.
-    let resp = client
-        .put(format!("{base}/api/queue/overlay"))
-        .json(&serde_json::json!({ "priorities": { hud: "urgent" } }))
-        .send()
-        .await
-        .expect("invalid priority put request");
+    // An unknown priority name is rejected, not silently accepted. The
+    // rejection body is axum's plain-text descriptor error, so this
+    // probe reads only the status.
+    let status = world
+        .client()
+        .put_for_status(
+            "/api/queue/overlay",
+            serde_json::json!({ "priorities": { hud: "urgent" } }),
+        )
+        .await;
     assert!(
-        resp.status().is_client_error(),
-        "invalid priority rejected, got {}",
-        resp.status()
+        status.is_client_error(),
+        "invalid priority rejected, got {status}"
     );
 }
 
@@ -1149,54 +927,41 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
 async fn test_skip_unit_round_trip_and_queue_exclusion() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-    let client = reqwest::Client::new();
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     let draw = "game_logic.dll/DrawPrimitive/v2";
     let hud = "game_logic.dll/RenderHUD/v1";
     let draw_enc = urlencoding::encode(draw);
     let accepted = "game_logic.dll/UpdateScene/v1";
 
-    let queue_ids = || async {
-        let resp = reqwest::get(format!("{base}/api/queue"))
-            .await
-            .expect("queue request succeeds");
-        assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+    async fn queue_ids(world: &support::ReviewWorld) -> Vec<String> {
+        let (status, body) = world.client().get_json("/api/queue").await;
+        assert_eq!(status, 200);
         body["queue"]
             .as_array()
             .expect("queue is an array")
             .iter()
             .map(|e| e["id"].as_str().expect("queue entry has an id").to_string())
             .collect::<Vec<String>>()
-    };
+    }
 
     // Both units start in the active queue.
-    let ids = queue_ids().await;
+    let ids = queue_ids(&world).await;
     assert!(ids.iter().any(|id| id == draw), "DrawPrimitive queued");
     assert!(ids.iter().any(|id| id == hud), "RenderHUD queued");
 
     // Skip DrawPrimitive.
-    let resp = client
-        .post(format!("{base}/api/units/{draw_enc}/skip"))
-        .send()
-        .await
-        .expect("skip request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("skip body is JSON");
+    let (status, body) = world
+        .client()
+        .post_lifecycle(&format!("/api/units/{draw_enc}/skip"))
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["action"], "skip");
     assert_eq!(body["unit_id"], draw);
 
     // The dashboard reports it Skipped and tallies it separately.
-    let resp = reqwest::get(format!("{base}/api/dashboard"))
-        .await
-        .expect("dashboard request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     let skipped_unit = body["dashboard"]["review_queue"]
         .as_array()
         .expect("review_queue is an array")
@@ -1214,15 +979,13 @@ async fn test_skip_unit_round_trip_and_queue_exclusion() {
     );
 
     // It leaves the dependency-ordered queue and can never be the next unit.
-    let ids = queue_ids().await;
+    let ids = queue_ids(&world).await;
     assert!(
         !ids.iter().any(|id| id == draw),
         "skipped unit excluded from /api/queue, got {ids:?}"
     );
-    let resp = reqwest::get(format!("{base}/api/queue/next"))
-        .await
-        .expect("next request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    let (status, body) = world.client().get_json("/api/queue/next").await;
+    assert_eq!(status, 200);
     assert_ne!(
         body["id"].as_str(),
         Some(draw),
@@ -1230,7 +993,7 @@ async fn test_skip_unit_round_trip_and_queue_exclusion() {
     );
 
     // The skip set lives in the repo, beside the other review records.
-    let skips_file = fixture
+    let skips_file = world
         .repo_path()
         .join("re")
         .join("review")
@@ -1241,46 +1004,40 @@ async fn test_skip_unit_round_trip_and_queue_exclusion() {
 
     // An accepted unit refuses the skip — merged branch state is
     // authoritative.
-    let resp = client
-        .post(format!(
-            "{base}/api/units/{}/skip",
+    let (status, _) = world
+        .client()
+        .post_lifecycle(&format!(
+            "/api/units/{}/skip",
             urlencoding::encode(accepted)
         ))
-        .send()
-        .await
-        .expect("skip-accepted request succeeds");
-    assert_eq!(resp.status(), 409, "skipping an accepted unit conflicts");
+        .await;
+    assert_eq!(status, 409, "skipping an accepted unit conflicts");
 
     // An unknown unit is a 404.
-    let resp = client
-        .post(format!(
-            "{base}/api/units/{}/skip",
+    let (status, _) = world
+        .client()
+        .post_lifecycle(&format!(
+            "/api/units/{}/skip",
             urlencoding::encode("nope/nope/v1")
         ))
-        .send()
-        .await
-        .expect("skip-unknown request succeeds");
-    assert_eq!(resp.status(), 404);
+        .await;
+    assert_eq!(status, 404);
 
     // Unskip restores the artifact-derived status and the queue position.
-    let resp = client
-        .post(format!("{base}/api/units/{draw_enc}/unskip"))
-        .send()
-        .await
-        .expect("unskip request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("unskip body is JSON");
+    let (status, body) = world
+        .client()
+        .post_lifecycle(&format!("/api/units/{draw_enc}/unskip"))
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["action"], "unskip");
 
-    let ids = queue_ids().await;
+    let ids = queue_ids(&world).await;
     assert!(
         ids.iter().any(|id| id == draw),
         "unskipped unit is back in /api/queue"
     );
-    let resp = reqwest::get(format!("{base}/api/dashboard"))
-        .await
-        .expect("dashboard request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["dashboard"]["status_counts"]["skipped"].as_u64(),
         Some(0),
@@ -1308,55 +1065,28 @@ async fn test_batch_actions_report_per_item_results() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
     add_pending_translation(&fixture, "PlaySound");
-    let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
-    let router = build_router_with_actions(state.clone(), actions);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-    let client = reqwest::Client::new();
+    let world = support::ReviewWorld::boot_with_actions_on(&fixture).await;
 
     let hud = "game_logic.dll/RenderHUD/v1";
     let sound = "game_logic.dll/PlaySound/v1";
     let ghost = "game_logic.dll/NoSuchFunction/v1";
     let sound_enc = urlencoding::encode(sound);
 
-    async fn post_batch(
-        base: &str,
-        client: &reqwest::Client,
-        path: &str,
-        body: serde_json::Value,
-    ) -> (reqwest::StatusCode, serde_json::Value) {
-        let resp = client
-            .post(format!("{base}{path}"))
-            .json(&body)
-            .send()
-            .await
-            .expect("batch request succeeds");
-        let status = resp.status();
-        let body: serde_json::Value = resp.json().await.expect("batch body is JSON");
-        (status, body)
-    }
-
     // An empty selection is a client error, not an honest no-op.
-    let (status, _) = post_batch(
-        &base,
-        &client,
-        "/api/batch/skip",
-        serde_json::json!({ "unit_ids": [] }),
-    )
-    .await;
+    let (status, _) = world
+        .client()
+        .post_json("/api/batch/skip", serde_json::json!({ "unit_ids": [] }))
+        .await;
     assert_eq!(status, 400, "empty batch selection is rejected");
 
     // Batch skip: both real units land, the unknown one fails per-item.
-    let (status, body) = post_batch(
-        &base,
-        &client,
-        "/api/batch/skip",
-        serde_json::json!({ "unit_ids": [hud, ghost, sound] }),
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/batch/skip",
+            serde_json::json!({ "unit_ids": [hud, ghost, sound] }),
+        )
+        .await;
     assert_eq!(
         status, 200,
         "partial failure still answers 200 with results"
@@ -1388,7 +1118,7 @@ async fn test_batch_actions_report_per_item_results() {
     assert_eq!(results[2]["success"], true);
 
     // The skips persisted through the per-unit skip logic (issue #75).
-    let skips_file = fixture
+    let skips_file = world
         .repo_path()
         .join("re")
         .join("review")
@@ -1398,18 +1128,18 @@ async fn test_batch_actions_report_per_item_results() {
     assert_eq!(value["skipped"], serde_json::json!([hud, sound]));
 
     // Batch accept: the real unit merges, the unknown one fails per-item.
-    let (status, body) = post_batch(
-        &base,
-        &client,
-        "/api/batch/accept",
-        serde_json::json!({ "unit_ids": [hud, ghost] }),
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/batch/accept",
+            serde_json::json!({ "unit_ids": [hud, ghost] }),
+        )
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["action"], "accept");
     assert_eq!(body["succeeded"], 1);
     assert_eq!(body["failed"], 1);
-    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    let git = GitManager::open(&world.repo_path()).expect("open fixture repo");
     assert!(
         git.is_branch_merged_into_main("re/game_logic.dll/RenderHUDv1")
             .expect("merged check"),
@@ -1418,13 +1148,13 @@ async fn test_batch_actions_report_per_item_results() {
 
     // Batch send-back reuses the per-unit conflict rules: the unit the batch
     // just accepted (persisted Accepted record) refuses the send-back.
-    let (status, body) = post_batch(
-        &base,
-        &client,
-        "/api/batch/send-back",
-        serde_json::json!({ "unit_ids": [sound, hud], "reason": "batch review pass" }),
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/batch/send-back",
+            serde_json::json!({ "unit_ids": [sound, hud], "reason": "batch review pass" }),
+        )
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["action"], "send_back");
     assert_eq!(body["succeeded"], 1);
@@ -1448,16 +1178,13 @@ async fn test_batch_actions_report_per_item_results() {
     // The dashboard reflects every landed action: RenderHUD stays accepted,
     // and PlaySound's send-back verdict is there once the skip is lifted —
     // the reviewer skip outranks artifact-derived verdicts (issue #75).
-    let resp = client
-        .post(format!("{base}/api/units/{sound_enc}/unskip"))
-        .send()
-        .await
-        .expect("unskip request succeeds");
-    assert_eq!(resp.status(), 200);
-    let resp = reqwest::get(format!("{base}/api/dashboard"))
-        .await
-        .expect("dashboard request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, _) = world
+        .client()
+        .post_lifecycle(&format!("/api/units/{sound_enc}/unskip"))
+        .await;
+    assert_eq!(status, 200);
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     let status_of = |id: &str| {
         body["dashboard"]["review_queue"]
             .as_array()
@@ -1480,19 +1207,9 @@ async fn test_batch_actions_report_per_item_results() {
 /// Verify that the dependency graph endpoint returns valid graph data.
 #[tokio::test]
 async fn test_dependency_graph_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/graph", fixture.port()))
-        .await
-        .expect("graph request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("graph body is JSON");
+    let world = support::ReviewWorld::boot_plain().await;
+    let (status, body) = world.client().get_json("/api/graph").await;
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 
     let graph = body["graph"].as_object().expect("graph is object");
@@ -1534,9 +1251,9 @@ async fn test_dependency_graph_endpoint() {
 /// detail), and leaves units with no recorded entries honestly `null`.
 #[tokio::test]
 async fn test_dependency_graph_token_usage_enrichment() {
-    let fixture = TestFixture::new();
+    let world = support::ReviewWorld::boot_plain().await;
 
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    let analysis_dir = world.repo_path().join("re").join("analysis");
     std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
     std::fs::write(
         analysis_dir.join("token_usage.json"),
@@ -1568,16 +1285,8 @@ async fn test_dependency_graph_token_usage_enrichment() {
     )
     .expect("write token_usage.json");
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/graph", fixture.port()))
-        .await
-        .expect("graph request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("graph body is JSON");
+    let (status, body) = world.client().get_json("/api/graph").await;
+    assert_eq!(status, 200);
     let nodes = body["graph"]["nodes"].as_array().expect("nodes is array");
 
     let draw = nodes
@@ -1600,17 +1309,13 @@ async fn test_dependency_graph_token_usage_enrichment() {
     );
 }
 
-/// Verify the frontend HTML page loads and contains expected content.
+/// Verify the frontend HTML page loads and contains expected content. The
+/// page body is not JSON, so this test drives reqwest directly (issue #469).
 #[tokio::test]
 async fn test_frontend_html_loads() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}", fixture.port()))
+    let resp = reqwest::get(world.client().url("/"))
         .await
         .expect("index request succeeds");
 
@@ -1643,22 +1348,17 @@ async fn test_frontend_html_loads() {
     );
 }
 
-/// Test that a 404 is returned for an unknown unit ID.
+/// Test that a 404 is returned for an unknown unit ID. The path carries
+/// slashes the route's single-segment parameter does not match, so it
+/// reaches the static 404 — an HTML body the typed JSON client would not
+/// decode — and the test reads the status directly (issue #469).
 #[tokio::test]
 async fn test_unit_not_found() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/nonexistent/unit/v1",
-        fixture.port()
-    ))
-    .await
-    .expect("unit not found request succeeds");
+    let resp = reqwest::get(world.client().url("/api/units/nonexistent/unit/v1"))
+        .await
+        .expect("unit not found request succeeds");
 
     assert_eq!(resp.status(), 404);
 }
@@ -1666,25 +1366,12 @@ async fn test_unit_not_found() {
 /// Test that the queue/next endpoint returns a single pending unit.
 #[tokio::test]
 async fn test_next_unit_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/api/queue/next").await;
+    assert_eq!(status, 200);
 
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/queue/next",
-        fixture.port()
-    ))
-    .await
-    .expect("next unit request succeeds");
-
-    assert_eq!(resp.status(), 200);
-
-    let text = resp.text().await.expect("next unit body is text");
-    if !text.is_empty() && text != "null" {
-        let body: serde_json::Value = serde_json::from_str(&text).expect("next unit JSON is valid");
+    if !body.is_null() {
         assert!(body["id"].as_str().is_some(), "next unit should have an id");
     }
     // null response (empty queue) is also acceptable
@@ -1696,21 +1383,9 @@ async fn test_next_unit_endpoint() {
 /// `no_data_source` with no fabricated counts.
 #[tokio::test]
 async fn test_pipeline_empty_progress() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let world = support::ReviewWorld::boot().await;
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
     assert_eq!(body["total_dlls"].as_u64().unwrap_or(0), 0);
 
     let phases = body["phases"].as_array().expect("phases array is present");

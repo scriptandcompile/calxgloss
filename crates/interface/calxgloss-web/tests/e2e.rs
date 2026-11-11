@@ -30,8 +30,12 @@ use std::time::Duration;
 /// A fixture that creates a temporary git repository with sample
 /// translation data (branches, patches, baselines, classifications)
 /// so the web server has real data to serve.
+#[derive(Clone)]
 struct TestFixture {
-    dir: tempfile::TempDir,
+    /// Shared so an `_on` boot variant can serve the same repository
+    /// from a second world (a server restart); the directory is removed
+    /// when the last holder drops.
+    dir: std::sync::Arc<tempfile::TempDir>,
     port: u16,
 }
 
@@ -82,7 +86,10 @@ impl TestFixture {
         // branches can be created with files on them.
         Self::create_sample_data(&git);
 
-        Self { dir, port }
+        Self {
+            dir: std::sync::Arc::new(dir),
+            port,
+        }
     }
 
     fn repo_path(&self) -> PathBuf {
