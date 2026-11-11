@@ -16,8 +16,8 @@ use calxgloss_types::{
     PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, PromptStrategyEntry,
     PromptStrategyLog, RunPhase, RunRequestSignal, RunScope, RunTarget, SHIM_MAPPINGS_FILE,
     SHIM_VERIFICATION_FILE, ShimApiMapping, ShimLayer, ShimVerificationResult, TestCase,
-    TestResult, TokenUsageEntry, TokenUsageLog, TranslationEvents, UnitCancellation,
-    WindowsApiCall, shim_artifacts_dir,
+    TestResult, TokenUsageEntry, TokenUsageLog, TranslationEvents, WindowsApiCall,
+    shim_artifacts_dir,
 };
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
@@ -448,7 +448,7 @@ async fn post_lifecycle(port: u16, path: &str) -> (reqwest::StatusCode, serde_js
 /// writer — the same `ClassificationRecord` shape the `classify`
 /// command files, reasoning included — so the endpoints have a
 /// recorded classification to report.
-fn write_canned_classification_record(fixture: &TestFixture, binary: &str, category: DllCategory) {
+fn write_canned_classification_record(repo: &std::path::Path, binary: &str, category: DllCategory) {
     let record = ClassificationRecord {
         binary: binary.to_string(),
         category: Some(category),
@@ -461,30 +461,13 @@ fn write_canned_classification_record(fixture: &TestFixture, binary: &str, categ
             "import table matched no known library — treated as unknown third-party".to_string(),
         ),
     };
-    calxgloss_types::save_classification_record(fixture.repo_path(), &record)
+    calxgloss_types::save_classification_record(repo, &record)
         .expect("classification record filed");
 }
 
 // ─────────────────────────────────────────────────────────────
 // Pipeline start & restart (issue #92, W2.3)
 // ─────────────────────────────────────────────────────────────
-
-/// POST helper for the start/restart endpoints, which may carry a JSON
-/// run-request body (issue #92).
-async fn post_run(
-    port: u16,
-    path: &str,
-    body: serde_json::Value,
-) -> (reqwest::StatusCode, serde_json::Value) {
-    let mut req = reqwest::Client::new().post(format!("http://127.0.0.1:{port}{path}"));
-    if !body.is_null() {
-        req = req.json(&body);
-    }
-    let resp = req.send().await.expect("run request reaches server");
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.expect("run body is JSON");
-    (status, body)
-}
 
 // ─────────────────────────────────────────────────────────────
 // Server lifecycle endpoint tests (issue #60)

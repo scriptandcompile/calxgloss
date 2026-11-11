@@ -1540,7 +1540,11 @@ async fn test_headless_unit_overrides_tab() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_classification_override_panel() {
     let fixture = TestFixture::new();
-    write_canned_classification_record(&fixture, "fmod.dll", DllCategory::UnknownThirdParty);
+    write_canned_classification_record(
+        &fixture.repo_path(),
+        "fmod.dll",
+        DllCategory::UnknownThirdParty,
+    );
     let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
     let state =
         ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);

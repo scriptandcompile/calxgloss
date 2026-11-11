@@ -1,6 +1,29 @@
 //! Scenario tests split from `tests/e2e.rs`.
+//!
+//! Every world here boots through `support::ReviewWorld` (issue #472):
+//! `boot_ws_wired()` attaches the same live control handles
+//! `calxgloss live` wires — pipeline machine, unit cancellation, run-request
+//! channel, scope and the two override handles — while the bare `boot()` and
+//! `boot_plain()` worlds attach none — the shape the honest-503 pins
+//! serve from. No test in the file sleeps. After the world emits an
+//! event, the test waits until the served live view applies it; after a
+//! start endpoint, it watches the run-request channel; and a websocket
+//! test takes its socket from `ReviewWorld::websocket`, which returns
+//! only once the session manager has registered the session.
 
 use super::*;
+
+/// Read `/api/pipeline` and collect the served binary row names in order.
+async fn row_names(client: &support::Client) -> Vec<String> {
+    let (status, body) = client.get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
+    body["binaries"]
+        .as_array()
+        .expect("binaries is an array")
+        .iter()
+        .map(|b| b["binary"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
 
 // ─────────────────────────────────────────────────────────────
 // API-level tests (no browser needed)
@@ -9,19 +32,11 @@ use super::*;
 /// Verify that the health endpoint returns `{"status":"ok"}`.
 #[tokio::test]
 async fn test_health_endpoint() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/health").await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
-        .await
-        .expect("health request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("health body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["repo_accessible"], true);
     // Enhanced health (issue #59): uptime and version, same single endpoint.
@@ -36,21 +51,11 @@ async fn test_health_endpoint() {
 /// live (WebSocket) router answers it with the same JSON contract.
 #[tokio::test]
 async fn test_health_endpoint_live_router() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/health").await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
-        .await
-        .expect("health request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("health body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["repo_accessible"], true);
     assert!(body["uptime_secs"].as_u64().is_some());
@@ -66,22 +71,11 @@ async fn test_health_endpoint_live_router() {
 /// is honestly "unavailable" with zero WebSocket connections.
 #[tokio::test]
 async fn test_server_status_plain_router() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path()).with_log_level("debug");
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_with_log_level("debug").await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/api/server/status").await;
 
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("server status request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(status, 200);
 
     assert_eq!(body["pipeline_status"], "unavailable");
     assert_eq!(body["ws_connections"], 0);
@@ -108,34 +102,22 @@ async fn test_server_status_plain_router() {
 /// session is reflected in the connection count.
 #[tokio::test]
 async fn test_server_status_live_router() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager.clone(), progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // A live WebSocket session (registered through the same path the upgrade
-    // handler uses) and an in-flight unit.
-    let _handler = manager.register_client().await;
-    events.emit(ProgressEvent::TranslationStarted {
+    // A live WebSocket session and an in-flight unit.
+    let _ws = world.websocket().await;
+    let started = ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(started.clone());
+    world
+        .wait_until_unit_applied(&started, "game_logic.dll", "DrawPrimitive", |_| true)
+        .await;
 
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("server status request succeeds");
+    let (status, body) = world.client().get_json("/api/server/status").await;
 
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(status, 200);
 
     assert_eq!(body["pipeline_status"], "running");
     assert_eq!(
@@ -150,24 +132,11 @@ async fn test_server_status_live_router() {
 /// reports "idle" — distinct from plain serve's "unavailable".
 #[tokio::test]
 async fn test_server_status_live_router_idle() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/api/server/status").await;
 
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("server status request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["pipeline_status"], "idle");
     assert_eq!(body["ws_connections"], 0);
 }
@@ -179,53 +148,42 @@ async fn test_server_status_live_router_idle() {
 /// still in flight, which an in-flight-count guess could not tell apart.
 #[tokio::test]
 async fn test_pipeline_lifecycle_control_endpoints() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // A unit in flight — the point is that the reported status now follows
     // the state machine, not the in-flight count.
-    events.emit(ProgressEvent::TranslationStarted {
+    let started = ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let get_status = |port: u16| {
-        let fixture_port = port;
-        async move {
-            let resp = reqwest::get(format!("http://127.0.0.1:{fixture_port}/api/server/status",))
-                .await
-                .expect("server status request succeeds");
-            assert_eq!(resp.status(), 200);
-            let body: serde_json::Value = resp.json().await.expect("status body is JSON");
-            body["pipeline_status"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string()
-        }
     };
-    assert_eq!(get_status(fixture.port()).await, "running");
+    world.emitter().emit(started.clone());
+    world
+        .wait_until_unit_applied(&started, "game_logic.dll", "DrawPrimitive", |_| true)
+        .await;
+
+    let get_status = || async {
+        let (status, body) = world.client().get_json("/api/server/status").await;
+        assert_eq!(status, 200);
+        body["pipeline_status"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(get_status().await, "running");
 
     // Pause: 200, body reports the transition.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/pause").await;
     assert_eq!(status, 200);
     assert_eq!(body["previous"], "running");
     assert_eq!(body["state"], "paused");
 
     // Status follows the machine even with the unit record still in flight.
-    assert_eq!(get_status(fixture.port()).await, "paused");
+    assert_eq!(get_status().await, "paused");
 
     // Double pause: the machine refuses — 409, not a silent no-op.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/pause").await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -236,18 +194,18 @@ async fn test_pipeline_lifecycle_control_endpoints() {
     );
 
     // Resume: back to running.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/resume").await;
     assert_eq!(status, 200);
     assert_eq!(body["previous"], "paused");
     assert_eq!(body["state"], "running");
-    assert_eq!(get_status(fixture.port()).await, "running");
+    assert_eq!(get_status().await, "running");
 
     // Stop: running -> stopping; resume from stopping is refused.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/stop").await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/stop").await;
     assert_eq!(status, 200);
     assert_eq!(body["state"], "stopping");
-    assert_eq!(get_status(fixture.port()).await, "stopping");
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    assert_eq!(get_status().await, "stopping");
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/resume").await;
     assert_eq!(status, 409, "a stopping pipeline cannot resume");
 }
 
@@ -260,28 +218,16 @@ async fn test_pipeline_state_changes_reach_ws_clients() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
 
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("websocket upgrade succeeds");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Connect after the idle→running push so the socket sees only the
+    // transitions the endpoints drive.
+    let mut ws = world.websocket().await;
 
     for path in ["/api/pipeline/pause", "/api/pipeline/resume"] {
-        let (status, _) = post_lifecycle(fixture.port(), path).await;
+        let (status, _) = world.client().post_lifecycle(path).await;
         assert_eq!(status, 200, "{path} should succeed");
     }
 
@@ -292,7 +238,8 @@ async fn test_pipeline_state_changes_reach_ws_clients() {
         if transitions.len() >= 2 {
             break;
         }
-        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.raw_mut().next()).await
+        {
             Ok(Some(Ok(m))) => m,
             _ => continue,
         };
@@ -322,14 +269,7 @@ async fn test_pipeline_state_changes_reach_ws_clients() {
 /// to control a pipeline it does not hold.
 #[tokio::test]
 async fn test_pipeline_lifecycle_endpoints_503_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
 
     for path in [
         "/api/pipeline/pause",
@@ -339,7 +279,7 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
         // attached means no pipeline whose unit could be cancelled.
         "/api/pipeline/cancel-current",
     ] {
-        let (status, body) = post_lifecycle(fixture.port(), path).await;
+        let (status, body) = world.client().post_lifecycle(path).await;
         assert_eq!(status, 503, "{path} without a control should be 503");
         assert!(
             body["message"]
@@ -354,17 +294,13 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
     // channel attached there is no live loop a request could wake. Restart
     // carries a JSON body, so it is posted separately from the bodyless ones.
     for (path, body) in [
-        ("/api/pipeline/start", serde_json::json!(null)),
-        ("/api/pipeline/restart", serde_json::json!({})),
+        ("/api/pipeline/start", None),
+        ("/api/pipeline/restart", Some(serde_json::json!({}))),
     ] {
-        let mut req =
-            reqwest::Client::new().post(format!("http://127.0.0.1:{}{path}", fixture.port()));
-        if !body.is_null() {
-            req = req.json(&body);
-        }
-        let resp = req.send().await.expect("request reaches server");
-        let status = resp.status();
-        let body: serde_json::Value = resp.json().await.expect("body is JSON");
+        let (status, body) = match body {
+            None => world.client().post_lifecycle(path).await,
+            Some(body) => world.client().post_json(path, body).await,
+        };
         assert_eq!(status, 503, "{path} without a control should be 503");
         assert!(
             body["message"]
@@ -387,31 +323,21 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
 /// from the handle — a plain GET is honest without waiting for an event.
 #[tokio::test]
 async fn test_pipeline_binary_pause_resume_endpoints() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
     // The run's queue plan discovers game_logic.dll — the row exists before
     // anything has started working on it.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec!["game_logic.dll".to_string()],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| row_has(view, "game_logic.dll"))
+        .await;
 
-    let get_row_paused = |port: u16| async move {
-        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
-            .await
-            .expect("pipeline status request succeeds");
-        assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let get_row_paused = || async {
+        let (status, body) = world.client().get_json("/api/pipeline").await;
+        assert_eq!(status, 200);
         body["binaries"]
             .as_array()
             .expect("binaries is an array")
@@ -422,17 +348,16 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
             .and_then(|p| p.as_bool())
     };
     assert_eq!(
-        get_row_paused(fixture.port()).await,
+        get_row_paused().await,
         Some(false),
         "a freshly discovered row is not paused"
     );
 
     // Pause: 200, body echoes the binary and the flag now in force.
-    let (status, body) = post_lifecycle(
-        fixture.port(),
-        "/api/pipeline/binaries/game_logic.dll/pause",
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/game_logic.dll/pause")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["binary"], "game_logic.dll");
     assert_eq!(body["paused"], true);
@@ -440,15 +365,17 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
     // The row data follows the handle — a plain GET is honest without
     // waiting for a BinaryPauseChanged event.
     assert_eq!(
-        get_row_paused(fixture.port()).await,
+        get_row_paused().await,
         Some(true),
         "GET /api/pipeline reports the pause"
     );
 
     // A binary the workspace has not discovered: 409 with the server's own
     // reason — a stale click is never a silent no-op.
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/pause").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/nope.dll/pause")
+        .await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -461,24 +388,33 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
     // The pause is saved in the scope record — a handle re-opened over the
     // same workspace (a restarted run) honors it, on the #107 match rule.
     assert!(
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
+        calxgloss_types::ScopeControl::open(world.repo_path()).is_paused("GAME_LOGIC.DLL"),
         "the endpoint wrote through to the persisted scope record"
     );
 
     // Resume: back to unpaused, and the row follows.
-    let (status, body) = post_lifecycle(
-        fixture.port(),
-        "/api/pipeline/binaries/game_logic.dll/resume",
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/game_logic.dll/resume")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["binary"], "game_logic.dll");
     assert_eq!(body["paused"], false);
     assert_eq!(
-        get_row_paused(fixture.port()).await,
+        get_row_paused().await,
         Some(false),
         "GET /api/pipeline reports the resume"
     );
+}
+
+/// True when the served `/api/pipeline` view already carries a row for the
+/// named binary.
+fn row_has(view: &serde_json::Value, binary: &str) -> bool {
+    view["binaries"]
+        .as_array()
+        .expect("binaries is an array")
+        .iter()
+        .any(|b| b["binary"] == binary)
 }
 
 /// A pause and a resume reach WS clients as raw `binary_pause_changed`
@@ -490,38 +426,25 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
 
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("websocket upgrade succeeds");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut ws = world.websocket().await;
 
     // Discover the binary first — an undiscovered name is a 409 and emits
     // no event.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec!["game_logic.dll".to_string()],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| row_has(view, "game_logic.dll"))
+        .await;
 
     for path in [
         "/api/pipeline/binaries/game_logic.dll/pause",
         "/api/pipeline/binaries/game_logic.dll/resume",
     ] {
-        let (status, _) = post_lifecycle(fixture.port(), path).await;
+        let (status, _) = world.client().post_lifecycle(path).await;
         assert_eq!(status, 200, "{path} should succeed");
     }
 
@@ -532,7 +455,8 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
         if changes.len() >= 2 {
             break;
         }
-        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.raw_mut().next()).await
+        {
             Ok(Some(Ok(m))) => m,
             _ => continue,
         };
@@ -570,36 +494,33 @@ async fn test_binary_pause_changed_reaches_ws_clients() {
 /// list reaches its next boundary.
 #[tokio::test]
 async fn test_pipeline_binary_focus_endpoint() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "a.dll".to_string(),
             "b.dll".to_string(),
             "c.dll".to_string(),
         ],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| {
+            row_has(view, "a.dll") && row_has(view, "b.dll") && row_has(view, "c.dll")
+        })
+        .await;
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        row_names(world.client()).await,
         ["a.dll", "b.dll", "c.dll"],
         "the plan alone sets the row order"
     );
 
     // A binary the workspace has not discovered: 409 carrying the server's
     // own reason — a stale click is never a silent no-op.
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/focus").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/nope.dll/focus")
+        .await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -610,23 +531,29 @@ async fn test_pipeline_binary_focus_endpoint() {
     );
 
     // Focus c.dll: 200 echoing the addressed binary.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/focus").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/c.dll/focus")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["binary"], "c.dll");
 
     // The served rows follow at once — the focus reads as the front of the
     // plan, matching what the live loop will do at the next boundary.
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        row_names(world.client()).await,
         ["c.dll", "a.dll", "b.dll"],
         "GET /api/pipeline hoists the focused binary"
     );
 
     // One slot, last press wins: b.dll simply replaces c.dll.
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/focus").await;
+    let (status, _) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/b.dll/focus")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        row_names(world.client()).await,
         ["b.dll", "a.dll", "c.dll"],
         "the later press is the focus now"
     );
@@ -634,7 +561,7 @@ async fn test_pipeline_binary_focus_endpoint() {
     // The slot is saved in the persisted scope record — a handle re-opened
     // over the same workspace (a restarted run) honors it, on the #107
     // match rule.
-    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ScopeControl::open(world.repo_path());
     assert!(reopened.is_focus("B.DLL"), "the focus survives a restart");
 }
 
@@ -653,41 +580,43 @@ async fn test_pipeline_binary_focus_endpoint() {
 /// live.
 #[tokio::test]
 async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let mut seam = events.subscribe();
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_scope_control(scope)
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut seam = world.emitter().subscribe();
 
     // The run's plan is a.dll, b.dll, c.dll — and a.dll's pass is in
     // flight. c.dll's row shows Start Translation; pressing it swaps the
     // run onto c.dll.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "a.dll".to_string(),
             "b.dll".to_string(),
             "c.dll".to_string(),
         ],
-    });
-    events.emit(ProgressEvent::BatchStarted {
+    };
+    world.emitter().emit(planned.clone());
+    let batch = ProgressEvent::BatchStarted {
         binary: "a.dll".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(batch.clone());
+    world
+        .wait_until_applied(&batch, |view| {
+            row_has(view, "a.dll")
+                && row_has(view, "b.dll")
+                && row_has(view, "c.dll")
+                && view["binaries"]
+                    .as_array()
+                    .expect("binaries is an array")
+                    .iter()
+                    .any(|b| b["binary"] == "a.dll" && b["processing"] == true)
+        })
+        .await;
 
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/c.dll/start")
+        .await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["binary"], "c.dll");
     assert_eq!(body["paused"], false);
@@ -719,14 +648,14 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
     // The served rows follow the focus at once — no run-loop boundary has
     // to be reached for the new plan order to show (issue #284's move-to-front).
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        row_names(world.client()).await,
         ["c.dll", "a.dll", "b.dll"],
         "the swapped-in target leads the served plan"
     );
 
     // Both states are saved in the persisted scope record — a handle
     // re-opened over the same workspace honors them on the #107 match rule.
-    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ScopeControl::open(world.repo_path());
     assert!(
         reopened.is_paused("A.DLL"),
         "the previous leader stays paused"
@@ -751,42 +680,36 @@ async fn test_pipeline_binary_start_swaps_the_in_flight_binary() {
 /// press: 409 naming the reason and pointing at the row's Configure.
 #[tokio::test]
 async fn test_pipeline_binary_start_refusals() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_scope_control(scope)
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // The plan names only a.dll; done.dll is discovered (classified) but
     // the live plan no longer names it — its pass is behind this run.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec!["a.dll".to_string()],
-    });
-    events.emit(ProgressEvent::ClassificationComplete {
+    };
+    world.emitter().emit(planned.clone());
+    let classified = ProgressEvent::ClassificationComplete {
         binary: "done.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(classified.clone());
+    world
+        .wait_until_applied(&classified, |view| {
+            row_has(view, "a.dll") && row_has(view, "done.dll")
+        })
+        .await;
 
     // Undiscovered: 409 with the server's own reason, same rule as pause.
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/nope.dll/start")
+        .await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -799,8 +722,10 @@ async fn test_pipeline_binary_start_refusals() {
     // The stale press: discovered, but this run already had its pass —
     // 409 naming the reason and the fix, because re-running a finished
     // pass is restart's job, not this row button's.
-    let (status, body) =
-        post_lifecycle(fixture.port(), "/api/pipeline/binaries/done.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/done.dll/start")
+        .await;
     assert_eq!(status, 409);
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -817,33 +742,27 @@ async fn test_pipeline_binary_start_refusals() {
 /// machine's own message — the row button never reaches restart.
 #[tokio::test]
 async fn test_pipeline_binary_start_walks_the_run_level_machine() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let control = PipelineControl::new().with_events(events.clone());
-    let run_requests = RunRequestSignal::new();
-    let mut request_rx = run_requests.subscribe();
-    let state = ServerState::new(fixture.repo_path())
-        .with_scope_control(scope)
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
+    let mut request_rx = world.run_requests().subscribe();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec!["a.dll".to_string(), "b.dll".to_string()],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| {
+            row_has(view, "a.dll") && row_has(view, "b.dll")
+        })
+        .await;
 
     // Idle: the press begins translating with the pressed binary first —
     // 200, the machine moved to Running, and the default full-scope
     // request queued on the shared channel exactly as the run endpoint queues it.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/b.dll/start")
+        .await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["paused"], false);
     let message = body["message"].as_str().unwrap_or_default();
@@ -865,10 +784,13 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
 
     // Run-level pause, then a press on the focused row: the pause releases
     // so the swap can proceed, and no second request is queued.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/pause").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["state"], "paused");
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/b.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/b.dll/start")
+        .await;
     assert_eq!(status, 200, "{body}");
     assert!(
         matches!(control.state(), PipelineState::Running),
@@ -882,7 +804,10 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
     // Terminal: the machine itself refuses, and its message is carried
     // through verbatim — restarting a finished run is a different verb.
     control.complete().expect("running -> complete");
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/a.dll/start").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/a.dll/start")
+        .await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -906,19 +831,10 @@ async fn test_pipeline_binary_start_walks_the_run_level_machine() {
 /// does not hold — the lifecycle endpoints' honesty rule, same shape.
 #[tokio::test]
 async fn test_scope_endpoints_503_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let client = reqwest::Client::new();
-
-    let resp = client
-        .get(format!("http://127.0.0.1:{}/api/scope", fixture.port()))
+    let resp = reqwest::Client::new()
+        .get(world.client().url("/api/scope"))
         .send()
         .await
         .expect("request reaches server");
@@ -940,14 +856,7 @@ async fn test_scope_endpoints_503_without_control() {
         ),
         ("/api/scope/constraints", serde_json::json!({})),
     ] {
-        let resp = client
-            .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
-            .json(&body)
-            .send()
-            .await
-            .expect("request reaches server");
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp.json().await.expect("body is JSON");
+        let (status, resp_body) = world.client().post_json(path, body).await;
         assert_eq!(status, 503, "{path} without a handle should be 503");
         assert!(
             resp_body["message"]
@@ -969,13 +878,7 @@ async fn test_scope_endpoints_503_without_control() {
         "/api/pipeline/binaries/game_logic.dll/focus",
         "/api/pipeline/binaries/game_logic.dll/start",
     ] {
-        let resp = client
-            .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
-            .send()
-            .await
-            .expect("request reaches server");
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp.json().await.expect("body is JSON");
+        let (status, resp_body) = world.client().post_lifecycle(path).await;
         assert_eq!(status, 503, "{path} without a handle should be 503");
         assert!(
             resp_body["message"]
@@ -993,92 +896,79 @@ async fn test_scope_endpoints_503_without_control() {
 /// anything (issue #93).
 #[tokio::test]
 async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
-    let fixture = TestFixture::new();
-    let scope = calxgloss_types::ScopeControl::open(fixture.repo_path());
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let client = reqwest::Client::new();
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let resp = client
-        .post(format!("{base}/api/scope/binaries"))
-        .json(&serde_json::json!({"binaries": ["game_logic.dll"]}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/scope/binaries",
+            serde_json::json!({"binaries": ["game_logic.dll"]}),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["scope"]["binaries"][0], "game_logic.dll");
 
-    let resp = client
-        .post(format!("{base}/api/scope/skip-function"))
-        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "UpdateScene"}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
+    let (status, _) = world
+        .client()
+        .post_json(
+            "/api/scope/skip-function",
+            serde_json::json!({"binary": "game_logic.dll", "function": "UpdateScene"}),
+        )
+        .await;
+    assert_eq!(status, 200);
 
-    let resp = client
-        .post(format!("{base}/api/scope/priority-function"))
-        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "DrawPrimitive"}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
+    let (status, _) = world
+        .client()
+        .post_json(
+            "/api/scope/priority-function",
+            serde_json::json!({"binary": "game_logic.dll", "function": "DrawPrimitive"}),
+        )
+        .await;
+    assert_eq!(status, 200);
 
     // Issue #95: the panel's remove button drives the removal endpoint —
     // a prioritized function drops out, the rest of the list stays.
-    let resp = client
-        .post(format!("{base}/api/scope/priority-function"))
-        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let resp = client
-        .post(format!("{base}/api/scope/remove-priority-function"))
-        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, _) = world
+        .client()
+        .post_json(
+            "/api/scope/priority-function",
+            serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/scope/remove-priority-function",
+            serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["scope"]["priority_functions"].as_array().map(Vec::len),
         Some(1),
         "the removed priority is gone from the echoed status"
     );
 
-    let resp = client
-        .post(format!("{base}/api/scope/constraints"))
-        .json(&serde_json::json!({
-            "max_attempts": 2,
-            "max_context_tier": "Disassembly",
-            "token_budget": 50000
-        }))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .post_json(
+            "/api/scope/constraints",
+            serde_json::json!({
+                "max_attempts": 2,
+                "max_context_tier": "Disassembly",
+                "token_budget": 50000
+            }),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["constraints"]["max_attempts"], 2);
     assert_eq!(body["constraints"]["max_context_tier"], "Disassembly");
     assert_eq!(body["constraints"]["token_budget"], 50000);
 
     // Status read reflects every mutation.
-    let resp = client
-        .get(format!("{base}/api/scope"))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json("/api/scope").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["scope"]["skipped_functions"][0]["function"],
         "UpdateScene"
@@ -1104,7 +994,7 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
 
     // A restarted run: a fresh handle over the same workspace loads the
     // persisted records — nothing re-entered.
-    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ScopeControl::open(world.repo_path());
     let persisted = reopened.scope();
     assert_eq!(persisted.binaries.len(), 1);
     assert!(persisted.is_skipped("game_logic.dll", "UpdateScene"));
@@ -1130,28 +1020,12 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
 /// does not hold — the scope endpoints' honesty rule, same shape.
 #[tokio::test]
 async fn test_override_endpoints_503_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let path = "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override";
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
-        fixture.port()
-    );
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 503, "GET override without a handle is 503");
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json(path).await;
+    assert_eq!(status, 503, "GET override without a handle is 503");
     assert!(
         body["message"]
             .as_str()
@@ -1160,24 +1034,14 @@ async fn test_override_endpoints_503_without_control() {
         "503 explains why, got: {body}"
     );
 
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": {"skip": true}}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 503, "POST override without a handle is 503");
+    let status = world
+        .client()
+        .post_for_status(path, serde_json::json!({"override": {"skip": true}}))
+        .await;
+    assert_eq!(status, 503, "POST override without a handle is 503");
 
-    let resp = client
-        .delete(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(
-        resp.status(),
-        503,
-        "DELETE override without a handle is 503"
-    );
+    let (status, _) = world.client().delete_json(path).await;
+    assert_eq!(status, 503, "DELETE override without a handle is 503");
 }
 
 /// The override endpoints drive the shared handle end to end: apply lands,
@@ -1186,30 +1050,13 @@ async fn test_override_endpoints_503_without_control() {
 /// re-entering anything (issue #96).
 #[tokio::test]
 async fn test_override_endpoints_apply_get_and_persist() {
-    let fixture = TestFixture::new();
-    let overrides = calxgloss_types::OverrideControl::open(fixture.repo_path());
-    let state = ServerState::new(fixture.repo_path()).with_override_control(overrides);
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let client = reqwest::Client::new();
-    let url = format!(
-        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
-        fixture.port()
-    );
+    let path = "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override";
 
     // A never-overridden unit reads back honestly: 200 with no override.
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json(path).await;
+    assert_eq!(status, 200);
     assert_eq!(body["unit"], "game_logic.dll/DrawPrimitive/v1");
     assert!(
         body["override"].is_null(),
@@ -1217,20 +1064,20 @@ async fn test_override_endpoints_apply_get_and_persist() {
     );
 
     // Apply the full record.
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": {
-            "tier_override": "FullModule",
-            "retry_strategy_override": "escalate",
-            "custom_hints": ["uses SSE registers"],
-            "skip": false,
-            "reviewer_notes": "looks like a blitter"
-        }}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .post_json(
+            path,
+            serde_json::json!({"override": {
+                "tier_override": "FullModule",
+                "retry_strategy_override": "escalate",
+                "custom_hints": ["uses SSE registers"],
+                "skip": false,
+                "reviewer_notes": "looks like a blitter"
+            }}),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["override"]["tier_override"], "FullModule");
     assert_eq!(body["override"]["retry_strategy_override"], "escalate");
     assert_eq!(body["override"]["custom_hints"][0], "uses SSE registers");
@@ -1240,14 +1087,15 @@ async fn test_override_endpoints_apply_get_and_persist() {
     // the unknown variant rather than storing an override that looks active
     // but silently does nothing (axum answers the failed JSON extraction
     // with 422, like the classification override's category, issue #120).
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": {"retry_strategy_override": "escalatte"}}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 422, "unknown strategy label is rejected");
-    let stored = calxgloss_types::OverrideControl::open(fixture.repo_path())
+    let status = world
+        .client()
+        .post_for_status(
+            path,
+            serde_json::json!({"override": {"retry_strategy_override": "escalatte"}}),
+        )
+        .await;
+    assert_eq!(status, 422, "unknown strategy label is rejected");
+    let stored = calxgloss_types::OverrideControl::open(world.repo_path())
         .get("game_logic.dll", "DrawPrimitive");
     assert_eq!(
         stored.and_then(|o| o.retry_strategy_override),
@@ -1256,18 +1104,13 @@ async fn test_override_endpoints_apply_get_and_persist() {
     );
 
     // GET reads the same record back.
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json(path).await;
+    assert_eq!(status, 200);
     assert_eq!(body["override"]["tier_override"], "FullModule");
 
     // A restarted run: a fresh handle over the same workspace loads the
     // persisted record — nothing re-entered.
-    let reopened = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::OverrideControl::open(world.repo_path());
     let record = reopened
         .get("game_logic.dll", "DrawPrimitive")
         .expect("the override survives a restart");
@@ -1281,19 +1124,14 @@ async fn test_override_endpoints_apply_get_and_persist() {
     );
 
     // Removal clears it, and the removal survives the restart too.
-    let resp = client
-        .delete(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().delete_json(path).await;
+    assert_eq!(status, 200);
     assert!(
         body["override"].is_null(),
         "removal leaves no record, got: {body}"
     );
 
-    let reopened = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::OverrideControl::open(world.repo_path());
     assert!(
         reopened.get("game_logic.dll", "DrawPrimitive").is_none(),
         "the removal survives a restart"
@@ -1306,32 +1144,12 @@ async fn test_override_endpoints_apply_get_and_persist() {
 /// honesty rule, same shape.
 #[tokio::test]
 async fn test_classification_override_endpoints_503_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let path = "/api/binaries/fmod.dll/classification";
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "http://127.0.0.1:{}/api/binaries/fmod.dll/classification",
-        fixture.port()
-    );
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(
-        resp.status(),
-        503,
-        "GET classification without a handle is 503"
-    );
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json(path).await;
+    assert_eq!(status, 503, "GET classification without a handle is 503");
     assert!(
         body["message"]
             .as_str()
@@ -1340,19 +1158,14 @@ async fn test_classification_override_endpoints_503_without_control() {
         "503 explains why, got: {body}"
     );
 
-    let resp = client
-        .post(&url)
-        .json(
-            &serde_json::json!({"override": {"category": "RuntimeLibrary", "known_runtime": true}}),
+    let status = world
+        .client()
+        .post_for_status(
+            path,
+            serde_json::json!({"override": {"category": "RuntimeLibrary", "known_runtime": true}}),
         )
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(
-        resp.status(),
-        503,
-        "POST classification without a handle is 503"
-    );
+        .await;
+    assert_eq!(status, 503, "POST classification without a handle is 503");
 }
 
 /// The classification endpoints drive the shared handle end to end: the GET
@@ -1362,32 +1175,18 @@ async fn test_classification_override_endpoints_503_without_control() {
 /// the persisted records without re-entering anything (issue #97).
 #[tokio::test]
 async fn test_classification_override_endpoints_set_get_and_persist() {
-    let fixture = TestFixture::new();
-    write_canned_classification_record(&fixture, "fmod.dll", DllCategory::UnknownThirdParty);
-    let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
-    let state =
-        ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let client = reqwest::Client::new();
-    let url = format!(
-        "http://127.0.0.1:{}/api/binaries/fmod.dll/classification",
-        fixture.port()
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    write_canned_classification_record(
+        &world.repo_path(),
+        "fmod.dll",
+        DllCategory::UnknownThirdParty,
     );
 
+    let path = "/api/binaries/fmod.dll/classification";
+
     // The recorded classification, with its reasoning, and no override yet.
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json(path).await;
+    assert_eq!(status, 200);
     assert_eq!(body["binary"], "fmod.dll");
     assert_eq!(body["classification"]["category"], "UnknownThirdParty");
     assert_eq!(body["classification"]["strategy"], "ReverseEngineer");
@@ -1404,31 +1203,32 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
     );
 
     // Apply the override — a runtime-library correction.
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": {
-            "category": "RuntimeLibrary",
-            "known_runtime": true
-        }}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .post_json(
+            path,
+            serde_json::json!({"override": {
+                "category": "RuntimeLibrary",
+                "known_runtime": true
+            }}),
+        )
+        .await;
+    assert_eq!(status, 200);
     assert_eq!(body["override"]["category"], "RuntimeLibrary");
     assert_eq!(body["override"]["known_runtime"], true);
 
     // A typo'd category is refused — serde rejects the unknown variant
     // rather than storing a decision that means nothing (axum answers the
     // failed JSON extraction with 422).
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": {"category": "RuntimeLibary"}}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 422, "unknown category is rejected");
-    let stored = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let status = world
+        .client()
+        .post_for_status(
+            path,
+            serde_json::json!({"override": {"category": "RuntimeLibary"}}),
+        )
+        .await;
+    assert_eq!(status, 422, "unknown category is rejected");
+    let stored = calxgloss_types::ClassificationOverrideControl::open(world.repo_path());
     assert_eq!(
         stored.get("fmod.dll").map(|o| o.category),
         Some(calxgloss_types::DllCategory::RuntimeLibrary),
@@ -1436,17 +1236,12 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
     );
 
     // GET reads the same record back.
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .expect("request reaches server");
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (_, body) = world.client().get_json(path).await;
     assert_eq!(body["override"]["category"], "RuntimeLibrary");
 
     // A restarted run: a fresh handle over the same workspace loads the
     // persisted record — nothing re-entered.
-    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(world.repo_path());
     let record = reopened
         .get("fmod.dll")
         .expect("the override survives a restart");
@@ -1460,20 +1255,17 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
     );
 
     // `override: null` removes it, and the removal survives the restart.
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({"override": null}))
-        .send()
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world
+        .client()
+        .post_json(path, serde_json::json!({"override": null}))
+        .await;
+    assert_eq!(status, 200);
     assert!(
         body["override"].is_null(),
         "removal leaves no record, got: {body}"
     );
 
-    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(world.repo_path());
     assert!(
         reopened.get("fmod.dll").is_none(),
         "the removal survives a restart"
@@ -1487,28 +1279,11 @@ async fn test_classification_override_endpoints_set_get_and_persist() {
 /// stale request behind.
 #[tokio::test]
 async fn test_pipeline_start_endpoint_begins_idle_run() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
-    let run_requests = RunRequestSignal::new();
-    let mut request_rx = run_requests.subscribe();
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let mut request_rx = world.run_requests().subscribe();
 
     // Start from Idle: 200, the transition in the body.
-    let (status, body) = post_run(
-        fixture.port(),
-        "/api/pipeline/start",
-        serde_json::json!(null),
-    )
-    .await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/start").await;
     assert_eq!(status, 200);
     assert_eq!(body["previous"], "idle");
     assert_eq!(body["state"], "running");
@@ -1520,23 +1295,12 @@ async fn test_pipeline_start_endpoint_begins_idle_run() {
     assert_eq!(queued, Some(PipelineRunRequest::default()));
 
     // Server status follows the machine.
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("server status request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    let (_, body) = world.client().get_json("/api/server/status").await;
     assert_eq!(body["pipeline_status"], "running");
 
     // A run already in flight cannot be started again — 409 with the
     // machine's own message, and no second request queued.
-    let (status, body) = post_run(
-        fixture.port(),
-        "/api/pipeline/start",
-        serde_json::json!(null),
-    )
-    .await;
+    let (status, body) = world.client().post_lifecycle("/api/pipeline/start").await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -1557,29 +1321,16 @@ async fn test_pipeline_start_endpoint_begins_idle_run() {
 /// (still Running) refused with 409 — the operator stops it first.
 #[tokio::test]
 async fn test_pipeline_restart_endpoint_queues_selectors() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let run_requests = RunRequestSignal::new();
-    let mut request_rx = run_requests.subscribe();
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut request_rx = world.run_requests().subscribe();
 
     // A run still in flight cannot restart — the operator stops it first.
-    let (status, body) = post_run(
-        fixture.port(),
-        "/api/pipeline/restart",
-        serde_json::json!({}),
-    )
-    .await;
+    let (status, body) = world
+        .client()
+        .post_json("/api/pipeline/restart", serde_json::json!({}))
+        .await;
     assert_eq!(status, 409);
     assert!(
         body["message"]
@@ -1598,7 +1349,10 @@ async fn test_pipeline_restart_endpoint_queues_selectors() {
         "target": { "binary": "eqgame.dll" },
         "scope": "only_failed",
     });
-    let (status, body) = post_run(fixture.port(), "/api/pipeline/restart", selectors).await;
+    let (status, body) = world
+        .client()
+        .post_json("/api/pipeline/restart", selectors)
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["previous"], "complete");
     assert_eq!(body["state"], "running");
@@ -1625,12 +1379,7 @@ async fn test_pipeline_restart_endpoint_queues_selectors() {
 
     // A bodyless POST re-runs everything — the defaults.
     control.complete().expect("running -> complete");
-    let (status, _) = post_run(
-        fixture.port(),
-        "/api/pipeline/restart",
-        serde_json::json!(null),
-    )
-    .await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/restart").await;
     assert_eq!(status, 200);
     request_rx.changed().await.expect("a request was queued");
     let queued = request_rx
@@ -1648,46 +1397,22 @@ async fn test_pipeline_start_and_restart_reach_ws_clients() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
 
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("websocket upgrade succeeds");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut ws = world.websocket().await;
 
     // Start the run from Idle over HTTP…
-    let (status, _) = post_run(
-        fixture.port(),
-        "/api/pipeline/start",
-        serde_json::json!(null),
-    )
-    .await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/start").await;
     assert_eq!(status, 200);
     // …the run finishes (the live loop would do this walk)…
     control.stop().expect("running -> stopping");
     control.complete().expect("stopping -> complete");
     // …and Restart begins it again in-process.
-    let (status, _) = post_run(
-        fixture.port(),
-        "/api/pipeline/restart",
-        serde_json::json!({}),
-    )
-    .await;
+    let (status, _) = world
+        .client()
+        .post_json("/api/pipeline/restart", serde_json::json!({}))
+        .await;
     assert_eq!(status, 200);
 
     let mut transitions: Vec<(String, String)> = Vec::new();
@@ -1695,7 +1420,8 @@ async fn test_pipeline_start_and_restart_reach_ws_clients() {
         if transitions.len() >= 4 {
             break;
         }
-        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.raw_mut().next()).await
+        {
             Ok(Some(Ok(m))) => m,
             _ => continue,
         };
@@ -1733,31 +1459,18 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
 
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
-    let cancellation = UnitCancellation::new().with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_unit_cancellation(cancellation.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress.clone(), ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let cancellation = world.unit_cancellation();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("websocket upgrade succeeds");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut ws = world.websocket().await;
 
     // Nothing in flight yet — the request is rejected, not silently absorbed.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/cancel-current")
+        .await;
     assert_eq!(status, 409, "cancelling with no unit in flight is rejected");
     assert!(
         body["message"]
@@ -1769,15 +1482,21 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
 
     // A unit in flight — fed exactly how live mode feeds it: the pipeline
     // emits TranslationStarted and registers the unit on the handle.
-    events.emit(ProgressEvent::TranslationStarted {
+    let started = ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
-    });
+    };
+    world.emitter().emit(started.clone());
     cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    world
+        .wait_until_unit_applied(&started, "game_logic.dll", "DrawPrimitive", |_| true)
+        .await;
 
     // Cancel it: 200 naming the unit that was in flight.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/cancel-current")
+        .await;
     assert_eq!(status, 200, "a unit in flight can be cancelled");
     assert_eq!(body["binary"], "game_logic.dll");
     assert_eq!(body["function"], "DrawPrimitive");
@@ -1800,7 +1519,8 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
         if saw_cancelled {
             break;
         }
-        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.raw_mut().next()).await
+        {
             Ok(Some(Ok(m))) => m,
             _ => continue,
         };
@@ -1818,7 +1538,7 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
 
     // Progress state records the cancelled unit as finished and failed,
     // named as cancelled so the dashboard can tell it from a plain failure.
-    let snapshot = progress.snapshot().await;
+    let snapshot = world.progress_state().snapshot().await;
     let entry = snapshot
         .get("game_logic.dll/DrawPrimitive")
         .expect("the cancelled unit is tracked");
@@ -1839,17 +1559,24 @@ async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
         "the run keeps going"
     );
     cancellation.end_unit_was_cancelled();
-    events.emit(ProgressEvent::TranslationStarted {
+    let next = ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
-    });
+    };
+    world.emitter().emit(next.clone());
     cancellation.begin_unit("game_logic.dll", "UpdateScene");
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/cancel-current")
+        .await;
     assert_eq!(status, 200, "the next in-flight unit can be cancelled");
     assert_eq!(body["function"], "UpdateScene");
 
     // And once the run is between units again, cancel is rejected anew.
     cancellation.end_unit_was_cancelled();
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    let (status, _) = world
+        .client()
+        .post_lifecycle("/api/pipeline/cancel-current")
+        .await;
     assert_eq!(status, 409, "nothing in flight between units to cancel");
 }

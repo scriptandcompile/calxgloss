@@ -10,7 +10,11 @@
 //! subscribed to the bus, the live-view store, and the router. Boot entry
 //! points name the router shapes `calxgloss_web` exports: plain serve
 //! (`boot_plain`), actions-wired serve (`boot_with_actions`), and live
-//! actions-plus-websocket (`boot`). The `_on` variants boot over a
+//! actions-plus-websocket (`boot`). [`ReviewWorld::boot_ws_wired`] is
+//! the live shape with every control handle `calxgloss live` attaches —
+//! the pipeline machine, unit cancellation, run-request channel, scope
+//! and the two override handles — each reachable through the world's
+//! accessors (issue #472). The `_on` variants boot over a
 //! caller-supplied fixture — a second server over the same repository,
 //! which is what a server-restart pin needs — and the `_with_log_filter`
 //! variants attach the reloadable tracing filter the log-verbosity pins
@@ -47,8 +51,59 @@ pub struct ReviewWorld {
     /// The state the router was built from, so the shutdown pins can
     /// read the stop signal the shutdown/restart endpoints flip.
     state: ServerState,
+    /// The live control handles `calxgloss live` attaches — present only
+    /// on a `boot_ws_wired()` world (issue #472).
+    controls: Option<LiveControls>,
     port: u16,
     server: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// The live-world-only pieces a router can be served with: the live-view
+/// store and session manager a websocket router runs on, and the live
+/// control handles a wired boot attaches.
+#[derive(Default)]
+struct LiveParts {
+    progress: Option<ProgressState>,
+    manager: Option<SessionManager>,
+    controls: Option<LiveControls>,
+}
+
+/// The live control handles a `boot_ws_wired()` world attaches to its
+/// server state, mirroring what `calxgloss-cli`'s `handle_live` wires
+/// (issue #472): the pipeline machine, the unit-cancellation handle, the
+/// run-request channel, and the scope and override handles opened over
+/// the fixture's workspace. A test reads some handles through the world's
+/// accessors and the rest through the server state. The world holds them
+/// for as long as it serves.
+struct LiveControls {
+    control: calxgloss_types::PipelineControl,
+    cancellation: calxgloss_types::UnitCancellation,
+    run_requests: calxgloss_types::RunRequestSignal,
+    scope: calxgloss_types::ScopeControl,
+    overrides: calxgloss_types::OverrideControl,
+    classification_overrides: calxgloss_types::ClassificationOverrideControl,
+}
+
+impl LiveControls {
+    fn new(fixture: &TestFixture, events: &TranslationEvents) -> Self {
+        let repo = fixture.repo_path();
+        let scope = calxgloss_types::ScopeControl::try_open(&repo)
+            .expect("scope handle opens over a clean fixture workspace")
+            .with_events(events.clone());
+        let overrides = calxgloss_types::OverrideControl::try_open(&repo)
+            .expect("override handle opens over a clean fixture workspace");
+        let classification_overrides =
+            calxgloss_types::ClassificationOverrideControl::try_open(&repo)
+                .expect("classification override handle opens over a clean fixture workspace");
+        Self {
+            control: calxgloss_types::PipelineControl::new().with_events(events.clone()),
+            cancellation: calxgloss_types::UnitCancellation::new().with_events(events.clone()),
+            run_requests: calxgloss_types::RunRequestSignal::new(),
+            scope,
+            overrides,
+            classification_overrides,
+        }
+    }
 }
 
 impl ReviewWorld {
@@ -62,7 +117,7 @@ impl ReviewWorld {
     /// lifecycle POST does not take the server down under a test that
     /// only probes route registration.
     pub async fn boot() -> Self {
-        Self::boot_live(&TestFixture::new(), None, false).await
+        Self::boot_live(&TestFixture::new(), None, false, false).await
     }
 
     /// A live (websocket) world whose accept loop **does** watch the
@@ -70,7 +125,7 @@ impl ReviewWorld {
     /// so `POST /api/server/shutdown` stops it. The graceful-shutdown
     /// pins (issue #469) boot through here.
     pub async fn boot_graceful() -> Self {
-        Self::boot_live(&TestFixture::new(), None, true).await
+        Self::boot_live(&TestFixture::new(), None, true, false).await
     }
 
     /// Boot a live (websocket) world whose state carries a reloadable
@@ -81,7 +136,7 @@ impl ReviewWorld {
         fixture: &TestFixture,
         filter: calxgloss_web::LogLevelControl,
     ) -> Self {
-        Self::boot_live(fixture, Some(filter), false).await
+        Self::boot_live(fixture, Some(filter), false, false).await
     }
 
     /// Boot through the actions-wired serve router — `calxgloss serve`
@@ -112,27 +167,41 @@ impl ReviewWorld {
     /// pinning that a router without an actions backend refuses rather
     /// than fabricates run against this world.
     pub async fn boot_plain() -> Self {
-        Self::boot_plain_router(&TestFixture::new(), None, false).await
+        Self::boot_plain_router(&TestFixture::new(), None, None, false).await
     }
 
     /// A plain-serve world whose accept loop **does** watch the state's
     /// shutdown signal — the graceful-shutdown pins' shape (issue #469),
     /// where `POST /api/server/restart` must take the server down.
     pub async fn boot_plain_graceful() -> Self {
-        Self::boot_plain_router(&TestFixture::new(), None, true).await
+        Self::boot_plain_router(&TestFixture::new(), None, None, true).await
     }
 
     /// The plain-serve router over a caller-supplied fixture — a
     /// second server over the same repository (a server restart).
     pub async fn boot_plain_on(fixture: &TestFixture) -> Self {
-        Self::boot_plain_router(fixture, None, false).await
+        Self::boot_plain_router(fixture, None, None, false).await
     }
 
     /// A live (websocket) world over a caller-supplied fixture. Tests
     /// that pin both router shapes seed one fixture and boot each shape
     /// over it (issue #470).
     pub async fn boot_ws_on(fixture: &TestFixture) -> Self {
-        Self::boot_live(fixture, None, false).await
+        Self::boot_live(fixture, None, false, false).await
+    }
+
+    /// A live (websocket) world with every control handle `calxgloss
+    /// live` attaches to the server state (issue #472): the pipeline
+    /// machine, the unit-cancellation handle, the run-request channel,
+    /// and the scope and override handles opened over the fixture's
+    /// workspace. `handle_live` builds the same shape, so the control-
+    /// endpoint pins drive the same wiring production serves. The world
+    /// hands the pipeline machine, unit-cancellation handle, and run-request
+    /// channel back through accessors, and serves the other three handles
+    /// through its state. The honest-503 pins keep the bare
+    /// [`ReviewWorld::boot`] world, which attaches none of them.
+    pub async fn boot_ws_wired() -> Self {
+        Self::boot_live(&TestFixture::new(), None, false, true).await
     }
 
     /// The plain-serve router with a reloadable tracing filter attached.
@@ -140,7 +209,13 @@ impl ReviewWorld {
         fixture: &TestFixture,
         filter: calxgloss_web::LogLevelControl,
     ) -> Self {
-        Self::boot_plain_router(fixture, Some(filter), false).await
+        Self::boot_plain_router(fixture, Some(filter), None, false).await
+    }
+
+    /// The plain-serve router whose state starts at the given log level,
+    /// so `/api/server/status` reports it (issue #472).
+    pub async fn boot_plain_with_log_level(level: &str) -> Self {
+        Self::boot_plain_router(&TestFixture::new(), None, Some(level), false).await
     }
 
     /// Assemble the live actions-plus-websocket router over `fixture`
@@ -152,6 +227,7 @@ impl ReviewWorld {
         fixture: &TestFixture,
         filter: Option<calxgloss_web::LogLevelControl>,
         graceful: bool,
+        wired: bool,
     ) -> Self {
         let mut state = ServerState::new(fixture.repo_path())
             .with_stop_signal(calxgloss_types::StopSignal::new());
@@ -162,6 +238,16 @@ impl ReviewWorld {
         // stalled-client pin (issue #469's raw-protocol case, 400
         // events) can emit without a lagged drop.
         let events = TranslationEvents::new(1024);
+        let controls = wired.then(|| LiveControls::new(fixture, &events));
+        if let Some(controls) = &controls {
+            state = state
+                .with_pipeline_control(controls.control.clone())
+                .with_unit_cancellation(controls.cancellation.clone())
+                .with_run_requests(controls.run_requests.clone())
+                .with_scope_control(controls.scope.clone())
+                .with_override_control(controls.overrides.clone())
+                .with_classification_override_control(controls.classification_overrides.clone());
+        }
         let manager = SessionManager::new_with_broadcast(events.subscribe());
         let progress = ProgressState::new();
         let router = build_router_with_ws(
@@ -175,8 +261,11 @@ impl ReviewWorld {
             state,
             EventEmitter { events },
             router,
-            Some(progress),
-            Some(manager),
+            LiveParts {
+                progress: Some(progress),
+                manager: Some(manager),
+                controls,
+            },
             graceful,
         )
         .await
@@ -200,8 +289,7 @@ impl ReviewWorld {
             state,
             EventEmitter { events },
             router,
-            None,
-            None,
+            LiveParts::default(),
             graceful,
         )
         .await
@@ -211,12 +299,16 @@ impl ReviewWorld {
     async fn boot_plain_router(
         fixture: &TestFixture,
         filter: Option<calxgloss_web::LogLevelControl>,
+        level: Option<&str>,
         graceful: bool,
     ) -> Self {
         let mut state = ServerState::new(fixture.repo_path())
             .with_stop_signal(calxgloss_types::StopSignal::new());
         if let Some(filter) = filter {
             state = state.with_log_level("warn").with_log_filter(filter);
+        }
+        if let Some(level) = level {
+            state = state.with_log_level(level);
         }
         let events = TranslationEvents::new(256);
         let router = build_router(state.clone());
@@ -225,8 +317,7 @@ impl ReviewWorld {
             state,
             EventEmitter { events },
             router,
-            None,
-            None,
+            LiveParts::default(),
             graceful,
         )
         .await
@@ -251,8 +342,7 @@ impl ReviewWorld {
         state: ServerState,
         emitter: EventEmitter,
         router: axum::Router,
-        progress: Option<ProgressState>,
-        manager: Option<SessionManager>,
+        parts: LiveParts,
         graceful: bool,
     ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -276,9 +366,10 @@ impl ReviewWorld {
                 http: reqwest::Client::new(),
                 port,
             },
-            progress,
-            manager,
+            progress: parts.progress,
+            manager: parts.manager,
             state,
+            controls: parts.controls,
             port,
             server: Some(server),
         }
@@ -304,6 +395,32 @@ impl ReviewWorld {
     /// what the endpoint promised the pipeline (issue #469).
     pub fn stop_signal(&self) -> calxgloss_types::StopSignal {
         self.state.stop_signal()
+    }
+
+    /// The pipeline machine attached by `boot_ws_wired`, so a test can
+    /// read the run's lifecycle state directly (issue #472).
+    pub fn pipeline_control(&self) -> calxgloss_types::PipelineControl {
+        self.expect_wired().control.clone()
+    }
+
+    /// The unit-cancellation handle attached by `boot_ws_wired`.
+    pub fn unit_cancellation(&self) -> calxgloss_types::UnitCancellation {
+        self.expect_wired().cancellation.clone()
+    }
+
+    /// The run-request channel attached by `boot_ws_wired`; subscribing
+    /// to it is how a test watches what the start endpoint stored
+    /// without a sleep (issue #472).
+    pub fn run_requests(&self) -> calxgloss_types::RunRequestSignal {
+        self.expect_wired().run_requests.clone()
+    }
+
+    /// The handles attached by `boot_ws_wired`. A bare `boot()` world
+    /// attaches none, so asking it for these handles fails the test.
+    fn expect_wired(&self) -> &LiveControls {
+        self.controls
+            .as_ref()
+            .expect("these handles stand only on a wired (boot_ws_wired) world")
     }
 
     /// The live-view store this world's router applies events to —
@@ -686,6 +803,14 @@ impl EventEmitter {
     pub fn emit(&self, event: ProgressEvent) {
         self.events.emit(event);
     }
+
+    /// A second subscriber to the same progress-event bus (issue #472),
+    /// for pins that assert an endpoint's action *emitted* an event by
+    /// watching the bus instead of sleeping. Subscribe before the action
+    /// that emits.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ProgressEvent> {
+        self.events.subscribe()
+    }
 }
 
 /// A connected websocket session on a booted world, with wire reads a
@@ -925,6 +1050,37 @@ impl Client {
             .await
             .expect("request reaches server")
             .status()
+    }
+
+    /// POST a JSON body and report only the status (issue #472). An axum
+    /// body-descriptor rejection answers with a plain-text 422, so a pin
+    /// on a rejected payload must not try to decode the body.
+    pub async fn post_for_status(
+        &self,
+        path: &str,
+        payload: serde_json::Value,
+    ) -> reqwest::StatusCode {
+        self.http
+            .post(self.url(path))
+            .json(&payload)
+            .send()
+            .await
+            .expect("request reaches server")
+            .status()
+    }
+
+    /// DELETE with no body and decode the JSON reply (the override
+    /// removal endpoint).
+    pub async fn delete_json(&self, path: &str) -> (reqwest::StatusCode, serde_json::Value) {
+        let resp = self
+            .http
+            .delete(self.url(path))
+            .send()
+            .await
+            .expect("request reaches server");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("body is JSON");
+        (status, body)
     }
 
     /// PATCH a JSON body and decode the JSON reply (the log-level control).
