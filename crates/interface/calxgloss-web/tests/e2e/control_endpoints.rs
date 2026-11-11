@@ -1363,7 +1363,7 @@ async fn test_classification_override_endpoints_503_without_control() {
 #[tokio::test]
 async fn test_classification_override_endpoints_set_get_and_persist() {
     let fixture = TestFixture::new();
-    write_canned_classification_record(&fixture, "fmod.dll", "UnknownThirdParty");
+    write_canned_classification_record(&fixture, "fmod.dll", DllCategory::UnknownThirdParty);
     let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
     let state =
         ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);

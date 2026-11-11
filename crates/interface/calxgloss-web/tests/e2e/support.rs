@@ -124,6 +124,13 @@ impl ReviewWorld {
         Self::boot_plain_router(fixture, None, false).await
     }
 
+    /// A live (websocket) world over a caller-supplied fixture. Tests
+    /// that pin both router shapes seed one fixture and boot each shape
+    /// over it (issue #470).
+    pub async fn boot_ws_on(fixture: &TestFixture) -> Self {
+        Self::boot_live(fixture, None, false).await
+    }
+
     /// The plain-serve router with a reloadable tracing filter attached.
     pub async fn boot_plain_with_log_filter(
         fixture: &TestFixture,
@@ -733,6 +740,19 @@ impl Client {
         let body: serde_json::Value = resp.json().await.expect("body is JSON");
         (status, body)
     }
+}
+
+/// Files deliberately unreadable bytes at a record's path — the one way
+/// a fixture asks the review surface to report a record as unreadable
+/// (issue #470). The bytes parse as no record shape, so every reader
+/// reports a JSON parse error naming that path instead of an empty
+/// record. The helper creates the parent directory, so the call site
+/// states only which record it wants unreadable.
+pub fn file_unreadable_record_bytes(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("parent dir for unreadable record bytes");
+    }
+    std::fs::write(path, "{ not json").expect("unreadable record bytes filed");
 }
 
 /// Pin (issue #466): one boot gives a reachable server — `/health`

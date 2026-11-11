@@ -2394,7 +2394,7 @@ async fn test_faults_api_exact_json_from_fixture_log() {
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 6);
     assert_eq!(
         body["entries"],
-        serde_json::Value::Array(sample_fault_entries()),
+        serde_json::to_value(sample_fault_entries()).expect("fixture entries serialize"),
         "the whole list is served verbatim, oldest first, with the full identity triple"
     );
 

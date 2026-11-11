@@ -724,7 +724,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
         &[
             strategy_entry(
                 "game_logic.dll",
-                "ProjectSpecific",
+                DllCategory::ProjectSpecific,
                 "initial",
                 false,
                 1,
@@ -732,7 +732,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
             ),
             strategy_entry(
                 "game_logic.dll",
-                "ProjectSpecific",
+                DllCategory::ProjectSpecific,
                 "compile_fix",
                 true,
                 2,
@@ -740,7 +740,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
             ),
             strategy_entry(
                 "d3d9.dll",
-                "KnownThirdParty",
+                DllCategory::KnownThirdParty,
                 "stale_strategy",
                 false,
                 1,

@@ -11,9 +11,13 @@
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_types::{
-    GitBranch, PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, RunPhase,
-    RunRequestSignal, RunScope, RunTarget, TestCase, TestResult, TranslationEvents,
-    UnitCancellation,
+    ApiCategory, BinaryClassificationOverride, ClassificationOverrides, ClassificationRecord,
+    ComplexityScore, DllCategory, FaultCategory, FaultEvent, FaultLog, FaultSeverity, GitBranch,
+    PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, PromptStrategyEntry,
+    PromptStrategyLog, RunPhase, RunRequestSignal, RunScope, RunTarget, SHIM_MAPPINGS_FILE,
+    SHIM_VERIFICATION_FILE, ShimApiMapping, ShimLayer, ShimVerificationResult, TestCase,
+    TestResult, TokenUsageEntry, TokenUsageLog, TranslationEvents, UnitCancellation,
+    WindowsApiCall, shim_artifacts_dir,
 };
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
@@ -435,27 +439,25 @@ async fn post_lifecycle(port: u16, path: &str) -> (reqwest::StatusCode, serde_js
 // Binary classification overrides (issue #97, W2.8)
 // ─────────────────────────────────────────────────────────────
 
-/// Seed a `re/classify/fmod.dll.json` artifact — the shape the classify
-/// command writes, reasoning included — so the endpoints have a recorded
-/// classification to report.
-fn write_canned_classification_record(fixture: &TestFixture, binary: &str, category: &str) {
-    let dir = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&dir).expect("classify dir");
-    let record = serde_json::json!({
-        "binary": binary,
-        "category": category,
-        "strategy": "ReverseEngineer",
-        "exports_count": 10,
-        "imports_count": 4,
-        "crate_replacement": null,
-        "known_runtime": false,
-        "reason": "import table matched no known library — treated as unknown third-party"
-    });
-    std::fs::write(
-        dir.join(format!("{binary}.json")),
-        serde_json::to_string_pretty(&record).expect("serialize"),
-    )
-    .expect("classification record written");
+/// File a classification record for one binary through the record
+/// writer — the same `ClassificationRecord` shape the `classify`
+/// command files, reasoning included — so the endpoints have a
+/// recorded classification to report.
+fn write_canned_classification_record(fixture: &TestFixture, binary: &str, category: DllCategory) {
+    let record = ClassificationRecord {
+        binary: binary.to_string(),
+        category: Some(category),
+        strategy: Some(serde_json::json!("ReverseEngineer")),
+        exports_count: Some(10),
+        imports_count: Some(4),
+        crate_replacement: None,
+        known_runtime: false,
+        reason: Some(
+            "import table matched no known library — treated as unknown third-party".to_string(),
+        ),
+    };
+    calxgloss_types::save_classification_record(fixture.repo_path(), &record)
+        .expect("classification record filed");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -614,48 +616,46 @@ fn binary_row<'a>(rows: &'a [serde_json::Value], name: &str) -> &'a serde_json::
 /// defining GraphicsDevice but not PlatformCore — the partially defined
 /// trait set the summary must report honestly.
 fn write_pipeline_pal_readiness_fixtures(fixture: &TestFixture) {
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("classify dir");
-    std::fs::write(
-        classify.join("d3d9.dll.json"),
-        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write PAL classification artifact");
-    std::fs::write(
-        classify.join("game_logic.dll.json"),
-        r#"{"binary":"game_logic.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write RE classification artifact");
+    for (binary, category, strategy) in [
+        ("d3d9.dll", DllCategory::WindowsOs, "PalMapping"),
+        (
+            "game_logic.dll",
+            DllCategory::ProjectSpecific,
+            "ReverseEngineer",
+        ),
+    ] {
+        calxgloss_types::save_classification_record(
+            fixture.repo_path(),
+            &ClassificationRecord {
+                binary: binary.to_string(),
+                category: Some(category),
+                strategy: Some(serde_json::json!(strategy)),
+                exports_count: Some(0),
+                imports_count: Some(1),
+                ..ClassificationRecord::default()
+            },
+        )
+        .expect("classification record filed");
+    }
 
-    let analysis = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("d3d9.dll");
-    std::fs::create_dir_all(&analysis).expect("d3d9 analysis dir");
-    std::fs::write(
-        analysis.join("CreateDevice.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "function_name": "CreateDevice",
-            "windows_apis": [
-                { "name": "Direct3DCreate9", "category": "DirectX" },
-                { "name": "CreateFileA", "category": "Win32Core" }
-            ]
-        }))
-        .unwrap(),
-    )
-    .expect("CreateDevice artifact written");
-    std::fs::write(
-        analysis.join("Present.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "function_name": "Present",
-            "windows_apis": [
-                { "name": "IDXGISwapChain::Present", "category": "DirectX11" }
-            ]
-        }))
-        .unwrap(),
-    )
-    .expect("Present artifact written");
+    write_windows_api_artifact(
+        fixture.repo_path().as_path(),
+        "d3d9.dll",
+        "CreateDevice",
+        &[
+            windows_api("Direct3DCreate9", ApiCategory::DirectX),
+            windows_api("CreateFileA", ApiCategory::Win32Core),
+        ],
+    );
+    write_windows_api_artifact(
+        fixture.repo_path().as_path(),
+        "d3d9.dll",
+        "Present",
+        &[windows_api(
+            "IDXGISwapChain::Present",
+            ApiCategory::DirectX11,
+        )],
+    );
 
     let pal_src = fixture.repo_path().join("scratch").join("pal").join("src");
     std::fs::create_dir_all(&pal_src).expect("scratch pal src dir");
@@ -666,39 +666,68 @@ fn write_pipeline_pal_readiness_fixtures(fixture: &TestFixture) {
     .expect("pal stub content written");
 }
 
+/// One Windows API call as a fixture record — no PAL mapping yet.
+fn windows_api(name: &str, category: ApiCategory) -> WindowsApiCall {
+    WindowsApiCall {
+        name: name.to_string(),
+        category,
+        pal_mapping: String::new(),
+    }
+}
+
+/// The per-function analysis artifact shape the pipeline's
+/// `file_analysis_artifact` files under `re/analysis/{binary}/{function}.json`.
+fn write_windows_api_artifact(
+    repo_path: &std::path::Path,
+    binary: &str,
+    function: &str,
+    apis: &[WindowsApiCall],
+) {
+    #[derive(serde::Serialize)]
+    struct ApiArtifact<'a> {
+        function_name: &'a str,
+        windows_apis: &'a [WindowsApiCall],
+    }
+    calxgloss_types::save_json(
+        &calxgloss_types::analysis_artifact_path(repo_path, binary, function),
+        &ApiArtifact {
+            function_name: function,
+            windows_apis: apis,
+        },
+    )
+    .expect("analysis artifact filed");
+}
+
 // ─────────────────────────────────────────────────────────────
 // Pipeline time estimate + queue effort (issue #64)
 // ─────────────────────────────────────────────────────────────
 
-/// Writes a token-usage log to the fixture's `re/analysis/` directory.
-/// When `with_durations` is false the entries omit `duration_secs`, exactly
+/// File a token-usage log through the record writer. When
+/// `with_durations` is false the entries omit `duration_secs`, exactly
 /// like logs written before issue #64, so the average stays unknown.
 fn write_token_usage_log(fixture: &TestFixture, with_durations: bool) {
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-
     let mut entries = Vec::new();
     for (attempt, tokens) in [(1usize, 4096usize), (2, 3072)] {
-        let mut entry = serde_json::json!({
-            "timestamp": 1767225600 + attempt as u64 * 300,
-            "binary": "game_logic.dll",
-            "function": "DrawPrimitive",
-            "attempt": attempt,
-            "strategy": if attempt == 1 { "initial" } else { "compile_fix" },
-            "tokens_used": tokens,
-            "success": attempt == 2
-        });
+        let mut entry = token_usage_entry(
+            "game_logic.dll",
+            "DrawPrimitive",
+            attempt as u32,
+            if attempt == 1 {
+                "initial"
+            } else {
+                "compile_fix"
+            },
+            tokens,
+            attempt == 2,
+            "",
+            1767225600 + attempt as u64 * 300,
+        );
         if with_durations {
-            entry["duration_secs"] = serde_json::json!(100 * attempt as u64);
+            entry.duration_secs = Some(100 * attempt as u64);
         }
         entries.push(entry);
     }
-    let log = serde_json::json!({ "entries": entries });
-    std::fs::write(
-        analysis_dir.join("token_usage.json"),
-        serde_json::to_string_pretty(&log).expect("serialize token log"),
-    )
-    .expect("write token log");
+    write_token_usage_fixture(fixture.repo_path().as_path(), &entries);
 }
 
 /// Emits the minimal live events that give one binary a known function
@@ -717,40 +746,25 @@ fn emit_canned_batch_summary(events: &TranslationEvents) {
 /// Like `write_canned_run_telemetry` but the token-usage entries include
 /// durations (100s and 200s for DrawPrimitive's two attempts).
 fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-
-    let token_log = serde_json::json!({
-        "entries": [
-            {
-                "timestamp": 1767225600,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 1,
-                "strategy": "initial",
-                "context_tier": "disassembly",
-                "tokens_used": 4096,
-                "success": false,
-                "duration_secs": 100
-            },
-            {
-                "timestamp": 1767225900,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 2,
-                "strategy": "compile_fix",
-                "context_tier": "with_tests",
-                "tokens_used": 3072,
-                "success": true,
-                "duration_secs": 200
-            }
-        ]
+    let entries = [
+        ("initial", "disassembly", 4096, false, 1),
+        ("compile_fix", "with_tests", 3072, true, 2),
+    ]
+    .map(|(strategy, tier, tokens_used, success, attempt)| {
+        let mut entry = token_usage_entry(
+            "game_logic.dll",
+            "DrawPrimitive",
+            attempt,
+            strategy,
+            tokens_used,
+            success,
+            tier,
+            1767225600 + (attempt - 1) as u64 * 300,
+        );
+        entry.duration_secs = Some(100 * attempt as u64);
+        entry
     });
-    std::fs::write(
-        analysis_dir.join("token_usage.json"),
-        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
-    )
-    .expect("write token log");
+    write_token_usage_fixture(fixture.repo_path().as_path(), &entries);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -769,49 +783,54 @@ fn fault_entry(
     function: &str,
     attempt: u32,
     strategy: &str,
-    category: &str,
-    severity: &str,
+    category: FaultCategory,
+    severity: FaultSeverity,
     timestamp: u64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "binary": binary,
-        "function": function,
-        "attempt": attempt,
-        "strategy": strategy,
-        "category": category,
-        "severity": severity,
-        "description": format!("{category} detected in {function}"),
-        "recovery": format!("recovery guidance for {function}"),
-        "timestamp": timestamp,
-    })
+) -> FaultEvent {
+    // The category's Display label is its serde name (pinned in
+    // calxgloss-types), so the description reads exactly as the old
+    // canned body did.
+    let kind = category.to_string();
+    FaultEvent {
+        binary: binary.into(),
+        function: function.to_string(),
+        attempt,
+        strategy: strategy.to_string(),
+        category,
+        severity,
+        description: format!("{kind} detected in {function}"),
+        recovery: format!("recovery guidance for {function}"),
+        timestamp,
+        metadata: None,
+    }
 }
 
-/// Writes a deterministic fault log fixture into the repo's analysis
-/// directory — the file the analytics endpoints read on demand.
-fn write_fault_log_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
-    let dir = repo_path.join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(
-        dir.join("fault_log.json"),
-        serde_json::to_string(&serde_json::json!({ "entries": entries }))
-            .expect("fixture serializes"),
+/// File a deterministic fault log through the record writer — the file
+/// the analytics endpoints read on demand.
+fn write_fault_log_fixture(repo_path: &std::path::Path, entries: &[FaultEvent]) {
+    calxgloss_types::save_fault_log(
+        repo_path,
+        &FaultLog {
+            entries: entries.to_vec(),
+            trimmed: calxgloss_types::FaultTrim::default(),
+        },
     )
-    .expect("fixture written");
+    .expect("fault log filed");
 }
 
 /// The six-entry fixture both analytics tests share: three faults for
 /// `game_logic.dll/DrawSprite` on 2026-10-01 and three for
 /// `d3d9.dll/UpdateScene` on 2026-10-04 — leaving 10-02 and 10-03 as gap
 /// days the trend must fill with honest zeros.
-fn sample_fault_entries() -> Vec<serde_json::Value> {
+fn sample_fault_entries() -> Vec<FaultEvent> {
     vec![
         fault_entry(
             "game_logic.dll",
             "DrawSprite",
             1,
             "initial",
-            "context_window_exceeded",
-            "error",
+            FaultCategory::ContextWindowExceeded,
+            FaultSeverity::Error,
             FAULT_DAY_1 + 60,
         ),
         fault_entry(
@@ -819,8 +838,8 @@ fn sample_fault_entries() -> Vec<serde_json::Value> {
             "DrawSprite",
             2,
             "compile_fix",
-            "hallucination",
-            "error",
+            FaultCategory::Hallucination,
+            FaultSeverity::Error,
             FAULT_DAY_1 + 120,
         ),
         fault_entry(
@@ -828,8 +847,8 @@ fn sample_fault_entries() -> Vec<serde_json::Value> {
             "DrawSprite",
             3,
             "retry",
-            "resource_exhaustion",
-            "warning",
+            FaultCategory::ResourceExhaustion,
+            FaultSeverity::Warning,
             FAULT_DAY_1 + 180,
         ),
         fault_entry(
@@ -837,8 +856,8 @@ fn sample_fault_entries() -> Vec<serde_json::Value> {
             "UpdateScene",
             1,
             "initial",
-            "infinite_loop",
-            "critical",
+            FaultCategory::InfiniteLoop,
+            FaultSeverity::Critical,
             FAULT_DAY_4 + 60,
         ),
         fault_entry(
@@ -846,8 +865,8 @@ fn sample_fault_entries() -> Vec<serde_json::Value> {
             "UpdateScene",
             2,
             "compile_fix",
-            "hallucination",
-            "error",
+            FaultCategory::Hallucination,
+            FaultSeverity::Error,
             FAULT_DAY_4 + 120,
         ),
         fault_entry(
@@ -855,8 +874,8 @@ fn sample_fault_entries() -> Vec<serde_json::Value> {
             "UpdateScene",
             3,
             "retry",
-            "slow_response",
-            "warning",
+            FaultCategory::SlowResponse,
+            FaultSeverity::Warning,
             FAULT_DAY_4 + 180,
         ),
     ]
@@ -890,33 +909,31 @@ fn token_usage_entry(
     success: bool,
     tier: &str,
     timestamp: u64,
-) -> serde_json::Value {
-    let mut entry = serde_json::json!({
-        "binary": binary,
-        "function": function,
-        "attempt": attempt,
-        "strategy": strategy,
-        "tokens_used": tokens,
-        "success": success,
-        "timestamp": timestamp,
-    });
-    if !tier.is_empty() {
-        entry["context_tier"] = serde_json::Value::String(tier.into());
+) -> TokenUsageEntry {
+    TokenUsageEntry {
+        binary: binary.into(),
+        function: function.to_string(),
+        attempt,
+        strategy: strategy.to_string(),
+        tokens_used: tokens,
+        success,
+        timestamp,
+        context_tier: tier.to_string(),
+        duration_secs: None,
     }
-    entry
 }
 
-/// Writes a deterministic token usage log fixture into the repo's analysis
-/// directory — the file the analytics endpoints read on demand.
-fn write_token_usage_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
-    let dir = repo_path.join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(
-        dir.join("token_usage.json"),
-        serde_json::to_string(&serde_json::json!({ "entries": entries }))
-            .expect("fixture serializes"),
+/// File a deterministic token usage log through the record writer — the
+/// file the analytics endpoints read on demand.
+fn write_token_usage_fixture(repo_path: &std::path::Path, entries: &[TokenUsageEntry]) {
+    calxgloss_types::save_token_usage_log(
+        repo_path,
+        &TokenUsageLog {
+            entries: entries.to_vec(),
+            trimmed: calxgloss_types::TokenUsageTrim::default(),
+        },
     )
-    .expect("fixture written");
+    .expect("token log filed");
 }
 
 /// The five-entry fixture the exact-JSON tests share: three attempts on
@@ -925,7 +942,7 @@ fn write_token_usage_fixture(repo_path: &std::path::Path, entries: &[serde_json:
 /// (15000/5000 of 20000) so percentage shares pin as clean floats, and the
 /// 3000-token ties in the tier and strategy breakdowns pin the alphabetical
 /// tie rule.
-fn sample_token_usage_entries() -> Vec<serde_json::Value> {
+fn sample_token_usage_entries() -> Vec<TokenUsageEntry> {
     vec![
         token_usage_entry(
             "game_logic.dll",
@@ -988,33 +1005,33 @@ fn sample_token_usage_entries() -> Vec<serde_json::Value> {
 /// exact values are what the endpoint assertions pin.
 fn strategy_entry(
     binary: &str,
-    dll_category: &str,
+    dll_category: DllCategory,
     strategy: &str,
     success: bool,
     attempt: u32,
     timestamp: u64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "binary": binary,
-        "dll_category": dll_category,
-        "retry_strategy": strategy,
-        "success": success,
-        "attempt": attempt,
-        "timestamp": timestamp,
-    })
+) -> PromptStrategyEntry {
+    PromptStrategyEntry {
+        binary: binary.into(),
+        dll_category,
+        retry_strategy: strategy.to_string(),
+        success,
+        attempt,
+        timestamp,
+    }
 }
 
-/// Writes a deterministic prompt-strategy log fixture into the repo's
-/// analysis directory — the file the analytics endpoints read on demand.
-fn write_strategy_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
-    let dir = repo_path.join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(
-        dir.join("prompt_strategy_log.json"),
-        serde_json::to_string(&serde_json::json!({ "entries": entries }))
-            .expect("fixture serializes"),
+/// File a deterministic prompt-strategy log through the record writer —
+/// the file the analytics endpoints read on demand.
+fn write_strategy_fixture(repo_path: &std::path::Path, entries: &[PromptStrategyEntry]) {
+    calxgloss_types::save_prompt_strategy_log(
+        repo_path,
+        &PromptStrategyLog {
+            entries: entries.to_vec(),
+            trimmed: calxgloss_types::PromptStrategyTrim::default(),
+        },
     )
-    .expect("fixture written");
+    .expect("prompt-strategy log filed");
 }
 
 /// The six-entry fixture the exact-JSON tests share: four attempts on
@@ -1022,11 +1039,11 @@ fn write_strategy_fixture(repo_path: &std::path::Path, entries: &[serde_json::Va
 /// `d3d9.dll/UpdateScene` (KnownThirdParty) on 2026-10-04. Success counts
 /// divide exactly (2/4 and 1/2) so pass rates pin as clean floats, and
 /// `initial`/`retry` tie at two attempts to pin the alphabetical tie rule.
-fn sample_strategy_entries() -> Vec<serde_json::Value> {
+fn sample_strategy_entries() -> Vec<PromptStrategyEntry> {
     vec![
         strategy_entry(
             "game_logic.dll",
-            "ProjectSpecific",
+            DllCategory::ProjectSpecific,
             "initial",
             false,
             1,
@@ -1034,7 +1051,7 @@ fn sample_strategy_entries() -> Vec<serde_json::Value> {
         ),
         strategy_entry(
             "game_logic.dll",
-            "ProjectSpecific",
+            DllCategory::ProjectSpecific,
             "compile_fix",
             true,
             2,
@@ -1042,7 +1059,7 @@ fn sample_strategy_entries() -> Vec<serde_json::Value> {
         ),
         strategy_entry(
             "game_logic.dll",
-            "ProjectSpecific",
+            DllCategory::ProjectSpecific,
             "escalate",
             false,
             3,
@@ -1050,7 +1067,7 @@ fn sample_strategy_entries() -> Vec<serde_json::Value> {
         ),
         strategy_entry(
             "game_logic.dll",
-            "ProjectSpecific",
+            DllCategory::ProjectSpecific,
             "retry",
             true,
             4,
@@ -1058,7 +1075,7 @@ fn sample_strategy_entries() -> Vec<serde_json::Value> {
         ),
         strategy_entry(
             "d3d9.dll",
-            "KnownThirdParty",
+            DllCategory::KnownThirdParty,
             "initial",
             true,
             1,
@@ -1066,7 +1083,7 @@ fn sample_strategy_entries() -> Vec<serde_json::Value> {
         ),
         strategy_entry(
             "d3d9.dll",
-            "KnownThirdParty",
+            DllCategory::KnownThirdParty,
             "retry",
             false,
             2,
@@ -1096,13 +1113,11 @@ fn llm_metrics_token_entry(
     tier: &str,
     timestamp: u64,
     duration: Option<u64>,
-) -> serde_json::Value {
+) -> TokenUsageEntry {
     let mut entry = token_usage_entry(
         binary, function, attempt, strategy, tokens, success, tier, timestamp,
     );
-    if let Some(secs) = duration {
-        entry["duration_secs"] = serde_json::json!(secs);
-    }
+    entry.duration_secs = duration;
     entry
 }
 
@@ -1117,19 +1132,19 @@ fn resource_exhaustion_fault_entry(
     strategy: &str,
     reason: &str,
     timestamp: u64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "binary": binary,
-        "function": function,
-        "attempt": attempt,
-        "strategy": strategy,
-        "category": "resource_exhaustion",
-        "severity": "warning",
-        "description": format!("{reason} — resource exhaustion in {function}"),
-        "recovery": "switch to a smaller/faster model for this translation",
-        "timestamp": timestamp,
-        "metadata": { "reason": reason, "elapsed_secs": 300 },
-    })
+) -> FaultEvent {
+    FaultEvent {
+        binary: binary.into(),
+        function: function.to_string(),
+        attempt,
+        strategy: strategy.to_string(),
+        category: FaultCategory::ResourceExhaustion,
+        severity: FaultSeverity::Warning,
+        description: format!("{reason} — resource exhaustion in {function}"),
+        recovery: "switch to a smaller/faster model for this translation".to_string(),
+        timestamp,
+        metadata: Some(serde_json::json!({ "reason": reason, "elapsed_secs": 300 })),
+    }
 }
 
 /// Writes the deterministic fixture pair the metrics tests share: nine
@@ -1270,8 +1285,8 @@ fn write_llm_metrics_fixtures(repo_path: &std::path::Path) {
                 "UpdateScene",
                 2,
                 "retry",
-                "slow_response",
-                "warning",
+                FaultCategory::SlowResponse,
+                FaultSeverity::Warning,
                 FAULT_DAY_4 + 150,
             ),
             resource_exhaustion_fault_entry(
@@ -1293,60 +1308,57 @@ fn write_llm_metrics_fixtures(repo_path: &std::path::Path) {
 /// token-usage log with a differently-spelled binary to pin the
 /// case-insensitive join.
 fn write_binaries_list_fixtures(fixture: &TestFixture) {
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("classify dir");
-    std::fs::write(
-        classify.join("game_logic.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "game_logic.dll",
-            "category": "ProjectSpecific",
-            "strategy": "ReverseEngineer",
-            "exports_count": 24,
-            "imports_count": 12,
-            "crate_replacement": null,
-            "known_runtime": false,
-            "reason": "project-built binary — reverse engineer from disassembly"
-        }))
-        .unwrap(),
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "game_logic.dll".to_string(),
+            category: Some(DllCategory::ProjectSpecific),
+            strategy: Some(serde_json::json!("ReverseEngineer")),
+            exports_count: Some(24),
+            imports_count: Some(12),
+            crate_replacement: None,
+            known_runtime: false,
+            reason: Some("project-built binary — reverse engineer from disassembly".to_string()),
+        },
     )
-    .expect("game_logic classification written");
-    std::fs::write(
-        classify.join("d3d9.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "d3d9.dll",
-            "category": "MicrosoftSdk",
-            "strategy": "CrateReplacement",
-            "exports_count": 100,
-            "imports_count": 5,
-            "crate_replacement": "wgpu",
-            "known_runtime": false,
-            "reason": "Direct3D 9 — replaced with wgpu behind a shim layer"
-        }))
-        .unwrap(),
+    .expect("game_logic classification filed");
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "d3d9.dll".to_string(),
+            category: Some(DllCategory::MicrosoftSdk),
+            strategy: Some(serde_json::json!("CrateReplacement")),
+            exports_count: Some(100),
+            imports_count: Some(5),
+            crate_replacement: Some("wgpu".to_string()),
+            known_runtime: false,
+            reason: Some("Direct3D 9 — replaced with wgpu behind a shim layer".to_string()),
+        },
     )
-    .expect("d3d9 classification written");
+    .expect("d3d9 classification filed");
     // A corrupt record is no record at all — it must not become a row.
-    std::fs::write(classify.join("broken.dll.json"), "{ not json")
-        .expect("corrupt classification written");
+    support::file_unreadable_record_bytes(&calxgloss_types::classification_record_path(
+        fixture.repo_path(),
+        &"broken.dll".into(),
+    ));
 
     // The persisted override layer: it sets d3d9.dll to KnownThirdParty
     // with a different target crate — exact-key match on the filename.
-    let analysis = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis).expect("analysis dir");
-    std::fs::write(
-        analysis.join("classification_overrides.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "overrides": {
-                "d3d9.dll": {
-                    "category": "KnownThirdParty",
-                    "crate_replacement": "wgpu-rs",
-                    "known_runtime": false
-                }
-            }
-        }))
-        .unwrap(),
+    calxgloss_types::save_classification_overrides(
+        fixture.repo_path(),
+        &ClassificationOverrides {
+            overrides: [(
+                "d3d9.dll".to_string(),
+                BinaryClassificationOverride {
+                    category: DllCategory::KnownThirdParty,
+                    crate_replacement: Some("wgpu-rs".to_string()),
+                    known_runtime: false,
+                },
+            )]
+            .into(),
+        },
     )
-    .expect("override record written");
+    .expect("override record filed");
 
     // Token totals: game_logic.dll 100 + 50, plus a 25-token entry under
     // a different spelling that must join into the same row; d3d9.dll 75;
@@ -1399,84 +1411,78 @@ fn write_binaries_list_fixtures(fixture: &TestFixture) {
 /// crate-replacement `fmod.dll` whose shim was generated but whose
 /// `re/shim/fmod-rs` branch a reviewer sent back.
 fn write_shim_tracker_fixtures(fixture: &TestFixture) {
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::write(
-        classify.join("fmod.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "fmod.dll",
-            "category": "KnownThirdParty",
-            "strategy": "CrateReplacement",
-            "exports_count": 40,
-            "imports_count": 3,
-            "crate_replacement": "fmod-rs",
-            "known_runtime": false,
-            "reason": "audio middleware — replaced with fmod-rs behind a shim layer"
-        }))
-        .unwrap(),
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "fmod.dll".to_string(),
+            category: Some(DllCategory::KnownThirdParty),
+            strategy: Some(serde_json::json!("CrateReplacement")),
+            exports_count: Some(40),
+            imports_count: Some(3),
+            crate_replacement: Some("fmod-rs".to_string()),
+            known_runtime: false,
+            reason: Some(
+                "audio middleware — replaced with fmod-rs behind a shim layer".to_string(),
+            ),
+        },
     )
-    .expect("fmod classification written");
+    .expect("fmod classification filed");
 
-    // The shim pipeline's persisted artifacts for d3d9.dll — the exact
-    // layout `shim_pipeline::persist_shim_artifacts` writes.
-    let shim_dir = fixture
-        .repo_path()
-        .join("re")
-        .join("shims")
-        .join("d3d9.dll");
-    std::fs::create_dir_all(&shim_dir).expect("shim artifact dir");
-    std::fs::write(
-        shim_dir.join("mappings.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "source_dll": "d3d9.dll",
-            "target_crate": "wgpu-rs",
-            "mappings": [
-                { "original_api": "Present", "crate_api": "wgpu::Queue::submit" },
-                { "original_api": "Clear", "crate_api": "wgpu::RenderPass::clear_color" }
-            ]
-        }))
-        .unwrap(),
+    // The shim pipeline's persisted artifacts for d3d9.dll, filed where
+    // the record module says they live: a `ShimLayer` mappings document
+    // and a `ShimVerificationResult` under `re/shims/d3d9.dll/`.
+    let mut d3d9_shim = ShimLayer::new("d3d9.dll".to_string(), "wgpu-rs".to_string());
+    d3d9_shim.add_mapping(ShimApiMapping::new(
+        "Present".to_string(),
+        "wgpu::Queue::submit".to_string(),
+        ComplexityScore::Low,
+    ));
+    d3d9_shim.add_mapping(ShimApiMapping::new(
+        "Clear".to_string(),
+        "wgpu::RenderPass::clear_color".to_string(),
+        ComplexityScore::Low,
+    ));
+    let d3d9_shim_dir = shim_artifacts_dir(fixture.repo_path()).join("d3d9.dll");
+    calxgloss_types::save_json(&d3d9_shim_dir.join(SHIM_MAPPINGS_FILE), &d3d9_shim)
+        .expect("shim mappings filed");
+    calxgloss_types::save_json(
+        &d3d9_shim_dir.join(SHIM_VERIFICATION_FILE),
+        &ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings: Vec::new(),
+            tests_passed: 7,
+            tests_total: 8,
+            edge_tests_passed: 2,
+            edge_tests_total: 2,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        },
     )
-    .expect("shim mappings written");
-    std::fs::write(
-        shim_dir.join("verification.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "compiled": true,
-            "compilation_errors": [],
-            "compilation_warnings": [],
-            "tests_passed": 7,
-            "tests_total": 8,
-            "edge_tests_passed": 2,
-            "edge_tests_total": 2,
-            "failed_tests": [],
-            "mapping_results": []
-        }))
-        .unwrap(),
-    )
-    .expect("shim verification written");
+    .expect("shim verification filed");
 
     // The dashboard's branch model: `re/shim/wgpu-rs` merged into main
     // (the crate the d3d9.dll override in force names), and
     // `re/shim/fmod-rs` unmerged with a reviewer's send-back record —
     // fmod.dll's generated artifacts still on disk (generated, then sent back).
-    let fmod_shim_dir = fixture
-        .repo_path()
-        .join("re")
-        .join("shims")
-        .join("fmod.dll");
-    std::fs::create_dir_all(&fmod_shim_dir).expect("fmod shim artifact dir");
-    std::fs::write(
-        fmod_shim_dir.join("mappings.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "source_dll": "fmod.dll",
-            "target_crate": "fmod-rs",
-            "mappings": [
-                { "original_api": "FSOUND_Init", "crate_api": "fmod_rs::init" },
-                { "original_api": "FSOUND_Close", "crate_api": "fmod_rs::close" }
-            ]
-        }))
-        .unwrap(),
+    let mut fmod_shim = ShimLayer::new("fmod.dll".to_string(), "fmod-rs".to_string());
+    fmod_shim.add_mapping(ShimApiMapping::new(
+        "FSOUND_Init".to_string(),
+        "fmod_rs::init".to_string(),
+        ComplexityScore::Low,
+    ));
+    fmod_shim.add_mapping(ShimApiMapping::new(
+        "FSOUND_Close".to_string(),
+        "fmod_rs::close".to_string(),
+        ComplexityScore::Low,
+    ));
+    calxgloss_types::save_json(
+        &shim_artifacts_dir(fixture.repo_path())
+            .join("fmod.dll")
+            .join(SHIM_MAPPINGS_FILE),
+        &fmod_shim,
     )
-    .expect("fmod mappings written");
+    .expect("fmod shim mappings filed");
     let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
     {
         let branch = GitBranch::new("shim", "wgpu-rs", 1).expect("wgpu-rs shim branch name");
@@ -1499,25 +1505,10 @@ fn write_shim_tracker_fixtures(fixture: &TestFixture) {
             .expect("fmod-rs shim written");
         git.commit(&branch, "Add fmod-rs shim layer", &[shim_file])
             .expect("fmod-rs shim committed");
-        // The reviewer's send-back verdict, as `reject_branch` persists it.
-        let rejections = fixture
-            .repo_path()
-            .join("re")
-            .join("rejections")
-            .join("shim")
-            .join("fmod-rs");
-        std::fs::create_dir_all(&rejections).expect("rejection dir");
-        std::fs::write(
-            rejections.join("v1.json"),
-            serde_json::json!({
-                "function": "fmod-rs",
-                "reason": "mapping table incomplete — send back",
-                "requested_changes": "regenerate the missing exports",
-                "reviewed_at": "2026-09-05T00:00:00Z",
-            })
-            .to_string(),
-        )
-        .expect("send-back record written");
+        // The reviewer's send-back verdict, filed through the git
+        // manager's own rejection record, as `reject_branch` persists it.
+        git.reject_branch(&branch, "mapping table incomplete — send back")
+            .expect("send-back record filed");
     }
 }
 
@@ -1532,37 +1523,31 @@ fn write_shim_tracker_fixtures(fixture: &TestFixture) {
 /// generated shim source under `re/shims/d3d9.dll/shim.rs` defining no
 /// trait at all.
 fn write_pal_tracker_fixtures(fixture: &TestFixture) {
-    let analysis = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("d3d9.dll");
-    std::fs::create_dir_all(&analysis).expect("d3d9 analysis dir");
-    std::fs::write(
-        analysis.join("CreateDevice.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "function_name": "CreateDevice",
-            "windows_apis": [
-                { "name": "Direct3DCreate9", "category": "DirectX", "pal_mapping": "wgpu::Instance" },
-                { "name": "CreateFileA", "category": "Win32Core", "pal_mapping": "std::fs::File::open" }
-            ]
-        }))
-        .unwrap(),
-    )
-    .expect("CreateDevice artifact written");
-    std::fs::write(
-        analysis.join("Present.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "function_name": "Present",
-            "windows_apis": [
-                { "name": "IDXGISwapChain::Present", "category": "DirectX11", "pal_mapping": "wgpu::Surface::present" }
-            ]
-        }))
-        .unwrap(),
-    )
-    .expect("Present artifact written");
+    write_windows_api_artifact(
+        fixture.repo_path().as_path(),
+        "d3d9.dll",
+        "CreateDevice",
+        &[
+            windows_api_with_mapping("Direct3DCreate9", ApiCategory::DirectX, "wgpu::Instance"),
+            windows_api_with_mapping("CreateFileA", ApiCategory::Win32Core, "std::fs::File::open"),
+        ],
+    );
+    write_windows_api_artifact(
+        fixture.repo_path().as_path(),
+        "d3d9.dll",
+        "Present",
+        &[windows_api_with_mapping(
+            "IDXGISwapChain::Present",
+            ApiCategory::DirectX11,
+            "wgpu::Surface::present",
+        )],
+    );
     // A corrupt function artifact is no artifact: it gives no category.
-    std::fs::write(analysis.join("broken.json"), "{ not json").expect("corrupt artifact written");
+    support::file_unreadable_record_bytes(&calxgloss_types::analysis_artifact_path(
+        fixture.repo_path(),
+        "d3d9.dll",
+        "broken",
+    ));
 
     // The generated shared PAL crate that the verifier writes under
     // `scratch/pal/`: it defines GraphicsDevice (and AudioDevice) but not
@@ -1624,111 +1609,127 @@ async fn wait_for_pal_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool 
 /// a token-usage log (2 attempts, escalated tiers), a fault log (2 faults),
 /// and an analysis artifact (its tier rationale is read from there).
 fn write_canned_run_telemetry(fixture: &TestFixture) {
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+    let token_log = [
+        token_usage_entry(
+            "game_logic.dll",
+            "DrawPrimitive",
+            1,
+            "initial",
+            4096,
+            false,
+            "disassembly",
+            1767225600,
+        ),
+        token_usage_entry(
+            "game_logic.dll",
+            "DrawPrimitive",
+            2,
+            "compile_fix",
+            3072,
+            true,
+            "with_tests",
+            1767225900,
+        ),
+        token_usage_entry(
+            "audio.dll",
+            "PlaySample",
+            1,
+            "initial",
+            150,
+            true,
+            "signature",
+            1767226200,
+        ),
+    ];
+    write_token_usage_fixture(fixture.repo_path().as_path(), &token_log);
 
-    let token_log = serde_json::json!({
-        "entries": [
-            {
-                "timestamp": 1767225600,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 1,
-                "strategy": "initial",
-                "context_tier": "disassembly",
-                "tokens_used": 4096,
-                "success": false
-            },
-            {
-                "timestamp": 1767225900,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 2,
-                "strategy": "compile_fix",
-                "context_tier": "with_tests",
-                "tokens_used": 3072,
-                "success": true
-            },
-            {
-                "timestamp": 1767226200,
-                "binary": "audio.dll",
-                "function": "PlaySample",
-                "attempt": 1,
-                "strategy": "initial",
-                "context_tier": "signature",
-                "tokens_used": 150,
-                "success": true
-            }
-        ]
-    });
-    std::fs::write(
-        analysis_dir.join("token_usage.json"),
-        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
-    )
-    .expect("write token_usage.json");
+    let fault_log = [
+        FaultEvent {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            strategy: "initial".into(),
+            category: FaultCategory::ContextWindowExceeded,
+            severity: FaultSeverity::Warning,
+            description: "Prompt exceeded context window".into(),
+            recovery: "escalate_context".into(),
+            timestamp: 1767225660,
+            metadata: None,
+        },
+        FaultEvent {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "compile_fix".into(),
+            category: FaultCategory::Hallucination,
+            severity: FaultSeverity::Error,
+            description: "Output referenced unknown symbol".into(),
+            recovery: "retry".into(),
+            timestamp: 1767225960,
+            metadata: None,
+        },
+        FaultEvent {
+            binary: "audio.dll".into(),
+            function: "PlaySample".into(),
+            attempt: 1,
+            strategy: "initial".into(),
+            category: FaultCategory::SlowResponse,
+            severity: FaultSeverity::Warning,
+            description: "Response latency exceeded threshold".into(),
+            recovery: "retry".into(),
+            timestamp: 1767226260,
+            metadata: None,
+        },
+    ];
+    write_fault_log_fixture(fixture.repo_path().as_path(), &fault_log);
 
-    let fault_log = serde_json::json!({
-        "entries": [
-            {
-                "timestamp": 1767225660,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 1,
-                "strategy": "initial",
-                "category": "context_window_exceeded",
-                "severity": "warning",
-                "description": "Prompt exceeded context window",
-                "recovery": "escalate_context"
-            },
-            {
-                "timestamp": 1767225960,
-                "binary": "game_logic.dll",
-                "function": "DrawPrimitive",
-                "attempt": 2,
-                "strategy": "compile_fix",
-                "category": "hallucination",
-                "severity": "error",
-                "description": "Output referenced unknown symbol",
-                "recovery": "retry"
-            },
-            {
-                "timestamp": 1767226260,
-                "binary": "audio.dll",
-                "function": "PlaySample",
-                "attempt": 1,
-                "strategy": "initial",
-                "category": "slow_response",
-                "severity": "warning",
-                "description": "Response latency exceeded threshold",
-                "recovery": "retry"
-            }
-        ]
-    });
-    std::fs::write(
-        analysis_dir.join("fault_log.json"),
-        serde_json::to_string_pretty(&fault_log).expect("serialize fault log"),
+    let windows_apis = [
+        windows_api_with_mapping("DirectXDraw", ApiCategory::DirectX, "wgpu::Queue::submit"),
+        windows_api_with_mapping("Present", ApiCategory::DirectX, "wgpu::Surface::present"),
+    ];
+    let artifact = FunctionArtifact {
+        name: "DrawPrimitive",
+        address: 4198400,
+        binary: "game_logic.dll",
+        disassembly: "push rbp\nmov rbp, rsp\nmov rax, [rdi]\ncall DirectXDraw\ncall Present\nret\npop rbp\nret\nnop\nnop",
+        decompiler_output: "void DrawPrimitive() { DirectXDraw(); Present(); }",
+        windows_apis: &windows_apis,
+        call_graph: &[],
+    };
+    calxgloss_types::save_json(
+        &calxgloss_types::analysis_artifact_path(
+            fixture.repo_path(),
+            "game_logic.dll",
+            "DrawPrimitive",
+        ),
+        &artifact,
     )
-    .expect("write fault_log.json");
+    .expect("function artifact filed");
+}
 
-    let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
-    let decomp_artifact = serde_json::json!({
-        "name": "DrawPrimitive",
-        "address": 4198400,
-        "binary": "game_logic.dll",
-        "disassembly": "push rbp\nmov rbp, rsp\nmov rax, [rdi]\ncall DirectXDraw\ncall Present\nret\npop rbp\nret\nnop\nnop",
-        "decompiler_output": "void DrawPrimitive() { DirectXDraw(); Present(); }",
-        "windows_apis": [
-            { "name": "DirectXDraw", "category": "DirectX", "pal_mapping": "wgpu::Queue::submit" },
-            { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" }
-        ],
-        "call_graph": []
-    });
-    std::fs::write(
-        dll_dir.join("DrawPrimitive.json"),
-        serde_json::to_string_pretty(&decomp_artifact).expect("serialize decomp artifact"),
-    )
-    .expect("write DrawPrimitive.json");
+/// One Windows API call with its PAL mapping, as a fixture record.
+fn windows_api_with_mapping(
+    name: &str,
+    category: ApiCategory,
+    pal_mapping: &str,
+) -> WindowsApiCall {
+    WindowsApiCall {
+        name: name.to_string(),
+        category,
+        pal_mapping: pal_mapping.to_string(),
+    }
+}
+
+/// The function-analysis artifact shape the web's tier rationale reads.
+#[derive(serde::Serialize)]
+struct FunctionArtifact<'a> {
+    name: &'a str,
+    address: u64,
+    binary: &'a str,
+    disassembly: &'a str,
+    decompiler_output: &'a str,
+    windows_apis: &'a [WindowsApiCall],
+    call_graph: &'a [serde_json::Value],
 }
 
 /// Fetches the unit detail body for `unit_id` from a plain `serve` router.
@@ -1761,31 +1762,30 @@ async fn fetch_unit_detail(fixture: &TestFixture, unit_id: &str) -> serde_json::
 /// (the caller is stored as an address) and calls BlitSurface (an edge with
 /// a name) and InternalFlush (an edge with no name, matched by address).
 fn write_canned_analysis_context(fixture: &TestFixture) {
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-
-    let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
-    std::fs::write(
-        dll_dir.join("DrawPrimitive.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "name": "DrawPrimitive",
-            "address": 4198400,
-            "binary": "game_logic.dll",
-            "disassembly": "push rbp\ncall Present\nret",
-            "decompiler_output": "void DrawPrimitive() { Present(); }",
-            "windows_apis": [
-                { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" },
-                { "name": "CreateFileA", "category": "Win32Core", "pal_mapping": "std::fs::File::open" }
-            ],
-            "call_graph": []
-        }))
-        .expect("serialize function artifact"),
+    let windows_apis = [
+        windows_api_with_mapping("Present", ApiCategory::DirectX, "wgpu::Surface::present"),
+        windows_api_with_mapping("CreateFileA", ApiCategory::Win32Core, "std::fs::File::open"),
+    ];
+    calxgloss_types::save_json(
+        &calxgloss_types::analysis_artifact_path(
+            fixture.repo_path(),
+            "game_logic.dll",
+            "DrawPrimitive",
+        ),
+        &FunctionArtifact {
+            name: "DrawPrimitive",
+            address: 4198400,
+            binary: "game_logic.dll",
+            disassembly: "push rbp\ncall Present\nret",
+            decompiler_output: "void DrawPrimitive() { Present(); }",
+            windows_apis: &windows_apis,
+            call_graph: &[],
+        },
     )
-    .expect("write DrawPrimitive.json");
+    .expect("function artifact filed");
 
     std::fs::write(
-        analysis_dir.join("game_logic.dll_call_graph.json"),
+        calxgloss_types::call_graph_record_path(fixture.repo_path(), "game_logic.dll"),
         serde_json::to_string_pretty(&serde_json::json!({
             "binary": "game_logic.dll",
             "functions": [

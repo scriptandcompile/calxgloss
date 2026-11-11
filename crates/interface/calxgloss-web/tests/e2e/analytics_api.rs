@@ -10,16 +10,13 @@ use super::*;
 async fn test_faults_api_filters_narrow_every_endpoint() {
     let fixture = TestFixture::new();
     write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // Category filter: only the two hallucination faults survive.
-    let (status, body) = get_json(&format!("{base}/api/faults?category=hallucination")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults?category=hallucination")
+        .await;
     assert_eq!(status, 200);
     let entries = body["entries"].as_array().expect("entries array");
     assert_eq!(
@@ -37,15 +34,20 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
         6,
         "the log's own size survives filtering"
     );
-    let (status, body) =
-        get_json(&format!("{base}/api/faults/summary?category=hallucination")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults/summary?category=hallucination")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["total"].as_u64().expect("total"), 2);
     assert_eq!(
         body["by_category"],
         serde_json::json!([{"name": "hallucination", "count": 2}])
     );
-    let (status, body) = get_json(&format!("{base}/api/faults/trend?category=hallucination")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults/trend?category=hallucination")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["days"],
@@ -59,7 +61,7 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
     );
 
     // Binary filter: only the d3d9.dll faults.
-    let (status, body) = get_json(&format!("{base}/api/faults?binary=d3d9.dll")).await;
+    let (status, body) = world.client().get_json("/api/faults?binary=d3d9.dll").await;
     assert_eq!(status, 200);
     let entries = body["entries"].as_array().expect("entries array");
     assert_eq!(entries.len(), 3);
@@ -68,13 +70,16 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
             .iter()
             .all(|e| e["binary"] == "d3d9.dll" && e["function"] == "UpdateScene")
     );
-    let (status, body) = get_json(&format!("{base}/api/faults/by-binary?binary=d3d9.dll")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults/by-binary?binary=d3d9.dll")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["binaries"],
         serde_json::json!([{"binary": "d3d9.dll", "count": 3}])
     );
-    let (status, body) = get_json(&format!("{base}/api/faults?binary=D3D9.DLL")).await;
+    let (status, body) = world.client().get_json("/api/faults?binary=D3D9.DLL").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["entries"].as_array().expect("entries array").len(),
@@ -84,18 +89,20 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
 
     // Date range: inclusive on both ends, compared on UTC days. The gap
     // days alone match nothing — the trend then honestly answers empty.
-    let (status, body) =
-        get_json(&format!("{base}/api/faults?from=2026-10-02&to=2026-10-03")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults?from=2026-10-02&to=2026-10-03")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["entries"].as_array().expect("entries array").len(),
         0,
         "the gap days hold no faults"
     );
-    let (status, body) = get_json(&format!(
-        "{base}/api/faults/trend?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults/trend?from=2026-10-02&to=2026-10-03")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["days"].as_array().expect("days array").len(),
@@ -104,7 +111,7 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
     );
 
     // `from` alone keeps everything from that day on.
-    let (status, body) = get_json(&format!("{base}/api/faults?from=2026-10-04")).await;
+    let (status, body) = world.client().get_json("/api/faults?from=2026-10-04").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["entries"].as_array().expect("entries array").len(),
@@ -120,15 +127,12 @@ async fn test_faults_api_filters_narrow_every_endpoint() {
 async fn test_faults_api_bad_filter_answers_400() {
     let fixture = TestFixture::new();
     write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/faults?category=nonsense")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/faults?category=nonsense")
+        .await;
     assert_eq!(status, 400, "an unknown category is refused, not ignored");
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -136,10 +140,16 @@ async fn test_faults_api_bad_filter_answers_400() {
         "the 400 names the bad value and the vocabulary, got: {message}"
     );
 
-    let (status, _) = get_json(&format!("{base}/api/faults/summary?from=not-a-date")).await;
+    let (status, _) = world
+        .client()
+        .get_json("/api/faults/summary?from=not-a-date")
+        .await;
     assert_eq!(status, 400, "a malformed from date is refused");
 
-    let (status, _) = get_json(&format!("{base}/api/faults/trend?to=2026-13-01")).await;
+    let (status, _) = world
+        .client()
+        .get_json("/api/faults/trend?to=2026-13-01")
+        .await;
     assert_eq!(status, 400, "an out-of-range to date is refused");
 }
 
@@ -150,23 +160,15 @@ async fn test_faults_api_bad_filter_answers_400() {
 #[tokio::test]
 async fn test_faults_api_corrupt_log_honest_empty() {
     let fixture = TestFixture::new();
-    let dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(dir.join("fault_log.json"), "{ not json").expect("corrupt log written");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    support::file_unreadable_record_bytes(&calxgloss_types::fault_log_path(fixture.repo_path()));
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/faults")).await;
+    let (status, body) = world.client().get_json("/api/faults").await;
     assert_eq!(status, 200, "a corrupt log degrades, never errors");
     assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
 
-    let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+    let (status, body) = world.client().get_json("/api/faults/summary").await;
     assert_eq!(status, 200);
     assert_eq!(body["total"].as_u64().expect("total"), 0);
     assert_eq!(
@@ -174,7 +176,7 @@ async fn test_faults_api_corrupt_log_honest_empty() {
         0
     );
 
-    let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+    let (status, body) = world.client().get_json("/api/faults/trend").await;
     assert_eq!(status, 200);
     assert_eq!(body["days"].as_array().expect("days array").len(), 0);
 }
@@ -187,21 +189,13 @@ async fn test_faults_api_corrupt_log_honest_empty() {
 async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-
-        let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+        let (status, body) = world.client().get_json("/api/token-usage/summary").await;
         assert_eq!(status, 200, "{kind} router serves /api/token-usage/summary");
         assert_eq!(
             body["total_tokens"].as_u64().expect("total_tokens"),
@@ -219,11 +213,11 @@ async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
             "/api/token-usage/by-tier",
             "/api/token-usage/by-strategy",
         ] {
-            let (status, _) = get_json(&format!("{base}{path}")).await;
+            let (status, _) = world.client().get_json(path).await;
             assert_eq!(status, 200, "{kind} router serves {path}");
         }
 
-        let (_, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+        let (_, body) = world.client().get_json("/api/token-usage/by-binary").await;
         assert!(
             body["binaries"]
                 .as_array()
@@ -231,12 +225,15 @@ async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
                 .is_empty(),
             "no log means no fabricated bars"
         );
-        let (_, body) = get_json(&format!("{base}/api/token-usage/by-tier")).await;
+        let (_, body) = world.client().get_json("/api/token-usage/by-tier").await;
         assert!(
             body["tiers"].as_array().expect("tiers array").is_empty(),
             "no log means no fabricated tiers"
         );
-        let (_, body) = get_json(&format!("{base}/api/token-usage/by-strategy")).await;
+        let (_, body) = world
+            .client()
+            .get_json("/api/token-usage/by-strategy")
+            .await;
         assert!(
             body["strategies"]
                 .as_array()
@@ -255,17 +252,11 @@ async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
 async fn test_token_usage_api_exact_json_from_fixture_log() {
     let fixture = TestFixture::new();
     write_token_usage_fixture(&fixture.repo_path(), &sample_token_usage_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // Summary split: total tokens consumed, split into successful and
     // failed attempts, plus the log's own size for the honest empty state.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+    let (status, body) = world.client().get_json("/api/token-usage/summary").await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -279,7 +270,7 @@ async fn test_token_usage_api_exact_json_from_fixture_log() {
     );
 
     // Per-binary breakdown with percentage shares of the filtered total.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+    let (status, body) = world.client().get_json("/api/token-usage/by-binary").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["binaries"],
@@ -291,7 +282,7 @@ async fn test_token_usage_api_exact_json_from_fixture_log() {
 
     // Per-tier breakdown — the untracked (no `context_tier`) entries form
     // their own honest bucket; the 3000-token tie sorts alphabetically.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/by-tier")).await;
+    let (status, body) = world.client().get_json("/api/token-usage/by-tier").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["tiers"],
@@ -305,7 +296,10 @@ async fn test_token_usage_api_exact_json_from_fixture_log() {
 
     // Per-strategy breakdown with a success rate per strategy — the 3000-
     // token tie between compile_fix and retry sorts alphabetically.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/by-strategy")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/by-strategy")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["strategies"],
@@ -326,17 +320,14 @@ async fn test_token_usage_api_exact_json_from_fixture_log() {
 async fn test_token_usage_api_time_range_narrows_every_endpoint() {
     let fixture = TestFixture::new();
     write_token_usage_fixture(&fixture.repo_path(), &sample_token_usage_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // `from` alone keeps everything from that UTC day on: only the two
     // 2026-10-04 d3d9.dll attempts survive.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/summary?from=2026-10-04")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/summary?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -348,8 +339,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
             "total_in_log": 5,
         })
     );
-    let (status, body) =
-        get_json(&format!("{base}/api/token-usage/by-binary?from=2026-10-04")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/by-binary?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["binaries"],
@@ -358,7 +351,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
         ]),
         "the share is of the filtered total, not the whole log"
     );
-    let (status, body) = get_json(&format!("{base}/api/token-usage/by-tier?from=2026-10-04")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/by-tier?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["tiers"],
@@ -367,10 +363,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
             {"tier": "stub", "tokens": 2_000, "attempts": 1},
         ])
     );
-    let (status, body) = get_json(&format!(
-        "{base}/api/token-usage/by-strategy?from=2026-10-04"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/by-strategy?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["strategies"],
@@ -382,10 +378,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
 
     // An inclusive range holding no attempts answers with zeros and empty
     // breakdowns — never a fabricated row of buckets.
-    let (status, body) = get_json(&format!(
-        "{base}/api/token-usage/summary?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/summary?from=2026-10-02&to=2026-10-03")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(body["total_tokens"].as_u64().expect("total_tokens"), 0);
     assert_eq!(
@@ -393,10 +389,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
         5,
         "the log's own size survives filtering"
     );
-    let (_, body) = get_json(&format!(
-        "{base}/api/token-usage/by-binary?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (_, body) = world
+        .client()
+        .get_json("/api/token-usage/by-binary?from=2026-10-02&to=2026-10-03")
+        .await;
     assert!(
         body["binaries"]
             .as_array()
@@ -407,7 +403,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
 
     // Malformed dates are refused with 400 naming the accepted shape —
     // an operator who typed a filter is never silently shown everything.
-    let (status, body) = get_json(&format!("{base}/api/token-usage/summary?from=not-a-date")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/token-usage/summary?from=not-a-date")
+        .await;
     assert_eq!(status, 400, "a malformed from date is refused");
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -415,7 +414,10 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
         "the 400 names the bad value and the accepted shape, got: {message}"
     );
 
-    let (status, _) = get_json(&format!("{base}/api/token-usage/by-strategy?to=2026-13-01")).await;
+    let (status, _) = world
+        .client()
+        .get_json("/api/token-usage/by-strategy?to=2026-13-01")
+        .await;
     assert_eq!(status, 400, "an out-of-range to date is refused");
 }
 
@@ -426,23 +428,17 @@ async fn test_token_usage_api_time_range_narrows_every_endpoint() {
 #[tokio::test]
 async fn test_token_usage_api_corrupt_log_honest_empty() {
     let fixture = TestFixture::new();
-    let dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(dir.join("token_usage.json"), "{ not json").expect("corrupt log written");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    support::file_unreadable_record_bytes(&calxgloss_types::token_usage_log_path(
+        fixture.repo_path(),
+    ));
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+    let (status, body) = world.client().get_json("/api/token-usage/summary").await;
     assert_eq!(status, 200, "a corrupt log degrades, never errors");
     assert_eq!(body["total_tokens"].as_u64().expect("total_tokens"), 0);
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
 
-    let (status, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+    let (status, body) = world.client().get_json("/api/token-usage/by-binary").await;
     assert_eq!(status, 200);
     assert!(
         body["binaries"]
@@ -462,25 +458,17 @@ async fn test_token_usage_api_corrupt_log_honest_empty() {
 async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
 
         for path in [
             "/api/strategy-analytics/by-strategy",
             "/api/strategy-analytics/by-category",
         ] {
-            let (status, body) = get_json(&format!("{base}{path}")).await;
+            let (status, body) = world.client().get_json(path).await;
             assert_eq!(status, 200, "{kind} router serves {path}");
             assert_eq!(
                 body["total_in_log"].as_u64().expect("total_in_log"),
@@ -489,7 +477,10 @@ async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
             );
         }
 
-        let (_, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+        let (_, body) = world
+            .client()
+            .get_json("/api/strategy-analytics/by-strategy")
+            .await;
         assert!(
             body["strategies"]
                 .as_array()
@@ -497,7 +488,10 @@ async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
                 .is_empty(),
             "no log means no fabricated strategies"
         );
-        let (_, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+        let (_, body) = world
+            .client()
+            .get_json("/api/strategy-analytics/by-category")
+            .await;
         assert!(
             body["categories"]
                 .as_array()
@@ -516,17 +510,14 @@ async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
 async fn test_strategy_analytics_api_exact_json_from_fixture_log() {
     let fixture = TestFixture::new();
     write_strategy_fixture(&fixture.repo_path(), &sample_strategy_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // Per-strategy breakdown — the initial/retry tie at two attempts
     // sorts alphabetically ahead of the single-attempt strategies.
-    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-strategy")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -543,7 +534,10 @@ async fn test_strategy_analytics_api_exact_json_from_fixture_log() {
 
     // Per-category breakdown — ProjectSpecific (4 attempts) before
     // KnownThirdParty (2), pass rates as percentages.
-    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-category")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -566,20 +560,14 @@ async fn test_strategy_analytics_api_exact_json_from_fixture_log() {
 async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
     let fixture = TestFixture::new();
     write_strategy_fixture(&fixture.repo_path(), &sample_strategy_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // `from` alone keeps everything from that UTC day on: only the two
     // 2026-10-04 d3d9.dll attempts survive.
-    let (status, body) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-strategy?from=2026-10-04"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-strategy?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["strategies"],
@@ -593,10 +581,10 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
         6,
         "the log's own size survives filtering"
     );
-    let (status, body) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-category?from=2026-10-04"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-category?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["categories"],
@@ -608,10 +596,10 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
 
     // An inclusive range holding no attempts answers with empty breakdowns
     // — never a fabricated row of buckets.
-    let (status, body) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-strategy?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-strategy?from=2026-10-02&to=2026-10-03")
+        .await;
     assert_eq!(status, 200);
     assert!(
         body["strategies"]
@@ -620,10 +608,10 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
             .is_empty(),
         "no matching attempts means no rows"
     );
-    let (_, body) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-category?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (_, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-category?from=2026-10-02&to=2026-10-03")
+        .await;
     assert!(
         body["categories"]
             .as_array()
@@ -634,10 +622,10 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
 
     // Malformed dates are refused with 400 naming the accepted shape —
     // an operator who typed a filter is never silently shown everything.
-    let (status, body) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-strategy?from=not-a-date"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-strategy?from=not-a-date")
+        .await;
     assert_eq!(status, 400, "a malformed from date is refused");
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -645,10 +633,10 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
         "the 400 names the bad value and the accepted shape, got: {message}"
     );
 
-    let (status, _) = get_json(&format!(
-        "{base}/api/strategy-analytics/by-category?to=2026-13-01"
-    ))
-    .await;
+    let (status, _) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-category?to=2026-13-01")
+        .await;
     assert_eq!(status, 400, "an out-of-range to date is refused");
 }
 
@@ -659,19 +647,15 @@ async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
 #[tokio::test]
 async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
     let fixture = TestFixture::new();
-    let dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(dir.join("prompt_strategy_log.json"), "{ not json")
-        .expect("corrupt log written");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    support::file_unreadable_record_bytes(&calxgloss_types::prompt_strategy_log_path(
+        fixture.repo_path(),
+    ));
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-strategy")
+        .await;
     assert_eq!(status, 200, "a corrupt log degrades, never errors");
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
     assert!(
@@ -682,7 +666,10 @@ async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
         "a corrupt log means no rows, not zero rows"
     );
 
-    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/strategy-analytics/by-category")
+        .await;
     assert_eq!(status, 200);
     assert!(
         body["categories"]
@@ -702,26 +689,18 @@ async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
 async fn test_llm_metrics_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
 
         for path in ["/api/llm-metrics/summary", "/api/llm-metrics/by-tier"] {
-            let (status, _) = get_json(&format!("{base}{path}")).await;
+            let (status, _) = world.client().get_json(path).await;
             assert_eq!(status, 200, "{kind} router serves {path}");
         }
 
-        let (_, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+        let (_, body) = world.client().get_json("/api/llm-metrics/summary").await;
         assert_eq!(
             body["total_in_log"].as_u64().expect("total_in_log"),
             0,
@@ -740,7 +719,7 @@ async fn test_llm_metrics_registered_in_plain_and_live_routers() {
                 .is_empty(),
             "no log means no fabricated trend buckets"
         );
-        let (_, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+        let (_, body) = world.client().get_json("/api/llm-metrics/by-tier").await;
         assert!(
             body["tiers"].as_array().expect("tiers array").is_empty(),
             "no log means no fabricated tiers"
@@ -758,15 +737,9 @@ async fn test_llm_metrics_registered_in_plain_and_live_routers() {
 async fn test_llm_metrics_api_exact_json_from_fixture_logs() {
     let fixture = TestFixture::new();
     write_llm_metrics_fixtures(&fixture.repo_path());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    let (status, body) = world.client().get_json("/api/llm-metrics/summary").await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -793,7 +766,7 @@ async fn test_llm_metrics_api_exact_json_from_fixture_logs() {
     // the untracked empty label honestly first. The disassembly tier has
     // one measured and one unmeasured attempt; a tier with nothing
     // measured would answer null percentiles.
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+    let (status, body) = world.client().get_json("/api/llm-metrics/by-tier").await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -818,18 +791,15 @@ async fn test_llm_metrics_api_exact_json_from_fixture_logs() {
 async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
     let fixture = TestFixture::new();
     write_llm_metrics_fixtures(&fixture.repo_path());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // `from` alone keeps everything from that UTC day on: only the five
     // 2026-10-04 attempts survive — four measured (20/40/60/70, so P50
     // pins at 40) and one unmeasured — and only the 2026-10-04 timeout.
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary?from=2026-10-04")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/llm-metrics/summary?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -847,7 +817,10 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
         }),
         "the log's own size survives filtering"
     );
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier?from=2026-10-04")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/llm-metrics/by-tier?from=2026-10-04")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body["tiers"],
@@ -862,10 +835,10 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
 
     // An inclusive range holding no attempts answers with null percentiles
     // and empty breakdowns — never a fabricated run of zeros.
-    let (status, body) = get_json(&format!(
-        "{base}/api/llm-metrics/summary?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/llm-metrics/summary?from=2026-10-02&to=2026-10-03")
+        .await;
     assert_eq!(status, 200);
     assert!(
         body["p50_secs"].is_null(),
@@ -879,10 +852,10 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
             .is_empty(),
         "no matching timeouts means no buckets"
     );
-    let (_, body) = get_json(&format!(
-        "{base}/api/llm-metrics/by-tier?from=2026-10-02&to=2026-10-03"
-    ))
-    .await;
+    let (_, body) = world
+        .client()
+        .get_json("/api/llm-metrics/by-tier?from=2026-10-02&to=2026-10-03")
+        .await;
     assert!(
         body["tiers"].as_array().expect("tiers array").is_empty(),
         "no matching attempts means no rows"
@@ -890,7 +863,10 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
 
     // Malformed dates are refused with 400 naming the accepted shape —
     // an operator who typed a filter is never silently shown everything.
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary?from=not-a-date")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/llm-metrics/summary?from=not-a-date")
+        .await;
     assert_eq!(status, 400, "a malformed from date is refused");
     let message = body["message"].as_str().unwrap_or_default();
     assert!(
@@ -898,7 +874,10 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
         "the 400 names the bad value and the accepted shape, got: {message}"
     );
 
-    let (status, _) = get_json(&format!("{base}/api/llm-metrics/by-tier?to=2026-13-01")).await;
+    let (status, _) = world
+        .client()
+        .get_json("/api/llm-metrics/by-tier?to=2026-13-01")
+        .await;
     assert_eq!(status, 400, "an out-of-range to date is refused");
 }
 
@@ -911,18 +890,12 @@ async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
 #[tokio::test]
 async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
     let fixture = TestFixture::new();
-    let dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&dir).expect("analysis dir exists");
-    std::fs::write(dir.join("token_usage.json"), "{ not json").expect("corrupt log written");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    support::file_unreadable_record_bytes(&calxgloss_types::token_usage_log_path(
+        fixture.repo_path(),
+    ));
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    let (status, body) = world.client().get_json("/api/llm-metrics/summary").await;
     assert_eq!(status, 200, "a corrupt log degrades, never errors");
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
     assert!(
@@ -931,7 +904,7 @@ async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
     );
     assert_eq!(body["timeouts"].as_u64().expect("timeouts"), 0);
 
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+    let (status, body) = world.client().get_json("/api/llm-metrics/by-tier").await;
     assert_eq!(status, 200);
     assert!(
         body["tiers"].as_array().expect("tiers array").is_empty(),
@@ -939,7 +912,7 @@ async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
     );
 
     // The other direction: the fault log corrupts, the token log survives.
-    std::fs::write(dir.join("fault_log.json"), "{ not json").expect("corrupt fault log written");
+    support::file_unreadable_record_bytes(&calxgloss_types::fault_log_path(fixture.repo_path()));
     write_token_usage_fixture(
         &fixture.repo_path(),
         &[llm_metrics_token_entry(
@@ -954,7 +927,7 @@ async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
             Some(10),
         )],
     );
-    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    let (status, body) = world.client().get_json("/api/llm-metrics/summary").await;
     assert_eq!(status, 200);
     assert_eq!(body["p50_secs"].as_u64().expect("p50_secs"), 10);
     assert_eq!(body["timeouts"].as_u64().expect("timeouts"), 0);
@@ -980,20 +953,12 @@ async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
 async fn test_binaries_list_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!("{base}/api/binaries/list")).await;
+        let (status, body) = world.client().get_json("/api/binaries/list").await;
         assert_eq!(status, 200, "{kind} router serves /api/binaries/list");
         assert!(
             body["binaries"]
@@ -1016,14 +981,8 @@ async fn test_binaries_list_registered_in_plain_and_live_routers() {
 async fn test_binaries_list_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-    let (status, body) = get_json(&format!("{base}/api/binaries/list")).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world.client().get_json("/api/binaries/list").await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1084,20 +1043,15 @@ async fn test_binaries_detail_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
         write_binaries_list_fixtures(&fixture);
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll")).await;
+        let (status, body) = world
+            .client()
+            .get_json("/api/binaries/game_logic.dll")
+            .await;
         assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}");
         assert_eq!(body["binary"].as_str().expect("binary"), "game_logic.dll");
         assert_eq!(
@@ -1119,18 +1073,12 @@ async fn test_binaries_detail_registered_in_plain_and_live_routers() {
 async fn test_binaries_detail_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // The overridden binary: category, strategy, and crate come from the
     // override in force, and so does the reason — the analyzer's own
     // account of an overridden decision, not the heuristic's.
-    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll")).await;
+    let (status, body) = world.client().get_json("/api/binaries/d3d9.dll").await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1155,7 +1103,10 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
     // The un-overridden binary: the recorded decision verbatim, and the
     // function list spelling out where each attempt stands — the stalled
     // v2 sits right next to the accepted v1.
-    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/game_logic.dll")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1180,7 +1131,10 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
     // A differently-spelled name finds the same binary — the
     // case-insensitive join every other server comparison makes — and
     // the response shows the record's verbatim identity.
-    let (status, body) = get_json(&format!("{base}/api/binaries/GAME_LOGIC.DLL")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/GAME_LOGIC.DLL")
+        .await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
         body["binary"].as_str().expect("binary"),
@@ -1190,7 +1144,10 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
 
     // Unknown names honestly 404 — no empty shell.
     for name in ["nope.dll", "broken.dll"] {
-        let (status, body) = get_json(&format!("{base}/api/binaries/{name}")).await;
+        let (status, body) = world
+            .client()
+            .get_json(&format!("/api/binaries/{name}"))
+            .await;
         assert_eq!(status, 404, "{name} has no readable classification record");
         assert_eq!(
             body["error"].as_bool(),
@@ -1214,20 +1171,15 @@ async fn test_binaries_shim_status_registered_in_plain_and_live_routers() {
         let fixture = TestFixture::new();
         write_binaries_list_fixtures(&fixture);
         write_shim_tracker_fixtures(&fixture);
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+        let (status, body) = world
+            .client()
+            .get_json("/api/binaries/d3d9.dll/shim-status")
+            .await;
         assert_eq!(
             status, 200,
             "{kind} router serves /api/binaries/{{name}}/shim-status"
@@ -1254,18 +1206,15 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
     write_shim_tracker_fixtures(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // The crate-replacement binary with artifacts and a merged shim
     // branch: every fact comes from the persisted shim files and the
     // branch model.
-    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/d3d9.dll/shim-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1292,7 +1241,10 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
 
     // The reverse-engineered binary: honestly no shim expected, and no
     // derived fields on the wire at all.
-    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/game_logic.dll/shim-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1306,7 +1258,10 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
 
     // The crate-replacement binary whose shim was generated but whose branch
     // was sent back: the artifacts and the reviewer's verdict both answer.
-    let (status, body) = get_json(&format!("{base}/api/binaries/fmod.dll/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/fmod.dll/shim-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1325,7 +1280,10 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
     // A differently-spelled name finds the same binary — the
     // case-insensitive join every other server comparison makes — and
     // the response shows the record's verbatim identity.
-    let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/D3D9.DLL/shim-status")
+        .await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
         body["binary"].as_str().expect("binary"),
@@ -1335,7 +1293,10 @@ async fn test_binaries_shim_status_api_exact_json_from_fixture() {
 
     // Unknown names honestly 404 — no empty shell.
     for name in ["nope.dll", "broken.dll"] {
-        let (status, body) = get_json(&format!("{base}/api/binaries/{name}/shim-status")).await;
+        let (status, body) = world
+            .client()
+            .get_json(&format!("/api/binaries/{name}/shim-status"))
+            .await;
         assert_eq!(status, 404, "{name} has no readable classification record");
         assert_eq!(
             body["error"].as_bool(),
@@ -1358,46 +1319,39 @@ async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
 
     // d3d9.dll's mappings go corrupt — the verification file stays
     // readable, but the shim's existence itself is unreadable.
-    let shim_dir = fixture
-        .repo_path()
-        .join("re")
-        .join("shims")
-        .join("d3d9.dll");
-    std::fs::write(shim_dir.join("mappings.json"), "{ not json").expect("corrupt mappings");
+    support::file_unreadable_record_bytes(
+        &shim_artifacts_dir(fixture.repo_path())
+            .join("d3d9.dll")
+            .join(SHIM_MAPPINGS_FILE),
+    );
 
     // A second crate-replacement binary with both artifacts corrupt.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::write(
-        classify.join("ogg.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "ogg.dll",
-            "category": "KnownThirdParty",
-            "strategy": "CrateReplacement",
-            "exports_count": 10,
-            "imports_count": 1,
-            "crate_replacement": "ogg-rs",
-            "known_runtime": false,
-            "reason": "audio codec — replaced with ogg-rs"
-        }))
-        .unwrap(),
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "ogg.dll".to_string(),
+            category: Some(DllCategory::KnownThirdParty),
+            strategy: Some(serde_json::json!("CrateReplacement")),
+            exports_count: Some(10),
+            imports_count: Some(1),
+            crate_replacement: Some("ogg-rs".to_string()),
+            known_runtime: false,
+            reason: Some("audio codec — replaced with ogg-rs".to_string()),
+        },
     )
-    .expect("ogg classification written");
-    let ogg_dir = fixture.repo_path().join("re").join("shims").join("ogg.dll");
-    std::fs::create_dir_all(&ogg_dir).expect("ogg shim dir");
-    std::fs::write(ogg_dir.join("mappings.json"), "not json at all").expect("corrupt mappings");
-    std::fs::write(ogg_dir.join("verification.json"), "{{{").expect("corrupt verification");
+    .expect("ogg classification filed");
+    let ogg_shim_dir = shim_artifacts_dir(fixture.repo_path()).join("ogg.dll");
+    support::file_unreadable_record_bytes(&ogg_shim_dir.join(SHIM_MAPPINGS_FILE));
+    support::file_unreadable_record_bytes(&ogg_shim_dir.join(SHIM_VERIFICATION_FILE));
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // Corrupt mappings: honestly not generated — no mapping count, even
     // though the verification artifact is still readable.
-    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/d3d9.dll/shim-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1421,7 +1375,10 @@ async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
 
     // Both artifacts corrupt: the honest empty payload — not generated,
     // no mapping count, no verification, no branch in the model.
-    let (status, body) = get_json(&format!("{base}/api/binaries/ogg.dll/shim-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/ogg.dll/shim-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1445,20 +1402,15 @@ async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
         let fixture = TestFixture::new();
         write_binaries_list_fixtures(&fixture);
         write_pal_tracker_fixtures(&fixture);
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+        let (status, body) = world
+            .client()
+            .get_json("/api/binaries/d3d9.dll/pal-status")
+            .await;
         assert_eq!(
             status, 200,
             "{kind} router serves /api/binaries/{{name}}/pal-status"
@@ -1486,17 +1438,14 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
     let fixture = TestFixture::new();
     write_binaries_list_fixtures(&fixture);
     write_pal_tracker_fixtures(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // The binary that has API-call artifacts and a generated PAL source:
     // every fact in the payload comes only from saved artifacts.
-    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/d3d9.dll/pal-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1521,7 +1470,10 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
 
     // The binary with no per-function artifacts at all: the honest empty
     // payload — no fabricated trait list.
-    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/game_logic.dll/pal-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1536,7 +1488,10 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
     // A differently-spelled name finds the same binary — the server
     // compares names ignoring case, as it does everywhere — and the
     // response reports the record's identity exactly as it is stored.
-    let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/D3D9.DLL/pal-status")
+        .await;
     assert_eq!(status, 200, "the lookup is case-insensitive");
     assert_eq!(
         body["binary"].as_str().expect("binary"),
@@ -1546,7 +1501,10 @@ async fn test_binaries_pal_status_api_exact_json_from_fixture() {
 
     // Unknown names honestly 404 — no empty shell.
     for name in ["nope.dll", "broken.dll"] {
-        let (status, body) = get_json(&format!("{base}/api/binaries/{name}/pal-status")).await;
+        let (status, body) = world
+            .client()
+            .get_json(&format!("/api/binaries/{name}/pal-status"))
+            .await;
         assert_eq!(status, 404, "{name} has no readable classification record");
         assert_eq!(
             body["error"].as_bool(),
@@ -1583,78 +1541,66 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
 
     // A second binary whose only readable artifact records an Audio
     // category — its other artifact is corrupt and gives nothing.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::write(
-        classify.join("ogg.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "ogg.dll",
-            "category": "KnownThirdParty",
-            "strategy": "CrateReplacement",
-            "exports_count": 10,
-            "imports_count": 1,
-            "crate_replacement": "ogg-rs",
-            "known_runtime": false,
-            "reason": "audio codec — replaced with ogg-rs"
-        }))
-        .unwrap(),
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "ogg.dll".to_string(),
+            category: Some(DllCategory::KnownThirdParty),
+            strategy: Some(serde_json::json!("CrateReplacement")),
+            exports_count: Some(10),
+            imports_count: Some(1),
+            crate_replacement: Some("ogg-rs".to_string()),
+            known_runtime: false,
+            reason: Some("audio codec — replaced with ogg-rs".to_string()),
+        },
     )
-    .expect("ogg classification written");
-    let ogg_dir = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("ogg.dll");
-    std::fs::create_dir_all(&ogg_dir).expect("ogg analysis dir");
-    std::fs::write(
-        ogg_dir.join("PlaySample.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "function_name": "PlaySample",
-            "windows_apis": [
-                { "name": "waveOutWrite", "category": "Audio", "pal_mapping": "cpal" }
-            ]
-        }))
-        .unwrap(),
-    )
-    .expect("PlaySample artifact written");
-    std::fs::write(ogg_dir.join("broken.json"), "not json at all")
-        .expect("corrupt artifact written");
+    .expect("ogg classification filed");
+    write_windows_api_artifact(
+        fixture.repo_path().as_path(),
+        "ogg.dll",
+        "PlaySample",
+        &[windows_api_with_mapping(
+            "waveOutWrite",
+            ApiCategory::Audio,
+            "cpal",
+        )],
+    );
+    support::file_unreadable_record_bytes(&calxgloss_types::analysis_artifact_path(
+        fixture.repo_path(),
+        "ogg.dll",
+        "broken",
+    ));
 
     // A third binary whose every artifact is corrupt: no artifact at all.
-    let dsound_dir = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("dsound.dll");
-    std::fs::create_dir_all(&dsound_dir).expect("dsound analysis dir");
-    std::fs::write(dsound_dir.join("DirectSoundCreate.json"), "{{{")
-        .expect("corrupt artifact written");
-    std::fs::write(
-        classify.join("dsound.dll.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "dsound.dll",
-            "category": "WindowsOs",
-            "strategy": "PalMapping",
-            "exports_count": 8,
-            "imports_count": 2,
-            "known_runtime": false,
-            "reason": "Windows OS dll — PAL mapping"
-        }))
-        .unwrap(),
+    support::file_unreadable_record_bytes(&calxgloss_types::analysis_artifact_path(
+        fixture.repo_path(),
+        "dsound.dll",
+        "DirectSoundCreate",
+    ));
+    calxgloss_types::save_classification_record(
+        fixture.repo_path(),
+        &ClassificationRecord {
+            binary: "dsound.dll".to_string(),
+            category: Some(DllCategory::WindowsOs),
+            strategy: Some(serde_json::json!("PalMapping")),
+            exports_count: Some(8),
+            imports_count: Some(2),
+            crate_replacement: None,
+            known_runtime: false,
+            reason: Some("Windows OS dll — PAL mapping".to_string()),
+        },
     )
-    .expect("dsound classification written");
+    .expect("dsound classification filed");
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // The needed traits still appear (the corrupt d3d9 artifact gave
     // nothing); with no generated PAL or shim source every trait honestly
     // reads as missing.
-    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/d3d9.dll/pal-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1670,7 +1616,10 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
     );
 
     // The corrupt artifact is skipped; the readable one still counts.
-    let (status, body) = get_json(&format!("{base}/api/binaries/ogg.dll/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/ogg.dll/pal-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1684,7 +1633,10 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
     );
 
     // Every artifact corrupt: the honest empty payload.
-    let (status, body) = get_json(&format!("{base}/api/binaries/dsound.dll/pal-status")).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/binaries/dsound.dll/pal-status")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
@@ -1708,23 +1660,15 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
 async fn test_unit_attempts_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
         let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain_on(&fixture).await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot_ws_on(&fixture).await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!(
-            "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts"
-        ))
-        .await;
+        let (status, body) = world
+            .client()
+            .get_json("/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts")
+            .await;
         assert_eq!(
             status, 200,
             "{kind} router serves /api/units/{{id}}/attempts"
@@ -1812,8 +1756,8 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
                 "DrawPrimitive",
                 1,
                 "compile_fix",
-                "infinite_loop",
-                "critical",
+                FaultCategory::InfiniteLoop,
+                FaultSeverity::Critical,
                 1759053700,
             ),
             // The only source that gives attempt 3's strategy.
@@ -1822,24 +1766,18 @@ async fn test_unit_attempts_api_exact_json_from_fixture() {
                 "DrawPrimitive",
                 3,
                 "test_fix",
-                "behavior_divergence",
-                "warning",
+                FaultCategory::BehaviorDivergence,
+                FaultSeverity::Warning,
                 1759060000,
             ),
         ],
     );
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-    let (status, body) = get_json(&format!(
-        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts"
-    ))
-    .await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .get_json("/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts")
+        .await;
     assert_eq!(status, 200);
     assert_eq!(
         body,
