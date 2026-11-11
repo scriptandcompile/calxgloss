@@ -27,51 +27,11 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 ## Status matrix
 
-**Tracks P19–P33 are the feature ideas collected by the [REA
-comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
-"Steal ideas"). P19 (admitted semantics), P20 (seam capability report +
-engine-identity cache key), P21 (first-class unknown records), P22 (the
-API-call trace dimension in the gate), P23 (real inputs mined by the
-record-and-replay fold), and P24 (the scenario-capture baseline giving EXE
-targets a verification signal FFI cannot reach), and P25 (verification
-receipts — every verify run files its digest-paired pair and every commit
-site stages it onto the attempt branch) and P26 (fail-closed conformance —
-the obligation ledger and the per-binary *conformance verdict* every
-surface renders from one derivation) shipped and left this matrix per the
-rule above (ADR-0053–ADR-0060; P25's tickets #410–#416, P26's #417–#424),
-so the verdict track P27 and the tracks after it stand unblocked on their
-record and runtime sides.**
-**Table order is dependency order** — no track appears before another track
-that blocks it (each summary below names which tracks block it and which
-tracks it blocks). Among tracks that do not block each other, the order is
-by how far each one moves calxgloss toward **complete end-to-end
-restitching from binaries**: the verification gate wide enough to cover
-what restitching can actually get wrong has shipped — P22's trace
-dimension, P23's mined inputs, and P24's scenario baseline for EXEs — and so
-has the fail-closed ledger that finally makes "this binary is done" a
-checkable claim instead of "the pipeline stopped with nobody complaining"
-(P26, after its durable-receipt half P25). The front of the table is now
-the architecture-review enablers P59–P60 (P58 shipped 2026-11-09), then
-P56: the honest verification verdict (P55), the padding deletions (P57)
-and the live-view store (P58) have shipped, and P59–P60 make P56's
-surface rewrite and 3,097-line test retarget cheap — run P56 first and
-it re-encodes at the new seam the hardcoded-conformance-unknown hazard
-the 2026-11-08 review flagged. Below P56 sit P61 and P62, the batch
-protocol and the retry
-settle, on which P27 otherwise builds twice. Then P27's hypothesis ledger
-leads the older tracks again, and the rest of the review's tracks sit
-just ahead of the track that would otherwise pay their duplication twice
-(P64 ahead of P28, P46 and P51; P65 ahead of P29 and P51; P63 ahead of
-P47; P66 behind P56 and ahead of P31 and P52). P27–P33 resolve stuck
-functions, strengthen evidence, or serve operations; none of them blocks
-another. P67 sits last: it is conditional, scheduled only if P61 leaves
-the pipeline header still churning.
-
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ✅ done | Spec #449; tickets #450–#455, closed 2026-11-09 | [#449](https://github.com/scriptandcompile/calxgloss/issues/449) |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ✅ done | Spec #456; tickets #457–#464, closed 2026-11-10 | [#456](https://github.com/scriptandcompile/calxgloss/issues/456) |
-| P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ⬜ not started | Spec #465; tickets #466–#479, open | [#465](https://github.com/scriptandcompile/calxgloss/issues/465) |
+| P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ✅ done | Spec #465; tickets #466–#479, closed 2026-11-11 | [#465](https://github.com/scriptandcompile/calxgloss/issues/465) |
 | P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
 | P61 | One batch protocol, the queue source as adapter — one `run_batch(binary, plan)` owns the prologue, the four-arm unit gate, the ledger folding and the unknown-residue reset today duplicated in `batch_run.rs` and `callgraph_plan.rs` (~300 lines absorbed) | pipeline (`calxgloss-translator`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P62 | One constructor settles what the retry loop consumes — `RetryRun::settle(unit, scope, seam)` returns posture + hints + residue as one value instead of `RetryLoopCtx`'s ten pub fields with the ordering carried by comments; the document reads ride the projector seam | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
@@ -93,6 +53,7 @@ the pipeline header still churning.
 | P45 | Typed untrusted data on the bundle→prompt path — an `Untrusted<T>` wrapper that fails deserialization without its flag, plus a control/bidi/zero-width sanitizer with visible truncation, on the evidence-bundle sections the P36 templates render; adversarial-string e2e tests through the decomp→prompt path | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`) | — | ⬜ not started | not specced | — |
 | P46 | Engine-seam assurance — contract-test the seam so Kuna upgrades fail at the seam not in a pipeline run; record the fixture DLL's scan output as JSON at the pinned Kuna rev, replay it in workspace tests, and drift-check it at every pin bump; named stale-identity fields with one named repair command, a checkpoint-vs-watermark staleness probe, and a `reason:` beside every engine/capability decision | integrations (`calxgloss-kuna`, `calxgloss-decomp`, `calxgloss-testfixtures`) | — | ⬜ not started | not specced | — |
 | P63 | Commit an accepted unit once, at the git seam — one `commit_accepted_unit` operation in `calxgloss-git` replaces the 70-line callback pasted in `auto.rs` and `batch_translate.rs`, names the dependency-refusal error the git crate today hides as a name-syntax error, and pins the #413 receipt-pair invariant with a test | pipeline (`calxgloss-git`) + interface (`calxgloss-cli`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
+| P68 | One transition rule for `ReviewStatus` — the 9-state review machine gets its legal-transition relation as one pure function beside the enum in `calxgloss-types` plus one table test; the guarded `accept_unit` path and the unguarded legacy `perform_accept` fallback in the web server both check the rule before merging | shared (`calxgloss-types`) + interface (`calxgloss-web`) | — | ⬜ not started | not filed, not specced | — |
 | P47 | Staleness by content hash — stamp each accepted unit with a "made-from" digest of the decompile plus its callees and re-check against observed hashes; the engine-identity cache key (ADR-0055) and bdiff pair whole binaries, but nothing yet notices one function's decompile drifting inside a pinned version | shared (`calxgloss-types`) + pipeline (`calxgloss-translator`, `calxgloss-git`) | — | ⬜ not started | not specced | — |
 | P48 | Mechanical pre-refusal before the first model call — length/range/ABI sanity and FFI-harness expressibility checked by pure code; units the harness cannot express (struct-by-value exports today) are refused-and-recorded with reason instead of churning the compile+test loop | pipeline (`calxgloss-translator`, `calxgloss-testgen`) | — | ⬜ not started | not specced | — |
 | P49 | Counterexample ordering + verdict honesty rules — feed the smallest disagreeing inputs first, sorted by input size and capped; ">50% unevaluable → no verdict" and "inputs don't reach the logic" as named outcomes on `VerificationResult` | shared (`calxgloss-types`) + pipeline (`calxgloss-verify`, `calxgloss-testgen`) | — | ⬜ not started | not specced | — |
@@ -100,6 +61,22 @@ the pipeline header still churning.
 | P51 | Evidence-computed confidence, model self-assessment ignored — score name/type suggestions by counting the independent engine evidence kinds that agree, instead of parsing the model's claimed confidence out of the response | pipeline (`calxgloss-translator`, `calxgloss-llm`) + evidence (scan engines) | — | ⬜ not started | not specced | — |
 | P52 | Small discipline steals bundle — `--json` printing the result structs' serde JSON from the same definition as the help text; a generated command reference from the clap enum + ADR-0052 rows; bundle-section size/pagination caps as protocol constants; per-slot `origin+version` stamps making ADR-0021's "never overrule" a predicate; prompt-hash provenance per attempt; one exit-criterion test per specced roadmap P; "name the dependents, *then* ask" previews before destructive review actions | interface (`calxgloss-cli`, `calxgloss-web`, `calxgloss-reports`) + pipeline (`calxgloss-translator`) + docs | — | ⬜ not started | not specced | — |
 | P67 | Split the pipeline state by role, not impl blocks — the 27-field `TranslationPipeline` header (97 churns in 6 weeks) gives way to scan-phase / batch-loop / unit-path adapters owning their own fields and imports | pipeline (`calxgloss-translator`) | — | ⬜ not started | conditional — decide after P61 lands; schedule only if the header still churns | — |
+
+**Table order is dependency order** — no track appears before another
+track that blocks it; each summary below names which tracks block it and
+which tracks it blocks. Among tracks that do not block each other, the
+order is by how far each one moves calxgloss toward **complete end-to-end
+restitching from binaries**. P27–P33 resolve stuck functions, strengthen
+evidence, or serve operations; none of them blocks another. P67 sits
+last: it is conditional, scheduled only if P61 leaves the pipeline
+header still churning.
+
+**P19–P33 are the feature ideas collected by the [REA
+comparison](research/rea/README.md) (`docs/research/rea/`, each chapter's
+"Steal ideas").** P19–P26 have since shipped and left this matrix
+(ADR-0053–ADR-0060; P25's tickets #410–#416, P26's #417–#424), so the
+verdict track P27 and the tracks after it stand unblocked on their
+record and runtime sides.
 
 **P40–P41 are product gaps found by the 2026-10-28 plain-English sweep**:
 features the docs, tests, or UI promise that the code never delivers. Each
@@ -151,7 +128,9 @@ since shipped: spec #443, tickets #444–#448, ~1,500 padding lines gone,
 and every track that adds a type stops paying a facade line; P58 has
 since shipped too: spec #449, tickets #450–#455, the live-view store
 lifted out of `server/mod.rs` into its own module with the two web-only
-DTOs deleted; P59–P60 ahead of P56, which rewrites the same web surface
+DTOs deleted; P59 and P60 have since shipped: spec #456, tickets
+#457–#464, closed 2026-11-10, and spec #465, tickets #466–#479, closed
+2026-11-11 — P59–P60 ahead of P56, which rewrites the same web surface
 and retargets 3,097 lines of
 conformance tests — running P56 before the shared record-read seam and
 the test adapter would ship the review's unknown-hardcoding hazard
@@ -163,6 +142,16 @@ migrate. None reopens a settled decision: P58 keeps ADR-0061 exactly,
 P59 makes ADR-0060's one-derivation rule structural, P65 extends
 ADR-0062, and P63's who-drives-the-commit question is left to spec time
 under ADR-0050's assembly rule.
+
+**P68 is the one candidate worth scheduling from the 2026-11-10 audit of
+implicit state machines** (every place the code carries states and
+transitions without naming a machine). The audit's other machines are
+derived or single-write-point by design and stay implicit; only the
+review-status machine has guards scattered across seams, one write path
+with no guard at all, and four places re-deriving what each status
+means. It sits beside P63 — both harden one accept-a-unit flow, P63 at
+the git seam and P68 at the review-status seam — and neither blocks the
+other.
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started.
 
@@ -719,3 +708,28 @@ visibility. Conditional: P61 absorbs most of the protocol duplication
 first — re-measure the header's churn after P61 lands and schedule this
 only if it still hurts. Source: candidate 6 (worth exploring). Blocked
 by: P61 (a decision point, not a design dependency).
+
+## P68 — One transition rule for `ReviewStatus` (shared + interface)
+
+**The nine review states have no written transition rule.**
+`ReviewStatus` (`calxgloss-types/src/dashboard/types.rs:135–164`:
+Queued, PendingReview, InProgress, Accepted, SendBack, PatchRequested,
+Blocked, Skipped, DoNotTranslate) drives the whole review flow, but the
+legal-transition relation exists nowhere — not as code, not as a test.
+The web guards encode one edge each: `ensure_not_accepted`
+(`calxgloss-web/src/server/actions.rs:289–299`) pins that Accepted is
+terminal and the write-time re-check (`check_action_conflict`,
+:272–285) catches races, while the legacy fallback in
+`perform_accept` (`handlers/api.rs:237–301`) merges straight to git
+with no status check at all. Status *meaning* is re-derived at three
+more read seams (`dashboard/review.rs:96–98`,
+`handlers/binaries.rs:99–131`, `static/js/queue.js:160–199`), so a new
+state has to be remembered in four places that never see each other.
+The fix stays inside the repo's idiom: one pure function beside the
+enum — e.g. `ReviewStatus::allowed_actions(self)` as a single match —
+one table test enumerating the whole relation, and both accept paths
+calling the check before they merge or persist. No state-machine
+framework; the relation is small enough to stay an enum and a match
+per `docs/standards.md`. Pairs with P63 — the same accept-a-unit action
+hardened at the other seam; neither blocks the other. Source: implicit
+state-machine audit, 2026-11-10.
