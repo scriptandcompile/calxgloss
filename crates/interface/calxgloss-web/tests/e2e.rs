@@ -72,6 +72,11 @@ mod support;
 #[path = "e2e/unit_detail_and_server_basics.rs"]
 mod unit_detail_and_server_basics;
 
+// The browser helpers moved into the support module (issue #471). The
+// booted world drives them there. Pins not yet converted to the world
+// still resolve them here through their `use super::*;`.
+use support::{eval_bool, eval_count, eval_text, launch_headless_browser, open_dashboard_tab};
+
 impl TestFixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -1807,98 +1812,6 @@ fn write_canned_analysis_context(fixture: &TestFixture) {
         .expect("serialize call graph"),
     )
     .expect("write call graph artifact");
-}
-
-// ─────────────────────────────────────────────────────────────
-// Headless browser test (requires Chromium/Chrome installed)
-// ─────────────────────────────────────────────────────────────
-
-/// Launch headless Chrome with the flags that work inside containers and CI,
-/// or return `None` — printing a skip note — when no browser is installed.
-/// `default_executable` looks at `$CHROME`, then `google-chrome-stable`,
-/// `chromium`, and the other standard names on PATH, so the browser tests run
-/// wherever a browser exists and are skipped with a printed note where none is.
-///
-/// Chrome's CDP calls are **blocking**, so every browser test must run on a
-/// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`). On the
-/// default current-thread runtime the blocking calls starve the axum server
-/// task that the same test spawns, so the page is never served and navigation
-/// times out with "The event waited for never came".
-fn launch_headless_browser() -> Option<headless_chrome::Browser> {
-    use headless_chrome::{Browser, LaunchOptionsBuilder};
-
-    if headless_chrome::browser::default_executable().is_err() {
-        eprintln!("skipping browser test: no Chrome/Chromium found (set $CHROME to name one)");
-        return None;
-    }
-    Some(
-        Browser::new(
-            LaunchOptionsBuilder::default()
-                .headless(true)
-                .args(vec![
-                    std::ffi::OsStr::new("--no-sandbox"),
-                    std::ffi::OsStr::new("--disable-gpu"),
-                    std::ffi::OsStr::new("--disable-dev-shm-usage"),
-                    // Wide viewport: a narrow window pins the pipeline row's
-                    // head track to its minimum size and hides column-alignment
-                    // bugs that only show up once the tracks grow with content.
-                    std::ffi::OsStr::new("--window-size=1400,900"),
-                ])
-                .build()
-                .expect("build chrome launch options"),
-        )
-        .expect("launch headless chrome"),
-    )
-}
-
-/// Open a tab on the fixture's server and wait for the page to load.
-///
-/// `navigate_to` waits for Chrome's `networkAlmostIdle` lifecycle event, which
-/// only arrives after the dashboard's own fetches finish. That is generous on
-/// purpose, so a slow machine still passes.
-fn open_dashboard_tab(
-    browser: &headless_chrome::Browser,
-    port: u16,
-) -> std::sync::Arc<headless_chrome::Tab> {
-    let tab = browser.new_tab().expect("open new tab");
-    tab.navigate_to(&format!("http://127.0.0.1:{port}"))
-        .expect("navigate to server root");
-    tab.wait_until_navigated().expect("wait for navigation");
-    tab.enable_runtime().expect("enable runtime");
-    tab
-}
-
-/// Evaluate a JS expression on the dashboard tab and read the result as a
-/// boolean. Every headless test uses this, so none repeats the conversion.
-///
-/// An evaluation error or a non-boolean result reads as `false`. That keeps
-/// the render-polling loops honest until the dashboard really shows the thing.
-fn eval_bool(tab: &headless_chrome::Tab, expr: &str) -> bool {
-    tab.evaluate(expr, false)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
-/// Like [`eval_bool`], but reads the result as text; errors and non-string
-/// results read as the empty string.
-fn eval_text(tab: &headless_chrome::Tab, expr: &str) -> String {
-    tab.evaluate(expr, false)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default()
-}
-
-/// Like [`eval_bool`], but reads the result as a whole number. Errors and
-/// non-number results read as `-1`, a number no real element count can be.
-fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
-    tab.evaluate(expr, false)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_i64())
-        .unwrap_or(-1)
 }
 
 /// Adds a DrawPrimitive attempt branch with its own commit, so the

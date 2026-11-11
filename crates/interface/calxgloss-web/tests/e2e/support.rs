@@ -18,7 +18,11 @@
 //! and live commands use (`calxgloss-cli`'s `handle_serve` and
 //! `handle_live`), and the server runs on a freshly bound port. Dropping
 //! the returned world takes the server down with it, so no port leaks
-//! between tests.
+//! between tests. The browser seam (issue #471) rides that same world:
+//! `open_dashboard_tab` launches headless Chrome over it and hands back
+//! a tab with the evaluate helpers and bounded DOM waits. Where no
+//! Chrome/Chromium exists it hands back `None`, so a browser test
+//! self-skips instead of failing.
 
 use super::*;
 use futures_util::StreamExt;
@@ -449,6 +453,17 @@ impl ReviewWorld {
             .await
             .expect("server task exits after graceful shutdown");
     }
+
+    /// Launch a browser and open a dashboard tab on this world's server
+    /// (issue #471), so a browser test's body is the DOM behaviour it
+    /// pins — no fixture, router, port, or settle sleep. `None` is the
+    /// runtime capability skip: with no Chrome/Chromium installed the
+    /// calling test returns early instead of failing.
+    pub fn open_dashboard_tab(&self) -> Option<DashboardTab> {
+        let browser = launch_headless_browser()?;
+        let tab = open_dashboard_tab(&browser, self.port);
+        Some(DashboardTab { browser, tab })
+    }
 }
 
 /// Dropping the world aborts its serve task, and the listener dies with
@@ -466,6 +481,195 @@ impl Drop for ReviewWorld {
 /// The websocket reads and the registration wait share these bounds.
 const APPLIED_WAIT_POLL: Duration = Duration::from_millis(10);
 const APPLIED_WAIT_DEADLINE: Duration = Duration::from_secs(5);
+
+// ─────────────────────────────────────────────────────────────
+// The browser seam (issue #471): browser pins ride the booted world
+// ─────────────────────────────────────────────────────────────
+
+/// How often a DOM wait re-reads the page, and how long it keeps trying
+/// before it gives up (issue #471). The DOM waits replace the browser
+/// pins' `25 × 200 ms` settle loops: they return as soon as the page
+/// shows the state, inside the same five-second budget.
+const DOM_WAIT_POLL: Duration = Duration::from_millis(50);
+const DOM_WAIT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Launch headless Chrome with the flags that work inside containers and CI,
+/// or return `None` — printing a skip note — when no browser is installed.
+/// `default_executable` looks at `$CHROME`, then `google-chrome-stable`,
+/// `chromium`, and the other standard names on PATH, so the browser tests run
+/// wherever a browser exists and are skipped with a printed note where none is.
+///
+/// Chrome's CDP calls are **blocking**, so every browser test must run on a
+/// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`). On the
+/// default current-thread runtime the blocking calls starve the axum server
+/// task that the same test spawns, so the page is never served and navigation
+/// times out with "The event waited for never came".
+pub fn launch_headless_browser() -> Option<headless_chrome::Browser> {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    if headless_chrome::browser::default_executable().is_err() {
+        eprintln!("skipping browser test: no Chrome/Chromium found (set $CHROME to name one)");
+        return None;
+    }
+    Some(
+        Browser::new(
+            LaunchOptionsBuilder::default()
+                .headless(true)
+                .args(vec![
+                    std::ffi::OsStr::new("--no-sandbox"),
+                    std::ffi::OsStr::new("--disable-gpu"),
+                    std::ffi::OsStr::new("--disable-dev-shm-usage"),
+                    // Wide viewport: a narrow window pins the pipeline row's
+                    // head track to its minimum size and hides column-alignment
+                    // bugs that only show up once the tracks grow with content.
+                    std::ffi::OsStr::new("--window-size=1400,900"),
+                ])
+                .build()
+                .expect("build chrome launch options"),
+        )
+        .expect("launch headless chrome"),
+    )
+}
+
+/// Open a tab on the server at `port` and wait for the page to load.
+///
+/// `navigate_to` waits for Chrome's `networkAlmostIdle` lifecycle event, which
+/// only arrives after the dashboard's own fetches finish. That is generous on
+/// purpose, so a slow machine still passes.
+pub fn open_dashboard_tab(
+    browser: &headless_chrome::Browser,
+    port: u16,
+) -> std::sync::Arc<headless_chrome::Tab> {
+    let tab = browser.new_tab().expect("open new tab");
+    tab.navigate_to(&format!("http://127.0.0.1:{port}"))
+        .expect("navigate to server root");
+    tab.wait_until_navigated().expect("wait for navigation");
+    tab.enable_runtime().expect("enable runtime");
+    tab
+}
+
+/// Evaluate a JS expression on a dashboard tab and read the result as a
+/// boolean. Every headless test uses this, so none repeats the conversion.
+///
+/// An evaluation error or a non-boolean result reads as `false`. That keeps
+/// the render-polling loops honest until the dashboard really shows the thing.
+pub fn eval_bool(tab: &headless_chrome::Tab, expr: &str) -> bool {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Like [`eval_bool`], but reads the result as text; errors and non-string
+/// results read as the empty string.
+pub fn eval_text(tab: &headless_chrome::Tab, expr: &str) -> String {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Like [`eval_bool`], but reads the result as a whole number. Errors and
+/// non-number results read as `-1`, a number no real element count can be.
+pub fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1)
+}
+
+/// A dashboard tab riding a booted world (issue #471). It opens on the
+/// world's own port with Chrome's runtime enabled, and it holds the
+/// browser for the tab's lifetime. The evaluate helpers and the bounded
+/// DOM waits sit on the tab, so the test body states only DOM behaviour.
+pub struct DashboardTab {
+    /// Never read by code — held so Chrome stays up for the tab's
+    /// lifetime and dies with the tab (the compiler's drop glue reads it).
+    #[allow(dead_code)]
+    browser: headless_chrome::Browser,
+    tab: std::sync::Arc<headless_chrome::Tab>,
+}
+
+impl DashboardTab {
+    /// Click the first element matching `selector`, through the page's
+    /// own handler. Fails naming the selector when the CDP call does.
+    pub fn click(&self, selector: &str) {
+        self.tab
+            .evaluate(
+                &format!("document.querySelector('{selector}')?.click() === undefined"),
+                false,
+            )
+            .unwrap_or_else(|e| panic!("click `{selector}`: {e}"));
+    }
+
+    /// Reload the page and wait for Chrome's navigation to settle —
+    /// the reload a pin does after filing a record behind the server.
+    pub fn reload(&self) {
+        self.tab.reload(false, None).expect("reload the tab");
+        self.tab.wait_until_navigated().expect("wait for reload");
+    }
+
+    /// Evaluate `expr` and read the result as a boolean; an evaluation
+    /// error or non-boolean result reads as `false`.
+    pub fn eval_bool(&self, expr: &str) -> bool {
+        eval_bool(&self.tab, expr)
+    }
+
+    /// [`DashboardTab::eval_bool`] reading the result as text; errors
+    /// and non-string results read as the empty string.
+    pub fn eval_text(&self, expr: &str) -> String {
+        eval_text(&self.tab, expr)
+    }
+
+    /// [`DashboardTab::eval_bool`] reading the result as a whole number;
+    /// errors and non-number results read as `-1`.
+    pub fn eval_count(&self, expr: &str) -> i64 {
+        eval_count(&self.tab, expr)
+    }
+
+    /// Poll `expr` as a boolean until it holds, bounded by
+    /// [`DOM_WAIT_DEADLINE`]. Reads `false` at the deadline — the
+    /// caller's own assertion then names what the page never showed.
+    pub async fn wait_for_bool(&self, expr: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + DOM_WAIT_DEADLINE;
+        loop {
+            if self.eval_bool(expr) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(DOM_WAIT_POLL).await;
+        }
+    }
+
+    /// Poll `expr` as text until `seen` accepts what it reads, bounded
+    /// by [`DOM_WAIT_DEADLINE`]. Returns whether `seen` ever agreed.
+    pub async fn wait_for_text(&self, expr: &str, seen: impl Fn(&str) -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + DOM_WAIT_DEADLINE;
+        loop {
+            if seen(&self.eval_text(expr)) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(DOM_WAIT_POLL).await;
+        }
+    }
+}
+
+/// Closing the tab on the way out; dropping the world took the server
+/// down, and dropping the browser field takes Chrome down with it —
+/// the same teardown the hand-rolled browser pins spelled by hand.
+impl Drop for DashboardTab {
+    fn drop(&mut self) {
+        self.tab.close_target().ok();
+    }
+}
 
 /// A typed handle on the booted world's progress-event bus (issue #468).
 /// Tests emit the progress-event vocabulary's own variants, so renaming
@@ -885,5 +1089,48 @@ async fn a_plain_serve_world_refuses_the_websocket_handle() {
     assert!(
         refusal.contains("/api/events/upgrade"),
         "the refusal names the upgrade the world does not route: {refusal}"
+    );
+}
+
+/// Pin (issue #471): a booted world launches the browser and opens a
+/// dashboard tab on its own port — no fixture, router, port, or settle
+/// sleep in the test body. The tab's evaluate helpers read the rendered
+/// DOM as a boolean, a string, and a count, and its DOM waits return
+/// the moment the page shows the state they poll for. A wait reads
+/// `false` at its deadline when it never does, so the caller's own
+/// assertion names what the page never showed instead of a hang or a
+/// guessed sleep length. Self-skips where no Chrome/Chromium is
+/// installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_booted_world_hands_a_dashboard_tab_that_reads_the_rendered_dom() {
+    let world = ReviewWorld::boot_plain().await;
+    let Some(tab) = world.open_dashboard_tab() else {
+        return;
+    };
+    assert!(
+        tab.eval_text("document.title").contains("Calxgloss"),
+        "the tab rides the booted world's server and loads the dashboard"
+    );
+    assert!(
+        tab.eval_count("document.querySelectorAll('.nav-tab').length") > 0,
+        "the dashboard's nav tabs stand in the DOM"
+    );
+    assert!(
+        tab.eval_bool("!!document.querySelector('.nav-tab[data-view=\"queue\"]')"),
+        "the tab reads a boolean the same way the count reads a number"
+    );
+    assert!(
+        tab.wait_for_bool("!!document.querySelector('.nav-tab')")
+            .await,
+        "a state the page already shows needs no sleep"
+    );
+    assert!(
+        tab.wait_for_text("document.title", |title| title.contains("Calxgloss"))
+            .await,
+        "a text wait reads the rendered title through its predicate"
+    );
+    assert!(
+        !tab.wait_for_bool("false").await,
+        "a wait past its deadline reads false, bounded by the deadline"
     );
 }

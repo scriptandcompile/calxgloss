@@ -3,64 +3,53 @@
 //! read off the shared model's payload, never computed here — and the
 //! unit detail shows the unit's own *obligation entry*. An absent entry
 //! renders the spelled-out unknown, never a zero and never a pass. The
-//! tests self-skip when no Chrome/Chromium is installed.
+//! test rides the booted world and its browser helpers (issue #471),
+//! and self-skips when no Chrome/Chromium is installed.
 
 use super::conformance_web::stage_obligation_ledger;
+use super::support::DashboardTab;
 use super::*;
 
-/// The queue view's conformance strip text, empty while absent.
-fn conformance_strip_text(tab: &headless_chrome::Tab) -> String {
-    eval_text(
-        tab,
-        "document.getElementById('queue-conformance')?.textContent || ''",
-    )
+/// JS expression reading the queue view's conformance strip text,
+/// empty while absent.
+const CONFORMANCE_STRIP: &str = "document.getElementById('queue-conformance')?.textContent || ''";
+
+fn conformance_strip_text(tab: &DashboardTab) -> String {
+    tab.eval_text(CONFORMANCE_STRIP)
 }
 
-/// The unit detail's obligation section text, empty while the section is
-/// absent. The section is found by its title, the way a reviewer reads it.
-fn obligation_section_text(tab: &headless_chrome::Tab) -> String {
-    eval_text(
-        tab,
-        r#"(() => {
-            const titles = [...document.querySelectorAll('#queue-detail-body .detail-section-title')];
-            const title = titles.find(e => e.textContent.trim() === 'Obligation');
-            return title ? title.parentElement.textContent : '';
-        })()"#,
-    )
+/// JS expression reading the unit detail's obligation section text,
+/// empty while the section is absent. The section is found by its
+/// title, the way a reviewer reads it.
+const OBLIGATION_SECTION: &str = r#"(() => {
+    const titles = [...document.querySelectorAll('#queue-detail-body .detail-section-title')];
+    const title = titles.find(e => e.textContent.trim() === 'Obligation');
+    return title ? title.parentElement.textContent : '';
+})()"#;
+
+fn obligation_section_text(tab: &DashboardTab) -> String {
+    tab.eval_text(OBLIGATION_SECTION)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view; the strip renders with the list.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(".nav-tab[data-view=\"queue\"]");
 
     // Nothing filed anywhere: the strip names the unknown verdict with
     // its cause and says never a clean run — the honest reading, never
     // a pass and never a collapsed zero.
-    let mut unknown_visible = false;
-    for _ in 0..25 {
-        let strip = conformance_strip_text(&tab);
-        if strip.contains("unknown: no ledger filed") && strip.contains("never a clean run") {
-            unknown_visible = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let unknown_visible = tab
+        .wait_for_text(CONFORMANCE_STRIP, |strip| {
+            strip.contains("unknown: no ledger filed") && strip.contains("never a clean run")
+        })
+        .await;
     let strip = conformance_strip_text(&tab);
     assert!(
         unknown_visible,
@@ -73,21 +62,12 @@ async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
 
     // Open the open unit's detail: its obligation section spells the
     // unknown reading — nothing filed for its binary is never zero.
-    tab.evaluate(
-        "document.querySelector('#full-queue-list \
-            [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click the open unit row");
-    let mut unknown_obligation = false;
-    for _ in 0..25 {
-        let section = obligation_section_text(&tab);
-        if section.contains("Unknown") && section.contains("never shown as zero") {
-            unknown_obligation = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tab.click("#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]");
+    let unknown_obligation = tab
+        .wait_for_text(OBLIGATION_SECTION, |section| {
+            section.contains("Unknown") && section.contains("never shown as zero")
+        })
+        .await;
     let section = obligation_section_text(&tab);
     assert!(
         unknown_obligation,
@@ -106,26 +86,16 @@ async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
             calxgloss_types::ObligationDisposition::ClaimedVerified,
         );
         entry.receipt_digest = Some("sha256:cafe".to_string());
-        stage_obligation_ledger(fixture.repo_path().as_path(), "game_logic.dll", vec![entry]);
+        stage_obligation_ledger(world.repo_path().as_path(), "game_logic.dll", vec![entry]);
     }
-    tab.reload(false, None)
-        .expect("reload after filing the ledger");
-    tab.wait_until_navigated().expect("wait for reload");
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab again");
+    tab.reload();
+    tab.click(".nav-tab[data-view=\"queue\"]");
 
-    let mut incomplete_visible = false;
-    for _ in 0..25 {
-        let strip = conformance_strip_text(&tab);
-        if strip.contains("game_logic.dll — incomplete") {
-            incomplete_visible = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let incomplete_visible = tab
+        .wait_for_text(CONFORMANCE_STRIP, |strip| {
+            strip.contains("game_logic.dll — incomplete")
+        })
+        .await;
     let strip = conformance_strip_text(&tab);
     assert!(
         incomplete_visible,
@@ -134,25 +104,15 @@ async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
 
     // The unit's own entry now rides the detail with every field AC 2
     // names — the same joined reading the row above was computed from.
-    tab.evaluate(
-        "document.querySelector('#full-queue-list \
-            [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click the open unit row again");
-    let mut entry_visible = false;
-    for _ in 0..25 {
-        let section = obligation_section_text(&tab);
-        if section.contains("positive, negative, malformed")
-            && section.contains("claimed verified")
-            && section.contains("sha256:cafe")
-            && section.contains("aaaa1111")
-        {
-            entry_visible = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tab.click("#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]");
+    let entry_visible = tab
+        .wait_for_text(OBLIGATION_SECTION, |section| {
+            section.contains("positive, negative, malformed")
+                && section.contains("claimed verified")
+                && section.contains("sha256:cafe")
+                && section.contains("aaaa1111")
+        })
+        .await;
     let section = obligation_section_text(&tab);
     assert!(
         entry_visible,
@@ -163,7 +123,4 @@ async fn test_headless_conformance_and_obligation_render_unknown_then_filed() {
         section.contains("Attempt") && section.contains("2"),
         "the entry speaks for attempt 2: {section:?}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
