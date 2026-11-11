@@ -129,6 +129,7 @@ export function renderFullQueue(dashboard, selectedId = null) {
     // verdict is computed here; the payload already carries the one
     // derivation the terminal dashboard prints from.
     renderConformanceSection(dashboard);
+    renderScenarioSection(dashboard);
 
     if (units.length === 0) {
         list.innerHTML = "";
@@ -537,6 +538,76 @@ function conformanceTallyWords(tally) {
         if (key === "verified" || n > 0) words.push(`${n} ${label}`);
     }
     return words.join(", ");
+}
+
+// ─── Per-binary scenario status section (issue #483) ────────────────────
+
+// The scenario rows ride the payload from the shared derived model.
+// The section states the same facts the model's fields state: declared
+// or not declared, captured or not captured, assessed pass, assessed
+// fail naming each failed dimension, or unassessed. It computes nothing
+// here. A payload carrying no rows renders its honest negative, never
+// empty success.
+function renderScenarioSection(dashboard) {
+    const el = document.getElementById("queue-scenarios");
+    if (!el) return;
+    const rows = dashboard && Array.isArray(dashboard.scenario_statuses)
+        ? dashboard.scenario_statuses
+        : null;
+    if (!rows || rows.length === 0) {
+        el.innerHTML = `
+            <div class="scenario-row scenario-none">
+                Scenarios — no scenario documents stand filed — nothing declared, never a clean run
+            </div>`;
+        return;
+    }
+    el.innerHTML = rows.map(scenarioBinarySectionHtml).join("");
+}
+
+// One section per binary, marked with its binary for readers of the
+// DOM. The scenarios that binary's documents name each get a row. An
+// entry whose scenarios cannot be read names its binary and states
+// nothing is declared — a binary never vanishes from the strip.
+function scenarioBinarySectionHtml(entry) {
+    const binary = escapeHtml((entry && entry.binary) || "?");
+    const scenarios = entry && Array.isArray(entry.scenarios) ? entry.scenarios : null;
+    const rows = scenarios && scenarios.length
+        ? scenarios.map(s => scenarioRowHtml(s))
+        : [`
+            <div class="scenario-row scenario-none">
+                The filed documents name no scenario — nothing declared
+            </div>`];
+    return `
+        <div class="scenario-binary" data-scenario-binary="${binary}">
+            <div class="scenario-binary-name">${binary}</div>
+            ${rows.join("")}
+        </div>`;
+}
+
+function scenarioRowHtml(s) {
+    const reading = scenarioVerdictReading(s.verdict);
+    return `
+        <div class="scenario-row scenario-${reading.cls}">
+            ${escapeHtml(s.scenario || "?")} — ${s.declared ? "declared" : "not declared"}, `
+            + `${s.captured ? "captured" : "not captured"}, ${reading.words}
+        </div>`;
+}
+
+// The verdict reading's words and row class, straight off the payload's
+// encoding: `assessed_pass`, or `assessed_fail` naming its failed
+// dimensions, or no verdict standing. A verdict shape this reader
+// cannot recognize renders unassessed — it is never rendered as a pass.
+function scenarioVerdictReading(verdict) {
+    if (verdict === "assessed_pass") return { cls: "pass", words: "assessed pass" };
+    if (verdict && typeof verdict === "object" && verdict.assessed_fail) {
+        const dims = (verdict.assessed_fail.failed_dimensions || [])
+            .map(d => escapeHtml(String(d)));
+        return {
+            cls: "fail",
+            words: `assessed fail (${dims.join(", ") || "unnamed dimension"})`,
+        };
+    }
+    return { cls: "unassessed", words: "unassessed" };
 }
 
 // ─── Detail Panel ───────────────────────────────────────────────────────

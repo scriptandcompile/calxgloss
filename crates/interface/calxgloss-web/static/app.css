@@ -826,6 +826,61 @@ svg {
     color: var(--text-secondary, var(--text-muted));
 }
 
+/* Per-binary scenario statuses above the queue item list (issue #483):
+   rows render the shared derived model's readings — each scenario
+   declared or not declared, captured or not captured, and its verdict
+   as assessed pass, assessed fail naming each failed dimension, or
+   unassessed. A payload with no rows renders the honest negative,
+   never empty success. The strip holds even when the queue list is
+   empty. */
+.queue-scenarios {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+}
+
+.queue-scenarios .scenario-row {
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+}
+
+.queue-scenarios .scenario-row.scenario-pass {
+    color: var(--accent-green);
+    border-color: var(--accent-green-dim);
+}
+
+.queue-scenarios .scenario-row.scenario-fail,
+.queue-scenarios .scenario-row.scenario-none {
+    color: var(--accent-red);
+    font-weight: 600;
+}
+
+.queue-scenarios .scenario-row.scenario-unassessed {
+    color: var(--accent-yellow);
+}
+
+.queue-scenarios .scenario-binary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.queue-scenarios .scenario-binary:first-child {
+    margin-top: 0;
+}
+
+.queue-scenarios .scenario-binary-name {
+    border: none;
+    padding: 0 8px;
+    font-weight: 600;
+    color: var(--text-secondary, var(--text-muted));
+}
+
 /* The unit's own obligation entry in the unit detail (issue #424): the
    same joined reading the conformance rows were computed from; the
    unknown reuses the unknown-records styling so absence never renders

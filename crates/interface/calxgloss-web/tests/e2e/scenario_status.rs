@@ -7,7 +7,10 @@
 //! not-captured, no verdict renders unassessed — an unassessed dimension
 //! never renders as a pass. A failing verdict names its dimensions and
 //! triggers no per-unit review action: no unit silently goes back, and
-//! accept is not blocked on its own.
+//! accept is not blocked on its own. Issue #483 (P56.3) adds browser
+//! pins on the queue view's scenario-status section: the section
+//! renders one group per binary straight from the payload rows, and a
+//! payload with no rows shows its honest negative, never empty success.
 
 use super::*;
 
@@ -16,6 +19,40 @@ async fn dashboard_body(world: &support::ReviewWorld) -> serde_json::Value {
     let (status, body) = world.client().get_json("/api/dashboard").await;
     assert_eq!(status, 200);
     body
+}
+
+/// One scenario's contract document body, as the scenario lane files it.
+fn contract_document(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "working_dir": ".",
+        "cols": 80,
+        "rows": 24,
+        "idle_timeout_ms": 5000,
+        "max_run_ms": 15000,
+        "finalization_grace_ms": 1000,
+        "max_output_bytes": 65536,
+        "normalization": { "version": "norm-v1" }
+    })
+}
+
+/// File a one-scenario contract document for `binary` — enough for the
+/// model to name a second binary's scenario section.
+fn file_contract(world: &support::ReviewWorld, binary: &str, scenario: &str) {
+    std::fs::write(
+        world
+            .repo_path()
+            .join("re")
+            .join("scenarios")
+            .join(format!("{binary}.json")),
+        serde_json::json!({
+            "binary": binary,
+            "filed_at": 1,
+            "scenarios": { scenario: contract_document(scenario) }
+        })
+        .to_string(),
+    )
+    .expect("file contract document");
 }
 
 /// File the scenario documents the dashboard reads: a contract set for
@@ -28,25 +65,15 @@ fn file_scenario_records(repo: &std::path::Path) {
     std::fs::create_dir_all(scenarios.join("captures")).expect("captures dir");
     std::fs::create_dir_all(scenarios.join("verdicts")).expect("verdicts dir");
 
-    let contract = |name: &str| {
-        serde_json::json!({
-            "name": name,
-            "working_dir": ".",
-            "cols": 80,
-            "rows": 24,
-            "idle_timeout_ms": 5000,
-            "max_run_ms": 15000,
-            "finalization_grace_ms": 1000,
-            "max_output_bytes": 65536,
-            "normalization": { "version": "norm-v1" }
-        })
-    };
     std::fs::write(
         scenarios.join("eqgame.exe.json"),
         serde_json::json!({
             "binary": "eqgame.exe",
             "filed_at": 1,
-            "scenarios": { "boot": contract("boot"), "print-config": contract("print-config") }
+            "scenarios": {
+                "boot": contract_document("boot"),
+                "print-config": contract_document("print-config")
+            }
         })
         .to_string(),
     )
@@ -171,6 +198,117 @@ async fn scenario_status_renders_every_state_from_the_filed_documents() {
         .map(|entry| entry["binary"].as_str().expect("binary name"))
         .collect();
     assert_eq!(binaries, vec!["eqgame.exe"], "only the named binary rides");
+}
+
+// ─── Headless render seam (issue #483) ──────────────────────────────────
+//
+// The queue view renders a per-binary *scenario status* section from the
+// payload's `scenario_statuses` rows alone. It computes nothing in the
+// client. A payload with no rows renders the honest negative, never
+// empty success. These pins ride the booted world and its browser
+// helpers (issue #471), and self-skip when no Chrome/Chromium exists.
+
+/// JS expression reading the queue view's scenario strip text,
+/// empty while absent.
+const SCENARIO_STRIP: &str = "document.getElementById('queue-scenarios')?.textContent || ''";
+
+/// JS expression counting the strip's per-binary sections.
+const SCENARIO_SECTIONS: &str =
+    "document.querySelectorAll('#queue-scenarios [data-scenario-binary]').length";
+
+fn scenario_strip_text(tab: &support::DashboardTab) -> String {
+    tab.eval_text(SCENARIO_STRIP)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_headless_scenario_section_renders_the_honest_negative_with_no_rows() {
+    let world = support::ReviewWorld::boot_plain().await;
+
+    let Some(tab) = world.open_dashboard_tab() else {
+        return;
+    };
+
+    // Switch to the queue view; the strip renders with the list.
+    tab.click(".nav-tab[data-view=\"queue\"]");
+
+    // Nothing filed anywhere: the strip names its own absence — no
+    // scenario documents stand, nothing is declared — the honest
+    // reading, never an empty success and never a pass.
+    let negative_visible = tab
+        .wait_for_text(SCENARIO_STRIP, |strip| {
+            strip.contains("no scenario documents stand filed") && strip.contains("never a clean run")
+        })
+        .await;
+    let strip = scenario_strip_text(&tab);
+    assert!(
+        negative_visible,
+        "the queue scenario strip should render the honest negative, got: {strip:?}"
+    );
+    assert!(
+        !strip.contains("assessed pass"),
+        "with no documents filed the strip never renders an assessed pass: {strip:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_headless_scenario_section_names_every_state_of_the_filed_documents() {
+    let world = support::ReviewWorld::boot_plain().await;
+
+    let Some(tab) = world.open_dashboard_tab() else {
+        return;
+    };
+    tab.click(".nav-tab[data-view=\"queue\"]");
+
+    // File the five-state documents the payload pin files, plus a
+    // second binary's lone contract: `boot` declared, captured,
+    // assessed fail naming its dimension; `orphan` not declared,
+    // captured, assessed pass; `print-config` declared, not captured,
+    // unassessed; `launch` declared, with its capture and verdict
+    // never filed. Each scenario gets its own row, under its binary's
+    // own section — and the assessed-fail row names the dimension it
+    // failed.
+    file_scenario_records(world.repo_path().as_path());
+    file_contract(&world, "d3d9.dll", "launch");
+    tab.reload();
+    tab.click(".nav-tab[data-view=\"queue\"]");
+
+    let states_visible = tab
+        .wait_for_text(SCENARIO_STRIP, |strip| {
+            strip.contains("boot — declared, captured, assessed fail (exit)")
+                && strip.contains("orphan — not declared, captured, assessed pass")
+                && strip.contains("print-config — declared, not captured, unassessed")
+                && strip.contains("launch — declared, not captured, unassessed")
+        })
+        .await;
+    let strip = scenario_strip_text(&tab);
+    assert!(
+        states_visible,
+        "the strip should render each filed scenario's state, the assessed-fail row \
+         naming its failed dimension, got: {strip:?}"
+    );
+
+    // One section per binary: each named binary stands in its own
+    // section, never folded into the other's rows.
+    let sections_visible = tab
+        .wait_for_bool(&format!("{} === 2", SCENARIO_SECTIONS))
+        .await;
+    let sections = tab.eval_count(SCENARIO_SECTIONS);
+    assert_eq!(
+        sections, 2,
+        "the strip should hold one section per named binary, saw {sections}"
+    );
+    assert!(sections_visible, "sections settle at two for: {strip:?}");
+
+    // The honest negative is gone once documents stand — and no row
+    // launders an unassessed or not-captured slot into a success word.
+    assert!(
+        !strip.contains("no scenario documents stand filed"),
+        "filed documents replace the honest negative: {strip:?}"
+    );
+    assert!(
+        !strip.contains("print-config — declared, captured"),
+        "a scenario with no capture never reads as captured: {strip:?}"
+    );
 }
 
 #[tokio::test]
