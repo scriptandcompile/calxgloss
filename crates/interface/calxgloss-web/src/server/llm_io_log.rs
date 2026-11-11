@@ -93,9 +93,16 @@ impl LlmIoLog {
     /// Point the log at `{workspace}/re/analysis/llm_io/log.jsonl`.
     pub fn new(workspace: impl AsRef<Path>) -> Self {
         Self {
-            path: analysis_dir(workspace).join("llm_io").join("log.jsonl"),
+            path: Self::path_for(workspace),
             entries_in_file: AtomicUsize::new(usize::MAX),
         }
+    }
+
+    /// Where [`Self::new`] would place a workspace's log, for callers that
+    /// read the file directly (tests, repair tools) rather than through the
+    /// writer.
+    pub fn path_for(workspace: impl AsRef<Path>) -> PathBuf {
+        analysis_dir(workspace).join("llm_io").join("log.jsonl")
     }
 
     /// Append the entry for `event` if it is one of the LLM I/O events

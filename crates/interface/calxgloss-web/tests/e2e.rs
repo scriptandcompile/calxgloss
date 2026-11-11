@@ -560,31 +560,6 @@ fn add_pending_translation(fixture: &TestFixture, function: &str) {
     .expect("commit branch");
 }
 
-/// GET /api/pipeline's `binaries` array as the row-name sequence it serves.
-async fn pipeline_row_names(port: u16) -> Vec<String> {
-    let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
-    body["binaries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b["binary"].as_str().unwrap_or("").to_string())
-        .collect()
-}
-
-/// GET /api/pipeline's `binaries` array as the full JSON records it serves.
-async fn pipeline_binary_rows(port: u16) -> Vec<serde_json::Value> {
-    let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
-    body["binaries"].as_array().unwrap().clone()
-}
-
 /// The `binaries` row for one binary, by name.
 fn binary_row<'a>(rows: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
     rows.iter()

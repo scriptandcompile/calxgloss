@@ -461,6 +461,35 @@ impl ReviewWorld {
         }
     }
 
+    /// Poll `GET /api/progress/enhanced` until `applied` accepts its payload,
+    /// proving the router's own event consumer has finished applying
+    /// `pending`. The enhanced view carries what `/api/pipeline` does not:
+    /// the scan records and the working pass's heartbeat (issues #428, #430).
+    pub async fn wait_until_enhanced_progress_applied(
+        &self,
+        pending: &ProgressEvent,
+        applied: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        let deadline = tokio::time::Instant::now() + APPLIED_WAIT_DEADLINE;
+        loop {
+            let (status, view) = self.client.get_json("/api/progress/enhanced").await;
+            assert_eq!(
+                status, 200,
+                "the enhanced live view endpoint answers during a wait"
+            );
+            if applied(&view) {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "event `{pending}` never reached the applied state in the live \
+                     view within {APPLIED_WAIT_DEADLINE:?}; last live view: {view}"
+                );
+            }
+            tokio::time::sleep(APPLIED_WAIT_POLL).await;
+        }
+    }
+
     /// The same applied wait read straight from the live-view store's
     /// unit record (issue #469), for the pin whose server has already
     /// stopped answering HTTP — the graceful-shutdown contract. Returns

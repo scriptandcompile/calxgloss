@@ -1,6 +1,67 @@
 //! Scenario tests split from `tests/e2e.rs`.
+//!
+//! Every test here boots through the review-world adapter (issue #473):
+//! `support::ReviewWorld` serves the same router shapes the production
+//! `serve`/`live` commands build, and the applied waits replace the fixed
+//! sleeps — each wait names the last event it is waiting for, so a stuck
+//! event fails with its own name instead of a missed 300 ms window.
 
 use super::*;
+
+/// File a classification record through the record module's writer, the
+/// same writer the `classify` command uses. Tests call it to stand in for
+/// what a prior run recorded, without hand-writing the JSON themselves.
+fn file_classification(
+    repo: &std::path::Path,
+    binary: &str,
+    category: DllCategory,
+    strategy: serde_json::Value,
+    exports_count: usize,
+    imports_count: usize,
+    crate_replacement: Option<&str>,
+) {
+    calxgloss_types::save_classification_record(
+        repo,
+        &ClassificationRecord {
+            binary: binary.to_string(),
+            category: Some(category),
+            strategy: Some(strategy),
+            exports_count: Some(exports_count),
+            imports_count: Some(imports_count),
+            crate_replacement: crate_replacement.map(str::to_string),
+            ..ClassificationRecord::default()
+        },
+    )
+    .expect("classification record filed");
+}
+
+/// The `binaries` row names of a `/api/pipeline` payload, in served order.
+fn served_row_names(body: &serde_json::Value) -> Vec<&str> {
+    body["binaries"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .map(|b| b["binary"].as_str().unwrap_or(""))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `binaries` row with this name in a `/api/pipeline` payload, if any.
+fn row_named<'a>(body: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    body["binaries"]
+        .as_array()?
+        .iter()
+        .find(|b| b["binary"] == name)
+}
+
+/// The `binaries` array a booted world's `/api/pipeline` serves, as the
+/// full JSON records it serves.
+async fn pipeline_rows(world: &support::ReviewWorld) -> Vec<serde_json::Value> {
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
+    body["binaries"].as_array().unwrap().clone()
+}
 
 /// Issue #61: feed canned `ProgressEvent`s through the live event channel
 /// and assert `/api/pipeline` derives honest per-phase and per-binary
@@ -8,18 +69,11 @@ use super::*;
 /// phases (Restitching, Documentation).
 #[tokio::test]
 async fn test_pipeline_phases_from_canned_events() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
+    let emitter = world.emitter();
 
     // Two binaries classified; d3d9 via the PAL strategy.
-    events.emit(ProgressEvent::ClassificationComplete {
+    emitter.emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "ReverseEngineer".into(),
@@ -27,7 +81,7 @@ async fn test_pipeline_phases_from_canned_events() {
         exported_symbols: 10,
         imported_symbols: 4,
     });
-    events.emit(ProgressEvent::ClassificationComplete {
+    emitter.emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
@@ -37,33 +91,33 @@ async fn test_pipeline_phases_from_canned_events() {
     });
     // d3d9's batch pass has begun — enumeration/testgen before any unit
     // event exists. The pipeline API must report it as being worked on.
-    events.emit(ProgressEvent::BatchStarted {
+    emitter.emit(ProgressEvent::BatchStarted {
         binary: "d3d9.dll".into(),
     });
 
     // game_logic.dll: one unit runs the full flow to review...
-    events.emit(ProgressEvent::TranslationStarted {
+    emitter.emit(ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
-    events.emit(ProgressEvent::ApiTaggingComplete {
+    emitter.emit(ProgressEvent::ApiTaggingComplete {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         tagged_apis: 3,
     });
-    events.emit(ProgressEvent::TestsGenerated {
+    emitter.emit(ProgressEvent::TestsGenerated {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         test_count: 3,
     });
-    events.emit(ProgressEvent::LlmCallComplete {
+    emitter.emit(ProgressEvent::LlmCallComplete {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
         code_length: 1200,
         tokens_used: Some(4000),
     });
-    events.emit(ProgressEvent::TranslationAttemptCompleted {
+    emitter.emit(ProgressEvent::TranslationAttemptCompleted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
@@ -76,30 +130,30 @@ async fn test_pipeline_phases_from_canned_events() {
         compilation_errors: vec![],
         failed_tests: vec![],
     });
-    events.emit(ProgressEvent::TranslationCompleted {
+    emitter.emit(ProgressEvent::TranslationCompleted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
     });
     // ...and one fails at the compile step.
-    events.emit(ProgressEvent::TranslationStarted {
+    emitter.emit(ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
     });
-    events.emit(ProgressEvent::TestsGenerated {
+    emitter.emit(ProgressEvent::TestsGenerated {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         test_count: 2,
     });
-    events.emit(ProgressEvent::LlmCallComplete {
+    emitter.emit(ProgressEvent::LlmCallComplete {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 3,
         code_length: 900,
         tokens_used: Some(1000),
     });
-    events.emit(ProgressEvent::FunctionCompleted {
+    emitter.emit(ProgressEvent::FunctionCompleted {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         success: false,
@@ -108,7 +162,7 @@ async fn test_pipeline_phases_from_canned_events() {
     });
 
     // Batch summary for game_logic — the authoritative counts when present.
-    events.emit(ProgressEvent::BatchSummary {
+    emitter.emit(ProgressEvent::BatchSummary {
         binary: "game_logic.dll".into(),
         total_functions: 5,
         success_count: 2,
@@ -118,24 +172,32 @@ async fn test_pipeline_phases_from_canned_events() {
     });
 
     // dinput8.dll: translation in progress, stopped after test generation.
-    events.emit(ProgressEvent::TranslationStarted {
+    emitter.emit(ProgressEvent::TranslationStarted {
         binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
     });
-    events.emit(ProgressEvent::TestsGenerated {
+    let last = ProgressEvent::TestsGenerated {
         binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
         test_count: 2,
-    });
+    };
+    emitter.emit(last.clone());
 
-    // Give the event-forwarding task time to drain the channel.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The consumer applies events in order, so the last event reaching its
+    // applied state (dinput8's test generation lifts the phase count to
+    // two of three) means every event before it landed too.
+    world
+        .wait_until_applied(&last, |body| {
+            body["phases"].as_array().is_some_and(|phases| {
+                phases.iter().any(|p| {
+                    p["phase"] == "test_generation" && p["completed"] == 2
+                })
+            })
+        })
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
     // ── Aggregate counts (game_logic entered the pipeline unclassified) ──
     assert_eq!(body["total_dlls"], 3);
@@ -268,44 +330,46 @@ async fn test_pipeline_phases_from_canned_events() {
 #[tokio::test]
 async fn test_pipeline_restart_hydrates_rows_without_live_classification_events() {
     let fixture = TestFixture::new();
-    // The previous run's classification artifact, on disk.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("create classify dir");
-    std::fs::write(
-        classify.join("eqmain.dll.json"),
-        r#"{"binary":"eqmain.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":286,"crate_replacement":null}"#,
-    )
-    .expect("write classification artifact");
+    // The previous run's classification artifacts, filed through the
+    // record writer.
+    file_classification(
+        &fixture.repo_path(),
+        "eqmain.dll",
+        DllCategory::ProjectSpecific,
+        serde_json::json!("ReverseEngineer"),
+        0,
+        286,
+        None,
+    );
     // A crate-replacement record stores strategy as the enum's tagged
     // object form — the writer serializes `Strategy` directly, so the
     // reader must not assume a bare string.
-    std::fs::write(
-        classify.join("steam_api64.dll.json"),
-        r#"{"binary":"steam_api64.dll","category":"KnownThirdParty","strategy":{"CrateReplacement":{"crate_name":"steamworks"}},"exports_count":1019,"imports_count":89,"crate_replacement":"steamworks"}"#,
-    )
-    .expect("write crate-replacement classification artifact");
+    file_classification(
+        &fixture.repo_path(),
+        "steam_api64.dll",
+        DllCategory::KnownThirdParty,
+        serde_json::json!({"CrateReplacement": {"crate_name": "steamworks"}}),
+        1019,
+        89,
+        Some("steamworks"),
+    );
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // The restarted run has only begun LaunchPad.exe's pass — no unit
     // events, no classification events.
-    events.emit(ProgressEvent::BatchStarted {
+    let started = ProgressEvent::BatchStarted {
         binary: "LaunchPad.exe".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(started.clone());
+    world
+        .wait_until_applied(&started, |body| {
+            row_named(body, "LaunchPad.exe").is_some_and(|b| b["processing"] == true)
+        })
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
     let binary = |name: &str| -> serde_json::Value {
         body["binaries"]
@@ -349,36 +413,30 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
 /// — and a heartbeat with no per-item detail reports only its name.
 #[tokio::test]
 async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "LaunchPad.exe".into(),
     });
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "evidence scans".into(),
         function: "FUN_1929282".into(),
         index: 1,
         total: 22143,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(beat.clone());
+    world
+        .wait_until_applied(&beat, |body| {
+            row_named(body, "LaunchPad.exe")
+                .is_some_and(|b| b["activity"]["function"] == "FUN_1929282")
+        })
+        .await;
 
     let get_pipeline = || async {
-        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-            .await
-            .expect("pipeline request succeeds");
-        assert_eq!(resp.status(), 200);
-        resp.json::<serde_json::Value>()
-            .await
-            .expect("pipeline body is JSON")
+        let (status, body) = world.client().get_json("/api/pipeline").await;
+        assert_eq!(status, 200);
+        body
     };
 
     let body = get_pipeline().await;
@@ -395,14 +453,23 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
 
     // A heartbeat before its first listing has no per-item
     // detail: only the name is honest.
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "evidence scans".into(),
         function: String::new(),
         index: 0,
         total: 0,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(beat.clone());
+    // The applied state for this beat is the row's position fields going
+    // away: the fresh beat overwrites the stale row's detail with the
+    // name alone, leaving no position numbers to assert on.
+    world
+        .wait_until_applied(&beat, |body| {
+            row_named(body, "LaunchPad.exe")
+                .is_some_and(|b| b["activity"].get("function").is_none())
+        })
+        .await;
 
     let body = get_pipeline().await;
     let b = body["binaries"]
@@ -427,47 +494,37 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
 async fn test_pipeline_queue_plan_drives_row_order() {
     let fixture = TestFixture::new();
     // A disk-classified binary the queue plan does not name.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("create classify dir");
-    std::fs::write(
-        classify.join("zzz.dll.json"),
-        r#"{"binary":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write classification artifact");
+    file_classification(
+        &fixture.repo_path(),
+        "zzz.dll",
+        DllCategory::ProjectSpecific,
+        serde_json::json!("ReverseEngineer"),
+        0,
+        1,
+        None,
+    );
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "LaunchPad.exe".into(),
             "eqgame.exe".into(),
             "eqmain.dll".into(),
         ],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    let expected = ["LaunchPad.exe", "eqgame.exe", "eqmain.dll", "zzz.dll"];
+    world
+        .wait_until_applied(&planned, |body| served_row_names(body) == expected)
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
-    let names: Vec<&str> = body["binaries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b["binary"].as_str().unwrap_or(""))
-        .collect();
     assert_eq!(
-        names,
-        ["LaunchPad.exe", "eqgame.exe", "eqmain.dll", "zzz.dll"],
+        served_row_names(&body),
+        expected,
         "queue order first (the plan alone makes rows), unplanned after alphabetical"
     );
 }
@@ -482,31 +539,30 @@ async fn test_pipeline_pal_binaries_sort_last() {
     let fixture = TestFixture::new();
     // Disk-classified, unplanned: one PAL binary and one reverse-engineered
     // one, named so plain alphabetical order would interleave them.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("create classify dir");
-    std::fs::write(
-        classify.join("aaa_pal.dll.json"),
-        r#"{"binary":"aaa_pal.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write PAL classification artifact");
-    std::fs::write(
-        classify.join("zzz.dll.json"),
-        r#"{"binary":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write RE classification artifact");
+    file_classification(
+        &fixture.repo_path(),
+        "aaa_pal.dll",
+        DllCategory::WindowsOs,
+        serde_json::json!("PalMapping"),
+        0,
+        1,
+        None,
+    );
+    file_classification(
+        &fixture.repo_path(),
+        "zzz.dll",
+        DllCategory::ProjectSpecific,
+        serde_json::json!("ReverseEngineer"),
+        0,
+        1,
+        None,
+    );
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // Live-classified, both named in the queue plan: one PAL, one crate
     // replacement — the mix the acceptance criteria ask for.
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
@@ -514,7 +570,7 @@ async fn test_pipeline_pal_binaries_sort_last() {
         exported_symbols: 25,
         imported_symbols: 6,
     });
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "MicrosoftSdk".into(),
         classification_strategy: "CrateReplacement".into(),
@@ -522,26 +578,32 @@ async fn test_pipeline_pal_binaries_sort_last() {
         exported_symbols: 10,
         imported_symbols: 2,
     });
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "LaunchPad.exe".into(),
             "d3d9.dll".into(),
             "eqmain.dll".into(),
             "dinput8.dll".into(),
         ],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    let expected = [
+        "LaunchPad.exe", // planned non-PAL, in plan order…
+        "eqmain.dll",
+        "dinput8.dll", // …the planned crate-replacement row stays with them
+        "zzz.dll",     // unplanned non-PAL, alphabetical
+        "aaa_pal.dll", // PAL rows last, alphabetical among themselves…
+        "d3d9.dll",    // …even when the plan names them mid-list
+    ];
+    world
+        .wait_until_applied(&planned, |body| served_row_names(body) == expected)
+        .await;
 
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
-        [
-            "LaunchPad.exe", // planned non-PAL, in plan order…
-            "eqmain.dll",
-            "dinput8.dll", // …the planned crate-replacement row stays with them
-            "zzz.dll",     // unplanned non-PAL, alphabetical
-            "aaa_pal.dll", // PAL rows last, alphabetical among themselves…
-            "d3d9.dll",    // …even when the plan names them mid-list
-        ],
+        served_row_names(&body),
+        expected,
         "PAL rows pin to the bottom; non-PAL order is queue-plan then alphabetical"
     );
 }
@@ -555,37 +617,36 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
     let fixture = TestFixture::new();
     // Disk records start the pair the "wrong" way round for alphabetical
     // order: fmod.dll reverse-engineered, d3d9.dll PAL-mapped.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("create classify dir");
-    std::fs::write(
-        classify.join("fmod.dll.json"),
-        r#"{"binary":"fmod.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write RE classification artifact");
-    std::fs::write(
-        classify.join("d3d9.dll.json"),
-        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write PAL classification artifact");
+    file_classification(
+        &fixture.repo_path(),
+        "fmod.dll",
+        DllCategory::ProjectSpecific,
+        serde_json::json!("ReverseEngineer"),
+        0,
+        1,
+        None,
+    );
+    file_classification(
+        &fixture.repo_path(),
+        "d3d9.dll",
+        DllCategory::WindowsOs,
+        serde_json::json!("PalMapping"),
+        0,
+        1,
+        None,
+    );
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        served_row_names(&world.client().get_json("/api/pipeline").await.1),
         ["fmod.dll", "d3d9.dll"],
         "non-PAL row first, PAL row pinned last"
     );
 
     // The operator corrects both classifications — live events supersede
     // the disk records, exactly as the row's rendered strategy does.
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
@@ -593,18 +654,25 @@ async fn test_pipeline_pal_reclassification_relocates_row_on_next_poll() {
         exported_symbols: 0,
         imported_symbols: 1,
     });
-    events.emit(ProgressEvent::ClassificationComplete {
+    let reclassified = ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 0,
         imported_symbols: 1,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(reclassified.clone());
+    world
+        .wait_until_applied(&reclassified, |body| {
+            served_row_names(body) == ["d3d9.dll", "fmod.dll"]
+        })
+        .await;
 
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
     assert_eq!(
-        pipeline_row_names(fixture.port()).await,
+        served_row_names(&body),
         ["d3d9.dll", "fmod.dll"],
         "both rows relocate on the next poll — into and out of the PAL tier"
     );
@@ -620,16 +688,9 @@ async fn test_pipeline_pal_row_carries_trait_readiness_summary() {
     let fixture = TestFixture::new();
     write_pipeline_pal_readiness_fixtures(&fixture);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let rows = pipeline_binary_rows(fixture.port()).await;
+    let rows = pipeline_rows(&world).await;
     assert_eq!(
         binary_row(&rows, "d3d9.dll")["pal"]["traits"],
         serde_json::json!([
@@ -652,24 +713,19 @@ async fn test_pipeline_pal_binary_without_categories_reports_no_summary() {
     let fixture = TestFixture::new();
     // The classification routes it to PAL mapping, but no analysis
     // artifacts exist to derive traits from.
-    let classify = fixture.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("classify dir");
-    std::fs::write(
-        classify.join("d3d9.dll.json"),
-        r#"{"binary":"d3d9.dll","category":"WindowsOs","strategy":"PalMapping","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
-    )
-    .expect("write PAL classification artifact");
+    file_classification(
+        &fixture.repo_path(),
+        "d3d9.dll",
+        DllCategory::WindowsOs,
+        serde_json::json!("PalMapping"),
+        0,
+        1,
+        None,
+    );
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let rows = pipeline_binary_rows(fixture.port()).await;
+    let rows = pipeline_rows(&world).await;
     assert!(
         binary_row(&rows, "d3d9.dll").get("pal").is_none(),
         "no recorded categories means no summary, not an empty one"
@@ -685,16 +741,9 @@ async fn test_pipeline_pal_readiness_recomputes_per_poll() {
     let fixture = TestFixture::new();
     write_pipeline_pal_readiness_fixtures(&fixture);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let rows = pipeline_binary_rows(fixture.port()).await;
+    let rows = pipeline_rows(&world).await;
     assert_eq!(
         binary_row(&rows, "d3d9.dll")["pal"]["traits"][1]["defined"],
         false,
@@ -710,7 +759,7 @@ async fn test_pipeline_pal_readiness_recomputes_per_poll() {
     )
     .expect("platform core trait written");
 
-    let rows = pipeline_binary_rows(fixture.port()).await;
+    let rows = pipeline_rows(&world).await;
     assert_eq!(
         binary_row(&rows, "d3d9.dll")["pal"]["traits"][1]["defined"],
         true,
@@ -719,17 +768,22 @@ async fn test_pipeline_pal_readiness_recomputes_per_poll() {
 
     // The operator reclassifies the binary out of PAL mapping — the live
     // event supersedes the disk record and the summary disappears.
-    events.emit(ProgressEvent::ClassificationComplete {
+    let reclassified = ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 0,
         imported_symbols: 1,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(reclassified.clone());
+    world
+        .wait_until_applied(&reclassified, |body| {
+            row_named(body, "d3d9.dll").is_some_and(|b| b.get("pal").is_none())
+        })
+        .await;
 
-    let rows = pipeline_binary_rows(fixture.port()).await;
+    let rows = pipeline_rows(&world).await;
     assert!(
         binary_row(&rows, "d3d9.dll").get("pal").is_none(),
         "reclassified out of PAL mapping: no summary on the next poll"
@@ -744,22 +798,27 @@ async fn test_pipeline_time_estimate_present_with_durations() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, true);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    emit_canned_batch_summary(&events);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The minimal live events that give game_logic.dll a known function
+    // total with work remaining (5 total, 2 translated, 1 failed → 2 remain).
+    let summary = ProgressEvent::BatchSummary {
+        binary: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    };
+    world.emitter().emit(summary.clone());
+    world
+        .wait_until_applied(&summary, |body| {
+            row_named(body, "game_logic.dll").is_some_and(|b| b["functions_total"] == 5)
+        })
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
     let est = &body["time_estimate"];
     assert!(
@@ -779,22 +838,25 @@ async fn test_pipeline_time_estimate_absent_without_durations() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, false);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    emit_canned_batch_summary(&events);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let summary = ProgressEvent::BatchSummary {
+        binary: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    };
+    world.emitter().emit(summary.clone());
+    world
+        .wait_until_applied(&summary, |body| {
+            row_named(body, "game_logic.dll").is_some_and(|b| b["functions_total"] == 5)
+        })
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
     assert!(
         body.get("time_estimate").is_none(),
@@ -810,17 +872,10 @@ async fn test_dashboard_queue_effort_from_durations() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry_with_durations(&fixture);
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     let effort = &body["queue_effort"];
     assert!(effort.is_object(), "queue_effort should be a map: {body}");
@@ -843,49 +898,26 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
 
     // Durations recorded only for UpdateScene — a function the queued
     // DrawPrimitive/v2 unit is not, so the unit has no own history.
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-    let token_log = serde_json::json!({
-        "entries": [
-            {
-                "timestamp": 1767225600,
-                "binary": "game_logic.dll",
-                "function": "UpdateScene",
-                "attempt": 1,
-                "strategy": "initial",
-                "tokens_used": 4096,
-                "success": true,
-                "duration_secs": 300
-            },
-            {
-                "timestamp": 1767225900,
-                "binary": "game_logic.dll",
-                "function": "UpdateScene",
-                "attempt": 2,
-                "strategy": "compile_fix",
-                "tokens_used": 3072,
-                "success": true,
-                "duration_secs": 500
-            }
-        ]
-    });
-    std::fs::write(
-        analysis_dir.join("token_usage.json"),
-        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
-    )
-    .expect("write token log");
+    let mut update_first =
+        token_usage_entry("game_logic.dll", "UpdateScene", 1, "initial", 4096, true, "", 1767225600);
+    update_first.duration_secs = Some(300);
+    let mut update_second = token_usage_entry(
+        "game_logic.dll",
+        "UpdateScene",
+        2,
+        "compile_fix",
+        3072,
+        true,
+        "",
+        1767225900,
+    );
+    update_second.duration_secs = Some(500);
+    write_token_usage_fixture(fixture.repo_path().as_path(), &[update_first, update_second]);
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
 
     let effort = &body["queue_effort"];
     assert!(effort.is_object(), "queue_effort should be a map: {body}");
@@ -905,25 +937,14 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
 #[tokio::test]
 async fn test_pipeline_honest_empty_payload_on_non_live_routers() {
     for kind in ["serve", "actions"] {
-        let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "serve" {
-            build_router(state)
+        let world = if kind == "serve" {
+            support::ReviewWorld::boot_plain().await
         } else {
-            build_router_with_actions(
-                state,
-                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
-            )
+            support::ReviewWorld::boot_with_actions().await
         };
-        let _server = spawn_server(router, fixture.port()).await;
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-            .await
-            .expect("pipeline request reaches server");
-        assert_eq!(resp.status(), 200, "{kind} router serves /api/pipeline");
-        let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+        let (status, body) = world.client().get_json("/api/pipeline").await;
+        assert_eq!(status, 200, "{kind} router serves /api/pipeline");
         assert_eq!(body["total_dlls"], 0);
         let phases = body["phases"].as_array().unwrap();
         assert_eq!(phases.len(), 8);
@@ -939,31 +960,27 @@ async fn test_pipeline_honest_empty_payload_on_non_live_routers() {
 /// succeeded for nothing — Behavior Verification must not report Complete.
 #[tokio::test]
 async fn test_pipeline_all_failed_batch_not_verification_complete() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    events.emit(ProgressEvent::BatchSummary {
+    let summary = ProgressEvent::BatchSummary {
         binary: "broken.dll".into(),
         total_functions: 1,
         success_count: 0,
         failure_count: 1,
         total_attempts: 3,
         total_tokens: 800,
-    });
+    };
+    world.emitter().emit(summary.clone());
+    world
+        .wait_until_applied(&summary, |body| {
+            body["binaries"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|b| b["binary"] == "broken.dll"))
+        })
+        .await;
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
-        .await
-        .expect("pipeline request succeeds");
-    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    let (status, body) = world.client().get_json("/api/pipeline").await;
+    assert_eq!(status, 200);
 
     let phase = |name: &str| -> serde_json::Value {
         body["phases"]
@@ -996,21 +1013,11 @@ async fn test_pipeline_all_failed_batch_not_verification_complete() {
 /// Test that the progress endpoint returns empty data when idle.
 #[tokio::test]
 async fn test_progress_empty() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world.client().get_json("/api/progress").await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/progress", fixture.port()))
-        .await
-        .expect("progress request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("progress body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["count"].as_u64().unwrap_or(0), 0);
 }
 
@@ -1024,15 +1031,7 @@ async fn test_progress_empty() {
 /// call omits the retry strategy.
 #[tokio::test]
 async fn test_progress_reports_phase_history() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
 
     let tier = |tier: &str| ProgressEvent::ContextTierSelected {
         binary: "game_logic.dll".into(),
@@ -1042,7 +1041,7 @@ async fn test_progress_reports_phase_history() {
         complexity: "Medium".into(),
         api_call_count: 3,
     };
-    for event in [
+    let stream = [
         ProgressEvent::TranslationStarted {
             binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
@@ -1116,17 +1115,19 @@ async fn test_progress_reports_phase_history() {
             total_attempts: 1,
             success_strategy: Some("direct".into()),
         },
-    ] {
-        events.emit(event);
+    ];
+    let last = stream.last().expect("stream is not empty").clone();
+    for event in stream {
+        world.emitter().emit(event);
     }
-    // The callback spawns a task per event; give them time to land.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The consumer applies events in order, so Update's record reaching its
+    // finished state proves every event before it landed.
+    world
+        .wait_until_unit_applied(&last, "game_logic.dll", "Update", |record| record.finished)
+        .await;
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/progress", fixture.port()))
-        .await
-        .expect("progress request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("progress body is JSON");
+    let (status, body) = world.client().get_json("/api/progress").await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["count"].as_u64(), Some(2));
     let units = body["in_progress"]
@@ -1211,17 +1212,9 @@ async fn test_progress_reports_phase_history() {
 /// verified attempt did not compile (confidence 0.0, not absent).
 #[tokio::test]
 async fn test_progress_enhanced_reports_live_records() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    for event in [
+    let stream = [
         // DrawPrimitive: full evidence, still in flight.
         ProgressEvent::TranslationStarted {
             binary: "game_logic.dll".into(),
@@ -1313,20 +1306,21 @@ async fn test_progress_enhanced_reports_live_records() {
             function: "FailedUnit".into(),
             total_attempts: 1,
         },
-    ] {
-        events.emit(event);
+    ];
+    let last = stream.last().expect("stream is not empty").clone();
+    for event in stream {
+        world.emitter().emit(event);
     }
-    // Events flow through one ordered consumer task; give it time to land.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // One ordered consumer applies the stream; FailedUnit's record reaching
+    // its finished state proves every event before it landed.
+    world
+        .wait_until_unit_applied(&last, "kernel32.dll", "FailedUnit", |record| {
+            record.finished
+        })
+        .await;
 
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/progress/enhanced",
-        fixture.port()
-    ))
-    .await
-    .expect("enhanced progress request succeeds");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json("/api/progress/enhanced").await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["count"].as_u64(), Some(3));
     assert_eq!(body["in_flight"].as_u64(), Some(1));
@@ -1426,24 +1420,12 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
     add_pending_translation(&fixture, "PlaySound"); // the run will never touch this one
     add_pending_translation(&fixture, "PauseGame"); // the run will fail this one
     add_pending_translation(&fixture, "StopMusic"); // the run will cancel this one
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     let fetch_queue = || async {
-        let resp = reqwest::get(format!("{base}/api/queue"))
-            .await
-            .expect("queue request succeeds");
-        assert_eq!(resp.status(), 200);
-        resp.json::<serde_json::Value>()
-            .await
-            .expect("queue body is JSON")
+        let (status, body) = world.client().get_json("/api/queue").await;
+        assert_eq!(status, 200);
+        body
     };
     let persisted_statuses = || async {
         fetch_queue().await["queue"]
@@ -1471,7 +1453,7 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
         "DrawPrimitive starts in the queue: {statuses_before:?}"
     );
 
-    for event in [
+    let stream = [
         // DrawPrimitive: in flight, currently at the LLM call.
         ProgressEvent::TranslationStarted {
             binary: "game_logic.dll".into(),
@@ -1516,11 +1498,18 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
             binary: "game_logic.dll".into(),
             function: "StopMusic".into(),
         },
-    ] {
-        events.emit(event);
+    ];
+    let last = stream.last().expect("stream is not empty").clone();
+    for event in stream {
+        world.emitter().emit(event);
     }
-    // Events flow through one ordered consumer task; give it time to land.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The cancellation landing in the store (finished, outcome "cancelled")
+    // proves every event before it landed too.
+    world
+        .wait_until_unit_applied(&last, "game_logic.dll", "StopMusic", |record| {
+            record.finished && record.outcome.as_deref() == Some("cancelled")
+        })
+        .await;
 
     let body = fetch_queue().await;
     let queue = body["queue"].as_array().expect("queue is an array");
@@ -1654,17 +1643,15 @@ async fn test_queue_payload_carries_live_reading_per_unit() {
 /// pass for the NEXT binary retires the previous binary's rows.
 #[tokio::test]
 async fn test_progress_enhanced_serves_live_scan_records() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let get_enhanced = || async {
+        let (status, body) = world.client().get_json("/api/progress/enhanced").await;
+        assert_eq!(status, 200);
+        body
+    };
 
-    for event in [
+    let stream = [
         ProgressEvent::BatchStarted {
             binary: "eqmain.dll".into(),
         },
@@ -1710,21 +1697,27 @@ async fn test_progress_enhanced_serves_live_scan_records() {
             findings: None,
             error: Some("the sync evidence engine refused the scan".into()),
         },
-    ] {
-        events.emit(event);
+    ];
+    let last = stream.last().expect("stream is not empty").clone();
+    for event in stream {
+        world.emitter().emit(event);
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The failed sync scan's record answering finished with its error on it
+    // is the last event's applied state; the ordered consumer proves the
+    // rest of the stream landed too.
+    world
+        .wait_until_enhanced_progress_applied(&last, |body| {
+            body["scans"].as_array().is_some_and(|scans| {
+                scans.iter().any(|s| {
+                    s["scan"] == "sync"
+                        && s["finished"] == true
+                        && s["error"] == "the sync evidence engine refused the scan"
+                })
+            })
+        })
+        .await;
 
-    let body: serde_json::Value = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/progress/enhanced",
-        fixture.port()
-    ))
-    .await
-    .expect("enhanced progress request succeeds")
-    .json()
-    .await
-    .expect("body is JSON");
-
+    let body = get_enhanced().await;
     let scans = body["scans"].as_array().expect("scans is an array");
     let names: Vec<&str> = scans
         .iter()
@@ -1803,23 +1796,25 @@ async fn test_progress_enhanced_serves_live_scan_records() {
 
     // A second pass over the SAME binary keeps the records standing
     // until that row's next events replace it.
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "eqmain.dll".into(),
     });
-    events.emit(ProgressEvent::EvidenceScanStarted {
+    let rerun = ProgressEvent::EvidenceScanStarted {
         binary: "eqmain.dll".into(),
         scan: "control-flow".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let body: serde_json::Value = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/progress/enhanced",
-        fixture.port()
-    ))
-    .await
-    .expect("enhanced progress request succeeds")
-    .json()
-    .await
-    .expect("body is JSON");
+    };
+    world.emitter().emit(rerun.clone());
+    world
+        .wait_until_enhanced_progress_applied(&rerun, |body| {
+            body["scans"].as_array().is_some_and(|scans| {
+                scans.len() == 4
+                    && scans
+                        .iter()
+                        .any(|s| s["scan"] == "control-flow" && s["finished"] == false)
+            })
+        })
+        .await;
+    let body = get_enhanced().await;
     let scans = body["scans"].as_array().expect("scans is an array");
     assert_eq!(
         scans.len(),
@@ -1839,20 +1834,19 @@ async fn test_progress_enhanced_serves_live_scan_records() {
     // The live pipeline emits no `BatchStarted`, so the scan traffic
     // itself is the pass boundary: the first scan event naming the next
     // binary retires the previous binary's rows (issue #428).
-    events.emit(ProgressEvent::EvidenceScanStarted {
+    let next_binary = ProgressEvent::EvidenceScanStarted {
         binary: "game_logic.dll".into(),
         scan: "control-flow".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let body: serde_json::Value = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/progress/enhanced",
-        fixture.port()
-    ))
-    .await
-    .expect("enhanced progress request succeeds")
-    .json()
-    .await
-    .expect("body is JSON");
+    };
+    world.emitter().emit(next_binary.clone());
+    world
+        .wait_until_enhanced_progress_applied(&next_binary, |body| {
+            body["scans"].as_array().is_some_and(|scans| {
+                scans.len() == 1 && scans[0]["binary"] == "game_logic.dll"
+            })
+        })
+        .await;
+    let body = get_enhanced().await;
     let scans = body["scans"].as_array().expect("scans is an array");
     assert_eq!(
         scans.len(),
@@ -1864,19 +1858,18 @@ async fn test_progress_enhanced_serves_live_scan_records() {
 
     // A `BatchStarted` naming the next binary retires the rows the same
     // way — the auto-run path emits it before any scan event.
-    events.emit(ProgressEvent::BatchStarted {
+    let third_pass = ProgressEvent::BatchStarted {
         binary: "third.dll".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let body: serde_json::Value = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/progress/enhanced",
-        fixture.port()
-    ))
-    .await
-    .expect("enhanced progress request succeeds")
-    .json()
-    .await
-    .expect("body is JSON");
+    };
+    world.emitter().emit(third_pass.clone());
+    world
+        .wait_until_enhanced_progress_applied(&third_pass, |body| {
+            body["scans"]
+                .as_array()
+                .is_some_and(|scans| scans.is_empty())
+        })
+        .await;
+    let body = get_enhanced().await;
     assert!(
         body["scans"]
             .as_array()
@@ -1896,26 +1889,12 @@ async fn test_progress_enhanced_serves_live_scan_records() {
 /// a new binary's pass start clears the record with the scan rows.
 #[tokio::test]
 async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
 
     let get_enhanced = || async {
-        reqwest::get(format!(
-            "http://127.0.0.1:{}/api/progress/enhanced",
-            fixture.port()
-        ))
-        .await
-        .expect("enhanced progress request succeeds")
-        .json::<serde_json::Value>()
-        .await
-        .expect("body is JSON")
+        let (status, body) = world.client().get_json("/api/progress/enhanced").await;
+        assert_eq!(status, 200);
+        body
     };
 
     // Before the pass's first heartbeat there is no activity record. The
@@ -1926,21 +1905,26 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
         "no heartbeat has landed, so no activity record: {body}"
     );
 
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "LaunchPad.exe".into(),
     });
-    events.emit(ProgressEvent::EvidenceScanStarted {
+    world.emitter().emit(ProgressEvent::EvidenceScanStarted {
         binary: "LaunchPad.exe".into(),
         scan: "sync".into(),
     });
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "evidence scans".into(),
         function: "FUN_1800412a0".into(),
         index: 1200,
         total: 7267,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&beat, |body| {
+            body["activity"]["function"] == "FUN_1800412a0"
+        })
+        .await;
 
     // The scan row and the heartbeat ride one payload. The panel needs
     // both to name the running scan and Kuna's current function.
@@ -1959,14 +1943,17 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
     // The cold call-graph build sends its heartbeats under its own pass
     // name. Same event, no new variant; the payload names the pass like
     // any other.
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "call graph".into(),
         function: "FUN_180057900".into(),
         index: 41,
         total: 7267,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&beat, |body| body["activity"]["pass"] == "call graph")
+        .await;
     let body = get_enhanced().await;
     assert_eq!(body["activity"]["pass"], "call graph");
     assert_eq!(body["activity"]["function"], "FUN_180057900");
@@ -1974,14 +1961,17 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
 
     // A pass with no per-item granularity records its name alone. The
     // unknown position parts stay out of the payload, never a zero.
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
         pass: "xref index".into(),
         function: String::new(),
         index: 0,
         total: 0,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&beat, |body| body["activity"]["pass"] == "xref index")
+        .await;
     let body = get_enhanced().await;
     assert_eq!(body["activity"]["pass"], "xref index");
     assert!(
@@ -1994,15 +1984,18 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
 
     // The pass ending clears the heartbeat record too: that DLL's batch
     // summary means no binary is being worked on any more.
-    events.emit(ProgressEvent::BatchSummary {
+    let summary = ProgressEvent::BatchSummary {
         binary: "LaunchPad.exe".into(),
         total_functions: 2,
         success_count: 2,
         failure_count: 0,
         total_attempts: 2,
         total_tokens: 0,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(summary.clone());
+    world
+        .wait_until_enhanced_progress_applied(&summary, |body| body.get("activity").is_none())
+        .await;
     let body = get_enhanced().await;
     assert!(
         body.get("activity").is_none(),
@@ -2012,18 +2005,26 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
     // A new binary's pass start clears a stale record exactly like the
     // scan rows. The panel never keeps showing a finished pass as live
     // work.
-    events.emit(ProgressEvent::BatchProgress {
+    let stale_beat = ProgressEvent::BatchProgress {
         binary: "eqmain.dll".into(),
         pass: "call graph".into(),
         function: "FUN_18004a3c0".into(),
         index: 3,
         total: 512,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    events.emit(ProgressEvent::BatchStarted {
+    };
+    world.emitter().emit(stale_beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&stale_beat, |body| {
+            body["activity"]["function"] == "FUN_18004a3c0"
+        })
+        .await;
+    let new_pass = ProgressEvent::BatchStarted {
         binary: "eqmain.dll".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(new_pass.clone());
+    world
+        .wait_until_enhanced_progress_applied(&new_pass, |body| body.get("activity").is_none())
+        .await;
     let body = get_enhanced().await;
     assert!(
         body.get("activity").is_none(),
@@ -2041,19 +2042,12 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
 #[tokio::test]
 async fn test_live_only_endpoints_absent_from_non_live_routers() {
     for kind in ["serve", "actions"] {
-        let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "serve" {
-            build_router(state)
+        let world = if kind == "serve" {
+            support::ReviewWorld::boot_plain().await
         } else {
-            build_router_with_actions(
-                state,
-                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
-            )
+            support::ReviewWorld::boot_with_actions().await
         };
-        let _server = spawn_server(router, fixture.port()).await;
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let client = world.client();
 
         for path in [
             "/api/progress",
@@ -2065,7 +2059,7 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             // Issue #97: the classification GET is live-only too.
             "/api/binaries/fmod.dll/classification",
         ] {
-            let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
+            let resp = reqwest::get(client.url(path))
                 .await
                 .expect("request reaches server");
             assert_eq!(
@@ -2109,7 +2103,7 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/pipeline/binaries/game_logic.dll/start",
         ] {
             let resp = reqwest::Client::new()
-                .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))
+                .post(client.url(path))
                 .send()
                 .await
                 .expect("request reaches server");
@@ -2129,25 +2123,14 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
 #[tokio::test]
 async fn test_llm_io_log_honest_empty_payload_on_non_live_routers() {
     for kind in ["serve", "actions"] {
-        let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "serve" {
-            build_router(state)
+        let world = if kind == "serve" {
+            support::ReviewWorld::boot_plain().await
         } else {
-            build_router_with_actions(
-                state,
-                ActionsState::new(fixture.repo_path(), PipelineSpec::default()),
-            )
+            support::ReviewWorld::boot_with_actions().await
         };
-        let _server = spawn_server(router, fixture.port()).await;
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
-            .await
-            .expect("request reaches server");
-        assert_eq!(resp.status(), 200, "{kind} router serves /api/llm-io");
-        let body: serde_json::Value = resp.json().await.expect("body is JSON");
+        let (status, body) = world.client().get_json("/api/llm-io").await;
+        assert_eq!(status, 200, "{kind} router serves /api/llm-io");
         assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
     }
 }
@@ -2158,31 +2141,23 @@ async fn test_llm_io_log_honest_empty_payload_on_non_live_routers() {
 /// serves the entries back with their metadata and token counts.
 #[tokio::test]
 async fn test_llm_io_log_round_trip_from_canned_events() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
 
     // A non-LLM event must not touch the log.
-    events.emit(ProgressEvent::LlmCallStart {
+    world.emitter().emit(ProgressEvent::LlmCallStart {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
         retry_strategy: "direct".into(),
     });
-    events.emit(ProgressEvent::LlmRequest {
+    world.emitter().emit(ProgressEvent::LlmRequest {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
         retry_strategy: "direct".into(),
         prompt: "translate DrawPrimitive".into(),
     });
-    events.emit(ProgressEvent::LlmResponse {
+    world.emitter().emit(ProgressEvent::LlmResponse {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
@@ -2190,30 +2165,28 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
         content: "fn draw_primitive() {}".into(),
         tokens_used: Some(4321),
     });
-    events.emit(ProgressEvent::LlmCallFailed {
+    let last = ProgressEvent::LlmCallFailed {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 2,
         retry_strategy: "retry".into(),
         error: "connection reset".into(),
-    });
+    };
+    world.emitter().emit(last.clone());
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The consumer appends the log entry before applying the event to the
+    // store, so the failure's unit record standing in the store proves
+    // every LLM I/O entry above it is already on disk.
+    world
+        .wait_until_unit_applied(&last, "game_logic.dll", "UpdateScene", |_| true)
+        .await;
 
     // The log is on disk in the analysis directory, not just in memory.
-    let log_path = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("llm_io")
-        .join("log.jsonl");
+    let log_path = LlmIoLog::path_for(world.repo_path());
     assert!(log_path.is_file(), "live run persists the LLM I/O log");
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json("/api/llm-io").await;
+    assert_eq!(status, 200);
     let entries = body["entries"].as_array().expect("entries array");
     assert_eq!(
         entries.len(),
@@ -2250,13 +2223,10 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
 #[tokio::test]
 async fn test_llm_io_clear_empties_the_persisted_log() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Seed the persisted log the way a live run would.
+    // Seed the persisted log the way a live run would — through the
+    // log writer itself.
     let log = LlmIoLog::new(fixture.repo_path());
     log.record(&ProgressEvent::LlmRequest {
         binary: "game_logic.dll".into(),
@@ -2274,38 +2244,22 @@ async fn test_llm_io_clear_empties_the_persisted_log() {
         tokens_used: Some(4321),
     });
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
-        .await
-        .expect("request reaches server");
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json("/api/llm-io").await;
+    assert_eq!(status, 200);
     assert_eq!(body["entries"].as_array().expect("entries array").len(), 2);
 
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/llm-io/clear",
-            fixture.port()
-        ))
-        .send()
-        .await
-        .expect("clear request reaches server");
-    assert_eq!(resp.status(), 200, "clear succeeds on the shared router");
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().post_lifecycle("/api/llm-io/clear").await;
+    assert_eq!(status, 200, "clear succeeds on the shared router");
     assert_eq!(body["dropped"].as_u64().expect("dropped count"), 2);
 
     // The file is gone, and the reload payload is honestly empty.
-    let log_path = fixture
-        .repo_path()
-        .join("re")
-        .join("analysis")
-        .join("llm_io")
-        .join("log.jsonl");
-    assert!(!log_path.exists(), "the persisted log file is deleted");
+    assert!(
+        !LlmIoLog::path_for(fixture.repo_path()).exists(),
+        "the persisted log file is deleted"
+    );
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
-        .await
-        .expect("request reaches server");
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let (status, body) = world.client().get_json("/api/llm-io").await;
+    assert_eq!(status, 200);
     assert_eq!(
         body["entries"].as_array().expect("entries array").len(),
         0,
@@ -2321,26 +2275,18 @@ async fn test_llm_io_clear_empties_the_persisted_log() {
 #[tokio::test]
 async fn test_faults_analytics_registered_in_plain_and_live_routers() {
     for kind in ["plain", "live"] {
-        let fixture = TestFixture::new();
-        let state = ServerState::new(fixture.repo_path());
-        let router = if kind == "plain" {
-            build_router(state)
+        let world = if kind == "plain" {
+            support::ReviewWorld::boot_plain().await
         } else {
-            let events = TranslationEvents::new(128);
-            let manager = SessionManager::new_with_broadcast(events.subscribe());
-            build_router_with_ws(state, manager, ProgressState::new(), ws_actions(&fixture))
+            support::ReviewWorld::boot().await
         };
-        let _server = spawn_server(router, fixture.port()).await;
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let base = format!("http://127.0.0.1:{}", fixture.port());
-        let (status, body) = get_json(&format!("{base}/api/faults")).await;
+        let (status, body) = world.client().get_json("/api/faults").await;
         assert_eq!(status, 200, "{kind} router serves /api/faults");
         assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
         assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
 
-        let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+        let (status, body) = world.client().get_json("/api/faults/summary").await;
         assert_eq!(status, 200, "{kind} router serves /api/faults/summary");
         assert_eq!(body["total"].as_u64().expect("total"), 0);
         assert_eq!(
@@ -2359,14 +2305,14 @@ async fn test_faults_analytics_registered_in_plain_and_live_routers() {
             3
         );
 
-        let (status, body) = get_json(&format!("{base}/api/faults/by-binary")).await;
+        let (status, body) = world.client().get_json("/api/faults/by-binary").await;
         assert_eq!(status, 200, "{kind} router serves /api/faults/by-binary");
         assert_eq!(
             body["binaries"].as_array().expect("binaries array").len(),
             0
         );
 
-        let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+        let (status, body) = world.client().get_json("/api/faults/trend").await;
         assert_eq!(status, 200, "{kind} router serves /api/faults/trend");
         assert_eq!(body["days"].as_array().expect("days array").len(), 0);
     }
@@ -2379,17 +2325,9 @@ async fn test_faults_analytics_registered_in_plain_and_live_routers() {
 async fn test_faults_api_exact_json_from_fixture_log() {
     let fixture = TestFixture::new();
     write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let base = format!("http://127.0.0.1:{}", fixture.port());
-
-    // The fault list: every entry verbatim, oldest first, with the three
-    // attempt-identity fields and the attached recovery guidance.
-    let (status, body) = get_json(&format!("{base}/api/faults")).await;
+    let (status, body) = world.client().get_json("/api/faults").await;
     assert_eq!(status, 200);
     assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 6);
     assert_eq!(
@@ -2400,7 +2338,7 @@ async fn test_faults_api_exact_json_from_fixture_log() {
 
     // Summary cards: exact counts by category (highest first, ties
     // alphabetical) and by severity (fixed warning → error → critical).
-    let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+    let (status, body) = world.client().get_json("/api/faults/summary").await;
     assert_eq!(status, 200);
     assert_eq!(body["total"].as_u64().expect("total"), 6);
     assert_eq!(
@@ -2423,7 +2361,7 @@ async fn test_faults_api_exact_json_from_fixture_log() {
     );
 
     // Per-binary bars: exact counts, highest first, ties alphabetical.
-    let (status, body) = get_json(&format!("{base}/api/faults/by-binary")).await;
+    let (status, body) = world.client().get_json("/api/faults/by-binary").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["binaries"],
@@ -2436,7 +2374,7 @@ async fn test_faults_api_exact_json_from_fixture_log() {
     // Trend: contiguous UTC day buckets from the first to the last fault
     // day — gap days 10-02 and 10-03 carry honest zeros — plus the 3-day
     // trailing moving average clipped to the bucketed range.
-    let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+    let (status, body) = world.client().get_json("/api/faults/trend").await;
     assert_eq!(status, 200);
     assert_eq!(
         body["days"],
