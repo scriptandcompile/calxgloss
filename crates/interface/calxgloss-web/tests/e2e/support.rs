@@ -212,6 +212,14 @@ impl ReviewWorld {
         Self::boot_live(&TestFixture::new(), None, false, true).await
     }
 
+    /// [`ReviewWorld::boot_ws_wired`] over a caller-supplied fixture. Use
+    /// it when a test files records — scope, override, classification-
+    /// override — into the fixture before the boot, so the world's own
+    /// handles open over them (issue #475).
+    pub async fn boot_ws_wired_on(fixture: &TestFixture) -> Self {
+        Self::boot_live(fixture, None, false, true).await
+    }
+
     /// The plain-serve router with a reloadable tracing filter attached.
     pub async fn boot_plain_with_log_filter(
         fixture: &TestFixture,
@@ -418,6 +426,14 @@ impl ReviewWorld {
     /// The unit-cancellation handle attached by `boot_ws_wired`.
     pub fn unit_cancellation(&self) -> calxgloss_types::UnitCancellation {
         self.expect_wired().cancellation.clone()
+    }
+
+    /// The scope-steering handle attached by `boot_ws_wired`, so a test
+    /// can read and drive the run's scope record directly — and record
+    /// token spend, which lives on this live handle rather than in the
+    /// persisted record (issue #475).
+    pub fn scope_control(&self) -> calxgloss_types::ScopeControl {
+        self.expect_wired().scope.clone()
     }
 
     /// The run-request channel attached by `boot_ws_wired`; subscribing
@@ -636,9 +652,10 @@ impl Drop for ReviewWorld {
 
 /// How often an applied wait re-reads the live view, and how long it
 /// keeps trying before it fails naming the pending event (issue #468).
-/// The websocket reads and the registration wait share these bounds.
-const APPLIED_WAIT_POLL: Duration = Duration::from_millis(10);
-const APPLIED_WAIT_DEADLINE: Duration = Duration::from_secs(5);
+/// The websocket reads and the registration wait share these bounds, and
+/// so do the endpoint-poll waits in the scenario submodules (issue #475).
+pub const APPLIED_WAIT_POLL: Duration = Duration::from_millis(10);
+pub const APPLIED_WAIT_DEADLINE: Duration = Duration::from_secs(5);
 
 // ─────────────────────────────────────────────────────────────
 // The browser seam (issue #471): browser pins ride the booted world

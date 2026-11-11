@@ -1,4 +1,10 @@
 //! Scenario tests split from `tests/e2e.rs`.
+//!
+//! Every test here boots one world through the review-world adapter (issue
+//! #475). A test files its record fixtures through the record writers,
+//! emits progress events through the typed emitter and waits for the
+//! server to apply them, and reads the browser's DOM through the world's
+//! bounded waits. A live reading is never slept through.
 
 use super::*;
 
@@ -15,58 +21,45 @@ use super::*;
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binary_translation_toggle_matrix() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
     // A running run: if the row's button called the run-wide endpoints, the
     // machine would move — it has to stay running the whole time.
-    let control = PipelineControl::new().with_events(events.clone());
-    control.start().expect("idle -> running");
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_scope_control(scope)
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    world.pipeline_control().start().expect("idle -> running");
 
     // One planned binary whose batch pass is in flight: the honest Pause
     // state of the toggle.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec!["game_logic.dll".to_string()],
-    });
-    events.emit(ProgressEvent::BatchStarted {
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| row_named(view, "game_logic.dll").is_some())
+        .await;
+    let working = ProgressEvent::BatchStarted {
         binary: "game_logic.dll".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(working.clone());
+    world
+        .wait_until_applied(&working, |view| {
+            row_named(view, "game_logic.dll").is_some_and(|b| b["processing"] == true)
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    // Rows render asynchronously once the pipeline fetch settles; poll
-    // until the row and its Pause button appear (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
-        ) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(rendered, "the working row must render with a Pause button");
+    // Rows render asynchronously once the pipeline fetch settles; wait
+    // until the row and its Pause button appear.
+    assert!(
+        tab.wait_for_bool(
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')"
+        )
+        .await,
+        "the working row must render with a Pause button"
+    );
     assert_eq!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')?.textContent || ''"
         ),
         "Pause",
@@ -74,41 +67,27 @@ async fn test_headless_binary_translation_toggle_matrix() {
     );
 
     // Click Pause on the row.
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]').click() === undefined",
-        false,
-    )
-    .expect("click the row's Pause button");
+    tab.click(r#"#pipeline-binaries [data-binary="game_logic.dll"] [data-action="pause"]"#);
 
     // The row redraws as Paused through the WS binary_pause_changed event,
     // with no reload, and its single button slot becomes Start Translation.
     // The paused flag wins over the working flag, so a row that is held out
     // never keeps reading Pause.
-    let mut paused = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status === 'paused' \
                  && document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]')?.textContent === 'Start Translation' \
-                 && !document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
-        ) {
-            paused = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        paused,
+                 && !document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')"
+        )
+        .await,
         "the row must re-render as Paused with a Start Translation button, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
         )
     );
     // The badge reads Paused rather than Working: one honest state.
     assert!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-metric=\"success-rate\"]')?.textContent || ''"
         )
         .contains("Paused"),
@@ -117,13 +96,12 @@ async fn test_headless_binary_translation_toggle_matrix() {
 
     // The success toast shows the server's own reason.
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool(
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('held out of the queue'))"
-        ),
+        )
+        .await,
         "the toast reports the pause the server made, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
@@ -132,82 +110,62 @@ async fn test_headless_binary_translation_toggle_matrix() {
     // lifecycle machine never moved, neither in the server's state nor in
     // the header's badge.
     assert_eq!(
-        control.state(),
+        world.pipeline_control().state(),
         PipelineState::Running,
         "a row pause must not touch the run-level lifecycle machine"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state || ''"
-        ),
+        tab.eval_text("document.getElementById('pipeline-state')?.dataset.state || ''"),
         "running",
         "the header badge never moved"
     );
     // The click reached the endpoint: the pause was saved in the persisted
     // scope record, matched by the case-insensitive rule from issue #107.
     assert!(
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
+        calxgloss_types::ScopeControl::open(world.repo_path()).is_paused("GAME_LOGIC.DLL"),
         "the click drove POST /api/pipeline/binaries/game_logic.dll/pause"
     );
 
     // Press Start Translation in the same slot. Pressing it swaps the run:
     // the still-in-flight binary is resumed and moved to the front, and the
     // row goes back to its Working state with Pause in the slot.
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
-        false,
-    )
-    .expect("click the row's Start Translation button");
+    tab.click(r#"#pipeline-binaries [data-binary="game_logic.dll"] [data-action="start"]"#);
 
-    let mut resumed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status !== 'paused' \
-                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
-        ) {
-            resumed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        resumed,
+        tab.wait_for_bool(
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status !== 'paused' \
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')"
+        )
+        .await,
         "the row must re-render working with a Pause button, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
         )
     );
     assert!(
-        !calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("game_logic.dll"),
+        !calxgloss_types::ScopeControl::open(world.repo_path()).is_paused("game_logic.dll"),
         "the start click resumed the held binary through POST /api/pipeline/binaries/game_logic.dll/start"
     );
     assert!(
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("game_logic.dll"),
+        calxgloss_types::ScopeControl::open(world.repo_path()).is_focus("game_logic.dll"),
         "the start click also gave the binary the focus slot"
     );
     // The swap toast says what the server actually did.
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool(
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('Started game_logic.dll'))"
-        ),
+        )
+        .await,
         "the toast reports the start the server made, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
     assert_eq!(
-        control.state(),
+        world.pipeline_control().state(),
         PipelineState::Running,
         "a row start must not touch the run-level lifecycle machine either"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the "translate this next" focus, end to end
@@ -221,91 +179,62 @@ async fn test_headless_binary_translation_toggle_matrix() {
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_focus_reorders_served_pipeline_rows() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
 
     // The run's plan shows three rows in plan order before anything starts.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "a.dll".to_string(),
             "b.dll".to_string(),
             "c.dll".to_string(),
         ],
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| {
+            served_row_names(view) == ["a.dll", "b.dll", "c.dll"]
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let row_order = || {
-        eval_text(
-            &tab,
-            "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')",
-        )
-    };
+    let rows_order = "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')";
 
-    // Rows render asynchronously once the boot pipeline fetch settles; poll
-    // until all three appear in plan order (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if row_order() == "a.dll,b.dll,c.dll" {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // Rows render asynchronously once the boot pipeline fetch settles; wait
+    // until all three appear in plan order.
     assert!(
-        rendered,
+        tab.wait_for_text(rows_order, |order| order == "a.dll,b.dll,c.dll")
+            .await,
         "the plan's three rows must render in plan order, got: {}",
-        row_order()
+        tab.eval_text(rows_order)
     );
 
     // The operator puts c.dll first — the endpoint's 200, not a row button.
-    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/binaries/c.dll/focus").await;
+    let (status, body) = world
+        .client()
+        .post_lifecycle("/api/pipeline/binaries/c.dll/focus")
+        .await;
     assert_eq!(status, 200, "the focus call should succeed, got: {body}");
 
     // Opening the Pipeline view fetches the rows again; the state served now
     // puts that binary at the front of the plan.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click() === undefined",
-        false,
-    )
-    .expect("click the Pipeline tab");
+    tab.click(r#".nav-tab[data-view="pipeline"]"#);
 
-    let mut hoisted = false;
-    for _ in 0..25 {
-        if row_order() == "c.dll,a.dll,b.dll" {
-            hoisted = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        hoisted,
+        tab.wait_for_text(rows_order, |order| order == "c.dll,a.dll,b.dll")
+            .await,
         "the re-served rows must show the focused binary first, got: {}",
-        row_order()
+        tab.eval_text(rows_order)
     );
 
     // The focus was saved in the persisted scope record — the same slot the
     // live worklist reads at the next binary boundary.
     assert!(
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_focus("C.DLL"),
+        calxgloss_types::ScopeControl::open(world.repo_path()).is_focus("C.DLL"),
         "the focus is in the persisted scope record"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for pressing a row's Start Translation button,
@@ -318,116 +247,83 @@ async fn test_headless_focus_reorders_served_pipeline_rows() {
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_binary_start_swaps_the_rows() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let scope =
-        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
-    let control = PipelineControl::new().with_events(events.clone());
-    control.start().expect("idle -> running");
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_scope_control(scope)
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired().await;
+    world.pipeline_control().start().expect("idle -> running");
 
     // The plan's three rows, with a.dll's pass in flight: a.dll reads
     // Pause, c.dll reads Start Translation.
-    events.emit(ProgressEvent::QueuePlanned {
+    let planned = ProgressEvent::QueuePlanned {
         binaries: vec![
             "a.dll".to_string(),
             "b.dll".to_string(),
             "c.dll".to_string(),
         ],
-    });
-    events.emit(ProgressEvent::BatchStarted {
+    };
+    world.emitter().emit(planned.clone());
+    world
+        .wait_until_applied(&planned, |view| {
+            served_row_names(view) == ["a.dll", "b.dll", "c.dll"]
+        })
+        .await;
+    let working = ProgressEvent::BatchStarted {
         binary: "a.dll".into(),
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(working.clone());
+    world
+        .wait_until_applied(&working, |view| {
+            row_named(view, "a.dll").is_some_and(|b| b["processing"] == true)
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let row_order = || {
-        eval_text(
-            &tab,
-            "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')",
-        )
-    };
+    let rows_order = "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')].map(e => e.dataset.binary).join(',')";
 
-    // Poll until the rows show in plan order and c.dll's row has its Start
-    // Translation button (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if row_order() == "a.dll,b.dll,c.dll"
-            && eval_bool(
-                &tab,
-                "!!document.querySelector('#pipeline-binaries [data-binary=\"c.dll\"] [data-action=\"start\"]')",
-            )
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // Wait until the rows show in plan order and c.dll's row has its Start
+    // Translation button.
     assert!(
-        rendered,
+        tab.wait_for_bool(&format!(
+            "{rows_order} === 'a.dll,b.dll,c.dll' \
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"c.dll\"] [data-action=\"start\"]')"
+        ))
+        .await,
         "the plan's rows must render with c.dll offering Start Translation, got: {}",
-        row_order()
+        tab.eval_text(rows_order)
     );
 
     // Press Start Translation on c.dll — one click, the whole swap.
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"c.dll\"] [data-action=\"start\"]').click() === undefined",
-        false,
-    )
-    .expect("click c.dll's Start Translation button");
+    tab.click(r#"#pipeline-binaries [data-binary="c.dll"] [data-action="start"]"#);
 
     // The WS pause events make the dashboard show both halves of the swap
     // with no reload: the plan served now leads with the target binary, and
     // the previous leader shows Paused — held out to make way for it.
-    let mut swapped = false;
-    for _ in 0..25 {
-        if row_order() == "c.dll,a.dll,b.dll"
-            && eval_bool(
-                &tab,
-                "document.querySelector('#pipeline-binaries [data-binary=\"a.dll\"]')?.dataset.status === 'paused'",
-            )
-        {
-            swapped = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        swapped,
+        tab.wait_for_bool(&format!(
+            "{rows_order} === 'c.dll,a.dll,b.dll' \
+                 && document.querySelector('#pipeline-binaries [data-binary=\"a.dll\"]')?.dataset.status === 'paused'"
+        ))
+        .await,
         "the swap must re-render the plan led by c.dll with a.dll Paused, got: {}",
-        row_order()
+        tab.eval_text(rows_order)
     );
 
     // The toast is honest about the side effect: it mentions both binaries.
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool(
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('Started c.dll') && t.textContent.includes('paused a.dll'))"
-        ),
+        )
+        .await,
         "the toast names the swap the server made, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
 
     // The server's state behind the redraw: the swap was saved in the
     // persisted scope record, and the run machine and header badge never moved.
-    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ScopeControl::open(world.repo_path());
     assert!(reopened.is_paused("A.DLL"), "the previous leader is paused");
     assert!(
         !reopened.is_paused("C.DLL"),
@@ -435,21 +331,15 @@ async fn test_headless_binary_start_swaps_the_rows() {
     );
     assert!(reopened.is_focus("C.DLL"), "c.dll holds the focus slot");
     assert_eq!(
-        control.state(),
+        world.pipeline_control().state(),
         PipelineState::Running,
         "the swap never walks the run-level lifecycle machine"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state || ''"
-        ),
+        tab.eval_text("document.getElementById('pipeline-state')?.dataset.state || ''"),
         "running",
         "the header badge never moved"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the shutdown dialog (issue #94, W2.4). Shut
@@ -459,63 +349,33 @@ async fn test_headless_binary_start_swaps_the_rows() {
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_shutdown_dialog_drives_endpoint() {
-    let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
-    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
     // The accept loop watches the state's shutdown flag: that is the real
     // graceful-shutdown path, so the dialog visibly stops the server.
-    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
+    let mut world = support::ReviewWorld::boot_graceful().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Shut Down Server is available from the very first snapshot.
-    let mut ready = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('ctl-shutdown')?.disabled === false",
-        ) {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        ready,
+        tab.wait_for_bool("document.getElementById('ctl-shutdown')?.disabled === false")
+            .await,
         "Shut Down Server must be enabled once the status snapshot lands"
     );
 
-    tab.evaluate(
-        "document.getElementById('ctl-shutdown').click() === undefined",
-        false,
-    )
-    .expect("click Shut Down Server");
+    tab.click("#ctl-shutdown");
 
-    let mut opened = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, "!!document.getElementById('shutdown-dialog')") {
-            opened = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(opened, "Shut Down Server must open the confirmation dialog");
+    assert!(
+        tab.wait_for_bool("!!document.getElementById('shutdown-dialog')")
+            .await,
+        "Shut Down Server must open the confirmation dialog"
+    );
 
     // The dialog lists exactly what the shutdown does, honest about the live
     // router: the unit boundary, saving the in-flight unit, then the stop.
-    let listed = eval_text(
-        &tab,
-        "document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''",
-    );
+    let listed =
+        tab.eval_text("document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''");
     assert!(
         listed.contains("unit boundary")
             && listed.contains("save its state")
@@ -523,27 +383,15 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
         "the confirmation must list the shutdown's actions, got: {listed}"
     );
 
-    tab.evaluate(
-        "document.getElementById('shutdown-confirm').click() === undefined",
-        false,
-    )
-    .expect("confirm shutdown");
+    tab.click("#shutdown-confirm");
 
     // The accept loop exits in order: the real shutdown path ran.
-    server
-        .await
-        .expect("the dialog's POST takes the server down");
-    let after = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await;
+    world.wait_for_server_shutdown().await;
+    let after = reqwest::get(world.client().url("/api/server/status")).await;
     assert!(
         after.is_err(),
         "the server must refuse connections after the dialog's shutdown"
     );
-
-    drop(browser);
 }
 
 /// Headless-browser test for the translation scope controls panel
@@ -569,18 +417,17 @@ async fn test_headless_scope_controls_panel() {
             token_budget: Some(50_000),
         })
         .expect("seeded constraints persist");
-    scope.record_tokens(12_345);
-    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_wired_on(&fixture).await;
+    // The run has already spent 12,345 tokens. That spend lives on the
+    // live scope handle, not in the persisted record. The old preamble
+    // handed the server the seeded handle itself; now the test records
+    // the spend on the world's own scope control before the browser
+    // opens (issue #475).
+    world.scope_control().record_tokens(12_345);
 
     // One binary per category the checkboxes control, so each checkbox
     // has a real category to read.
+    let mut last_classified: Option<ProgressEvent> = None;
     for (binary, category) in [
         ("engine.dll", "ProjectSpecific"),
         ("zlib.dll", "KnownThirdParty"),
@@ -588,46 +435,57 @@ async fn test_headless_scope_controls_panel() {
         ("msvcrt.dll", "RuntimeLibrary"),
         ("d3d9.dll", "WindowsOs"),
     ] {
-        events.emit(ProgressEvent::ClassificationComplete {
+        let classified = ProgressEvent::ClassificationComplete {
             binary: binary.into(),
             category: category.into(),
             classification_strategy: "ReverseEngineer".into(),
             crate_replacement: None,
             exported_symbols: 1,
             imported_symbols: 0,
-        });
+        };
+        world.emitter().emit(classified.clone());
+        last_classified = Some(classified);
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    world
+        .wait_until_applied(
+            last_classified
+                .as_ref()
+                .expect("five classification events were emitted"),
+            |view| {
+                [
+                    "engine.dll",
+                    "zlib.dll",
+                    "mystery.dll",
+                    "msvcrt.dll",
+                    "d3d9.dll",
+                ]
+                .iter()
+                .all(|name| row_named(view, name).is_some())
+            },
+        )
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     let checked = |id: &str| {
-        eval_bool(
-            &tab,
-            &format!("document.getElementById('{id}')?.checked === true"),
-        )
+        tab.eval_bool(&format!(
+            "document.getElementById('{id}')?.checked === true"
+        ))
     };
     let chip_count = |fn_name: &str| {
-        eval_count(
-            &tab,
-            &format!(
-                "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"{fn_name}\"]').length"
-            ),
-        )
+        tab.eval_count(&format!(
+            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"{fn_name}\"]').length"
+        ))
     };
     let get_scope = || async {
-        reqwest::get(format!("http://127.0.0.1:{}/api/scope", fixture.port()))
-            .await
-            .expect("scope status reachable")
-            .json::<serde_json::Value>()
-            .await
-            .expect("scope status is JSON")
+        let (status, body) = world.client().get_json("/api/scope").await;
+        assert_eq!(status, 200, "scope status reachable");
+        body
     };
-    let scope_binaries = || async {
-        let mut list: Vec<String> = get_scope().await["scope"]["binaries"]
+    let scope_binaries = |body: &serde_json::Value| -> Vec<String> {
+        let mut list: Vec<String> = body["scope"]["binaries"]
             .as_array()
             .map(|a| {
                 a.iter()
@@ -648,16 +506,11 @@ async fn test_headless_scope_controls_panel() {
     // chip is present and the checkboxes read the unsteered allow-list —
     // every discovered binary is in scope, so translate boxes are on and
     // skip boxes are off.
-    let mut chip_rendered = false;
-    for _ in 0..25 {
-        if chip_count("DrawPrimitive") == 1 {
-            chip_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        chip_rendered,
+        tab.wait_for_bool(
+            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"DrawPrimitive\"]').length === 1"
+        )
+        .await,
         "the seeded priority chip must render on load"
     );
     assert!(
@@ -680,153 +533,130 @@ async fn test_headless_scope_controls_panel() {
     // Constraints render from the status endpoint, and the token display
     // shows the budget minus the run's spend.
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-max-attempts')?.value || ''"
-        ),
+        tab.eval_text("document.getElementById('scope-max-attempts')?.value || ''"),
         "2"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-max-tier')?.value || ''"
-        ),
+        tab.eval_text("document.getElementById('scope-max-tier')?.value || ''"),
         "Disassembly"
     );
     // The tier select's values come from the status response's
     // context_tiers, not from markup — every cap the server accepts is
     // an option, and only those (issue #109).
     assert_eq!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#scope-max-tier option')].map(o => o.value).join(',')"
         ),
         ",Signature,Disassembly,WithTests,ModuleContext,FullModule",
         "the tier select must offer exactly the tiers the status response names"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-token-budget')?.value || ''"
-        ),
+        tab.eval_text("document.getElementById('scope-token-budget')?.value || ''"),
         "50000"
     );
     assert!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-token-remaining')?.textContent || ''"
-        )
-        .contains("37655"),
+        tab.eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
+            .contains("37655"),
         "the remaining-budget display follows the server's spend"
     );
 
     // Toggling "skip runtime functions" sends POST /api/scope/binaries —
     // the exclusion lands server-side, and the panel keeps the box checked
     // because it re-rendered from the server's answer.
-    tab.evaluate(
-        "document.getElementById('scope-skip-runtime').click() === undefined",
-        false,
-    )
-    .expect("toggle skip-runtime");
-    let mut binaries_landed = false;
-    for _ in 0..25 {
-        if scope_binaries().await
+    tab.click("#scope-skip-runtime");
+    let body = wait_for_scope_state(world.client(), |body| {
+        scope_binaries(body)
             == vec![
                 "d3d9.dll".to_string(),
                 "engine.dll".to_string(),
                 "mystery.dll".to_string(),
                 "zlib.dll".to_string(),
             ]
-        {
-            binaries_landed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    })
+    .await;
     assert!(
-        binaries_landed,
+        scope_binaries(&body)
+            == vec![
+                "d3d9.dll".to_string(),
+                "engine.dll".to_string(),
+                "mystery.dll".to_string(),
+                "zlib.dll".to_string(),
+            ],
         "the checkbox must drive POST /api/scope/binaries with the runtime binary excluded"
     );
     assert!(
-        checked("scope-skip-runtime"),
+        tab.wait_for_bool("document.getElementById('scope-skip-runtime')?.checked === true")
+            .await,
         "the checkbox follows the server's answer, not a reverted local guess"
     );
 
     // Unchecking a translate-mode checkbox excludes that category: zlib's
     // box off drops it from the allow-list, while WindowsOs — which no
     // checkbox excludes — keeps its place in the server's current list.
-    tab.evaluate(
-        "document.getElementById('scope-translate-known-third-party').click() === undefined",
-        false,
-    )
-    .expect("toggle translate-known-third-party");
-    let mut exclusion_landed = false;
-    for _ in 0..25 {
-        if scope_binaries().await
+    tab.click("#scope-translate-known-third-party");
+    let body = wait_for_scope_state(world.client(), |body| {
+        scope_binaries(body)
             == vec![
                 "d3d9.dll".to_string(),
                 "engine.dll".to_string(),
                 "mystery.dll".to_string(),
             ]
-        {
-            exclusion_landed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    })
+    .await;
     assert!(
-        exclusion_landed,
+        scope_binaries(&body)
+            == vec![
+                "d3d9.dll".to_string(),
+                "engine.dll".to_string(),
+                "mystery.dll".to_string(),
+            ],
         "unchecking a translate checkbox must drop that category from the allow-list"
     );
     assert!(
-        !checked("scope-translate-known-third-party"),
+        tab.wait_for_bool(
+            "document.getElementById('scope-translate-known-third-party')?.checked === false"
+        )
+        .await,
         "the unchecked box follows the server's answer"
     );
 
     // Round-trip back: re-checking known third-party and un-checking the
     // runtime skip covers every known binary again — sent as the empty
     // unsteered list, and the checkboxes render from that echo.
-    tab.evaluate(
-        "document.getElementById('scope-translate-known-third-party').click() === undefined; \
-             document.getElementById('scope-skip-runtime').click() === undefined",
-        false,
-    )
-    .expect("restore both checkboxes");
-    let mut unsteered_restored = false;
-    for _ in 0..25 {
-        if scope_binaries().await.is_empty() {
-            unsteered_restored = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tab.run(
+        "document.getElementById('scope-translate-known-third-party').click(); \
+             document.getElementById('scope-skip-runtime').click()",
+        "restore both checkboxes",
+    );
+    let body = wait_for_scope_state(world.client(), |body| scope_binaries(body).is_empty()).await;
     assert!(
-        unsteered_restored,
+        scope_binaries(&body).is_empty(),
         "covering every known binary again must return the scope to the unsteered empty list"
     );
     assert!(
-        !checked("scope-skip-runtime") && checked("scope-translate-known-third-party"),
+        tab.wait_for_bool(
+            "document.getElementById('scope-skip-runtime')?.checked === false \
+                 && document.getElementById('scope-translate-known-third-party')?.checked === true"
+        )
+        .await,
         "after the round-trip the checkboxes render the unsteered state honestly"
     );
 
     // Adding a priority function through the form sends the priority
     // endpoint; the chip appears and the server agrees.
-    tab.evaluate(
+    tab.run(
         "document.getElementById('scope-priority-binary').value = 'zlib.dll'; \
              document.getElementById('scope-priority-function').value = 'InitZlib'; \
-             document.getElementById('scope-priority-add-btn').click() === undefined",
-        false,
-    )
-    .expect("add a priority function");
-    let mut chip_added = false;
-    for _ in 0..25 {
-        if chip_count("InitZlib") == 1 {
-            chip_added = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(chip_added, "the added priority chip must render");
+             document.getElementById('scope-priority-add-btn').click()",
+        "add a priority function",
+    );
+    assert!(
+        tab.wait_for_bool(
+            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"InitZlib\"]').length === 1"
+        )
+        .await,
+        "the added priority chip must render"
+    );
     assert_eq!(
         priority_count().await,
         Some(2),
@@ -835,20 +665,16 @@ async fn test_headless_scope_controls_panel() {
 
     // Removing it sends the removal request; the chip disappears and the
     // server's list shrinks.
-    tab.evaluate(
-        "document.querySelector('#scope-priority-list .scope-priority-chip[data-function=\"InitZlib\"] .scope-priority-remove').click() === undefined",
-        false,
-    )
-    .expect("remove the priority function");
-    let mut chip_removed = false;
-    for _ in 0..25 {
-        if chip_count("InitZlib") == 0 {
-            chip_removed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(chip_removed, "the removed priority chip must disappear");
+    tab.click(
+        r#"#scope-priority-list .scope-priority-chip[data-function="InitZlib"] .scope-priority-remove"#,
+    );
+    assert!(
+        tab.wait_for_bool(
+            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"InitZlib\"]').length === 0"
+        )
+        .await,
+        "the removed priority chip must disappear"
+    );
     assert_eq!(
         priority_count().await,
         Some(1),
@@ -862,41 +688,30 @@ async fn test_headless_scope_controls_panel() {
 
     // Applying new constraints replaces them wholesale; the display and
     // the server both follow.
-    tab.evaluate(
+    tab.run(
         "document.getElementById('scope-max-attempts').value = '3'; \
              document.getElementById('scope-max-tier').value = ''; \
              document.getElementById('scope-token-budget').value = '90000'; \
-             document.getElementById('scope-constraints-apply').click() === undefined",
-        false,
-    )
-    .expect("apply constraints");
-    let mut constraints_landed = false;
-    for _ in 0..25 {
-        let body = get_scope().await;
-        if body["constraints"]["max_attempts"] == serde_json::json!(3)
+             document.getElementById('scope-constraints-apply').click()",
+        "apply constraints",
+    );
+    let body = wait_for_scope_state(world.client(), |body| {
+        body["constraints"]["max_attempts"] == serde_json::json!(3)
             && body["constraints"]["max_context_tier"].is_null()
             && body["constraints"]["token_budget"] == serde_json::json!(90000)
-        {
-            constraints_landed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    })
+    .await;
     assert!(
-        constraints_landed,
+        body["constraints"]["max_attempts"] == serde_json::json!(3)
+            && body["constraints"]["max_context_tier"].is_null()
+            && body["constraints"]["token_budget"] == serde_json::json!(90000),
         "the constraint inputs must drive POST /api/scope/constraints wholesale"
     );
     assert!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-token-remaining')?.textContent || ''"
-        )
-        .contains("77655"),
+        tab.eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
+            .contains("77655"),
         "the remaining-budget display follows the new budget"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// The scope panel on a plain `serve` router (no scope control attached)
@@ -905,122 +720,71 @@ async fn test_headless_scope_controls_panel() {
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_scope_controls_honest_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let mut honest = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "!!document.getElementById('scope-unavailable') && \
                  document.getElementById('scope-unavailable').style.display !== 'none' && \
-                 document.getElementById('scope-body').style.display === 'none'",
-        ) {
-            honest = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        honest,
+                 document.getElementById('scope-body').style.display === 'none'"
+        )
+        .await,
         "without a scope control the panel must show its honest unavailable state"
     );
     assert!(
-        eval_text(
-            &tab,
-            "document.getElementById('scope-unavailable-message')?.textContent || ''"
-        )
-        .contains("calxgloss live"),
+        tab.eval_text("document.getElementById('scope-unavailable-message')?.textContent || ''")
+            .contains("calxgloss live"),
         "the message names what the panel needs"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the unit process detail panel (issue #62):
-/// clicking a unit backed by canned token-usage and fault-log artifacts
+/// clicking a unit backed by filed token-usage and fault-log artifacts
 /// must render the four process sections — tier, faults, tokens, strategies.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_unit_process_sections() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     // Wait for the telemetry-backed unit to appear in the queue list.
-    let mut listed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
-        ) {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        listed,
+        tab.wait_for_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')"
+        )
+        .await,
         "queue list should contain the DrawPrimitive v2 unit"
     );
 
     // Click the unit to render its inline detail panel.
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"]"#);
 
     // The four process sections render asynchronously once the unit fetch
-    // settles; poll until all are present (up to ~5 seconds).
+    // settles; wait until all are present.
     let all_sections = "!!document.getElementById('process-tier-section') && \
          !!document.getElementById('process-faults-section') && \
          !!document.getElementById('process-tokens-section') && \
          !!document.getElementById('process-strategies-section')";
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, all_sections) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        rendered,
+        tab.wait_for_bool(all_sections).await,
         "detail panel should render the four process sections"
     );
 
-    // The tier section shows the escalated tier from the canned telemetry.
-    let tier_text = eval_text(
-        &tab,
-        "document.getElementById('process-tier-section')?.textContent || ''",
-    );
+    // The tier section shows the escalated tier from the filed telemetry.
+    let tier_text =
+        tab.eval_text("document.getElementById('process-tier-section')?.textContent || ''");
     assert!(
         tier_text.contains("with_tests"),
         "tier section should show the final tier label, got: {tier_text}"
@@ -1030,28 +794,21 @@ async fn test_headless_unit_process_sections() {
         "tier section should flag escalation, got: {tier_text}"
     );
 
-    // The fault section lists the canned fault categories.
-    let fault_text = eval_text(
-        &tab,
-        "document.getElementById('process-faults-section')?.textContent || ''",
-    );
+    // The fault section lists the filed fault categories.
+    let fault_text =
+        tab.eval_text("document.getElementById('process-faults-section')?.textContent || ''");
     assert!(
         fault_text.contains("context_window_exceeded") && fault_text.contains("hallucination"),
-        "fault section should list both canned faults, got: {fault_text}"
+        "fault section should list both filed faults, got: {fault_text}"
     );
 
     // The strategy section shows the retry strategies used.
-    let strategy_text = eval_text(
-        &tab,
-        "document.getElementById('process-strategies-section')?.textContent || ''",
-    );
+    let strategy_text =
+        tab.eval_text("document.getElementById('process-strategies-section')?.textContent || ''");
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the unit detail panel's attempt list
@@ -1088,47 +845,26 @@ async fn test_headless_unit_attempts_list_metadata() {
             ),
         ],
     );
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"]"#);
 
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
-
-    // The attempts section fills asynchronously; poll until both attempt
-    // entries are rendered (up to ~5 seconds).
+    // The attempts section fills asynchronously; wait until both attempt
+    // entries are rendered.
     let two_attempts =
         "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 2";
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, two_attempts) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(rendered, "attempts section should render both attempts");
-
-    let section = eval_text(
-        &tab,
-        "document.getElementById('unit-attempts-section')?.textContent || ''",
+    assert!(
+        tab.wait_for_bool(two_attempts).await,
+        "attempts section should render both attempts"
     );
+
+    let section =
+        tab.eval_text("document.getElementById('unit-attempts-section')?.textContent || ''");
     for expected in [
         "Attempt 1",
         "Attempt 2",
@@ -1150,9 +886,6 @@ async fn test_headless_unit_attempts_list_metadata() {
         !section.contains("nothing to compare"),
         "a two-attempt unit never shows the single-attempt note, got: {section}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser honest state for issue #131: a single-attempt unit
@@ -1164,48 +897,24 @@ async fn test_headless_unit_attempts_single_attempt_note() {
     let fixture = TestFixture::new();
     // A queued unit with one branch and no patch records or logs.
     add_pending_translation(&fixture, "RenderHUD");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
-
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/RenderHUD/v1\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/RenderHUD/v1"]"#);
 
     let one_attempt =
         "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 1";
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, one_attempt) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        rendered,
+        tab.wait_for_bool(one_attempt).await,
         "attempts section should render the single attempt"
     );
 
-    let section = eval_text(
-        &tab,
-        "document.getElementById('unit-attempts-section')?.textContent || ''",
-    );
+    let section =
+        tab.eval_text("document.getElementById('unit-attempts-section')?.textContent || ''");
     assert!(
         section.contains("nothing to compare"),
         "a single-attempt unit honestly says there is nothing to compare, got: {section}"
@@ -1214,9 +923,6 @@ async fn test_headless_unit_attempts_single_attempt_note() {
         section.contains("Attempt 1"),
         "the one attempt is still listed, got: {section}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the unit detail panel's attempt comparison
@@ -1229,67 +935,27 @@ async fn test_headless_unit_attempts_single_attempt_note() {
 async fn test_headless_unit_attempt_diff_side_by_side() {
     let fixture = TestFixture::new();
     add_attempt_branch_with_commit(&fixture, 3, "draw_primitive_v3");
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"]"#);
 
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
-
-    // Poll an expression until it holds, bounded by a wall-clock
-    // deadline instead of a fixed iteration count: nothing extra is
-    // spent when the page is quick, and the window stays generous when
-    // many Chromes compete for the machine (issue #471's suite-load
-    // stabilization; this submodule's full conversion onto the world's
-    // waits comes with its own ticket).
-    async fn poll_until(tab: &headless_chrome::Tab, expr: &str) -> bool {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if eval_bool(tab, expr) {
-                return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    // The attempts section fills asynchronously; poll until all three
-    // attempt entries are rendered, within the deadline above.
+    // The attempts section fills asynchronously; the world's bounded DOM
+    // wait replaces this pin's hand-written deadline poll (issue #475).
     let three_attempts =
         "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 3";
-    let rendered = poll_until(&tab, three_attempts).await;
     assert!(
-        rendered,
+        tab.wait_for_bool(three_attempts).await,
         "attempts section should render all three attempts"
     );
 
     // The pickers default to the last two attempts.
-    let default_from = eval_text(
-        &tab,
-        "document.getElementById('attempt-diff-from')?.value || ''",
-    );
-    let default_to = eval_text(
-        &tab,
-        "document.getElementById('attempt-diff-to')?.value || ''",
-    );
+    let default_from = tab.eval_text("document.getElementById('attempt-diff-from')?.value || ''");
+    let default_to = tab.eval_text("document.getElementById('attempt-diff-to')?.value || ''");
     assert_eq!(
         default_from, "2",
         "the from picker defaults to the second-to-last attempt"
@@ -1303,16 +969,13 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
     // added, styled as deletions and additions.
     let styled = "document.querySelectorAll('#attempt-diff-body .diff-line.deletion').length > 0 \
                   && document.querySelectorAll('#attempt-diff-body .diff-line.addition').length > 0";
-    let diff_rendered = poll_until(&tab, styled).await;
     assert!(
-        diff_rendered,
+        tab.wait_for_bool(styled).await,
         "the attempt diff renders styled additions and deletions"
     );
 
-    let diff_text = eval_text(
-        &tab,
-        "document.getElementById('attempt-diff-body')?.textContent || ''",
-    );
+    let diff_text =
+        tab.eval_text("document.getElementById('attempt-diff-body')?.textContent || ''");
     assert!(
         diff_text.contains("src/draw_primitive_v3.rs"),
         "the default diff shows the v3 attempt's file, got: {diff_text}"
@@ -1324,26 +987,18 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
 
     // The reviewer picks a different pair (1 → 2): the rendered diff
     // changes to the v2 file appearing, with no v3 file anywhere.
-    tab.evaluate(
+    tab.run(
         "(() => { const f = document.getElementById('attempt-diff-from'); f.value = '1'; f.dispatchEvent(new Event('change')); const t = document.getElementById('attempt-diff-to'); t.value = '2'; t.dispatchEvent(new Event('change')); return true; })()",
-        false,
-    )
-    .expect("switch the pickers to the pair 1 → 2");
+        "switch the pickers to the pair 1 → 2",
+    );
 
     let switched = "(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v2.rs') \
          && !(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v3')";
-    let changed = poll_until(&tab, switched).await;
     assert!(
-        changed,
+        tab.wait_for_bool(switched).await,
         "picking a different attempt pair re-renders the diff, got: {}",
-        eval_text(
-            &tab,
-            "document.getElementById('attempt-diff-body')?.textContent || ''"
-        )
+        tab.eval_text("document.getElementById('attempt-diff-body')?.textContent || ''")
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the Overrides tab in the unit detail panel
@@ -1373,109 +1028,60 @@ async fn test_headless_unit_overrides_tab() {
             },
         )
         .expect("seeded override persists");
-    let state = ServerState::new(fixture.repo_path()).with_override_control(overrides);
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view and open the telemetry-backed unit's detail.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
-    let mut listed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
-        ) {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tab.click(r#".nav-tab[data-view="queue"]"#);
     assert!(
-        listed,
+        tab.wait_for_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')"
+        )
+        .await,
         "queue list should contain the DrawPrimitive v2 unit"
     );
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"]"#);
 
     // Click the Overrides tab in the detail's tab bar.
-    tab.evaluate(
-        "document.querySelector('[data-diff-tab=\"overrides\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click overrides tab");
+    tab.click(r#"[data-diff-tab="overrides"]"#);
 
     // The tab renders the seeded record: the summary spells out the forced
     // tier and strategy, and the form controls come back pre-filled.
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('overrides-body')?.textContent?.includes('forced to FullModule') === true",
-        ) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let summary = eval_text(
-        &tab,
-        "document.getElementById('override-summary')?.textContent || ''",
-    );
     assert!(
-        rendered,
-        "overrides tab should render the seeded summary, got: {summary}"
+        tab.wait_for_bool(
+            "document.getElementById('overrides-body')?.textContent?.includes('forced to FullModule') === true"
+        )
+        .await,
+        "overrides tab should render the seeded summary, got: {}",
+        tab.eval_text("document.getElementById('override-summary')?.textContent || ''")
     );
+    let summary = tab.eval_text("document.getElementById('override-summary')?.textContent || ''");
     assert!(
         summary.contains("forced to escalate") && summary.contains("1 appended to the prompt"),
         "summary should name the forced strategy and hint count, got: {summary}"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('override-tier')?.value || ''"
-        ),
+        tab.eval_text("document.getElementById('override-tier')?.value || ''"),
         "FullModule",
         "the tier select should come back pre-filled"
     );
     assert_eq!(
-        eval_text(
-            &tab,
-            "document.getElementById('override-strategy')?.value || ''"
-        ),
+        tab.eval_text("document.getElementById('override-strategy')?.value || ''"),
         "escalate",
         "the strategy select should come back pre-filled"
     );
     assert!(
-        eval_text(
-            &tab,
-            "document.getElementById('override-hints')?.value || ''"
-        )
-        .contains("blitter routine"),
+        tab.eval_text("document.getElementById('override-hints')?.value || ''")
+            .contains("blitter routine"),
         "the hints textarea should come back pre-filled"
     );
 
     // Reviewer notes display in the overview too, not only inside the tab.
-    let notes_text = eval_text(
-        &tab,
-        "document.getElementById('reviewer-notes-section')?.textContent || ''",
-    );
+    let notes_text =
+        tab.eval_text("document.getElementById('reviewer-notes-section')?.textContent || ''");
     assert!(
         notes_text.contains("looks like a blitter"),
         "the overview should show the reviewer notes, got: {notes_text}"
@@ -1483,51 +1089,24 @@ async fn test_headless_unit_overrides_tab() {
 
     // Toggling skip and clicking Apply sends the save request; the summary
     // follows the record the server echoes back.
-    tab.evaluate(
-        "document.getElementById('override-skip')?.click() === undefined",
-        false,
-    )
-    .expect("toggle skip checkbox");
-    tab.evaluate(
-        "document.getElementById('override-apply')?.click() === undefined",
-        false,
-    )
-    .expect("click apply");
-    let mut skip_applied = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('override-summary')?.textContent?.includes('skipped') === true",
-        ) {
-            skip_applied = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    tab.click("#override-skip");
+    tab.click("#override-apply");
     assert!(
-        skip_applied,
-        "the summary should show the skip after Apply, got: {}",
-        eval_text(
-            &tab,
-            "document.getElementById('override-summary')?.textContent || ''"
+        tab.wait_for_bool(
+            "document.getElementById('override-summary')?.textContent?.includes('skipped') === true"
         )
+        .await,
+        "the summary should show the skip after Apply, got: {}",
+        tab.eval_text("document.getElementById('override-summary')?.textContent || ''")
     );
-    let body = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/override",
-        fixture.port()
-    ))
-    .await
-    .expect("override endpoint reachable")
-    .json::<serde_json::Value>()
-    .await
-    .expect("override body is JSON");
+    let (_, body) = world
+        .client()
+        .get_json("/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/override")
+        .await;
     assert_eq!(
         body["override"]["skip"], true,
         "the skip flag landed on the server, got: {body}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the binary classification override panel
@@ -1545,70 +1124,47 @@ async fn test_headless_classification_override_panel() {
         "fmod.dll",
         DllCategory::UnknownThirdParty,
     );
-    let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
-    let state =
-        ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired_on(&fixture).await;
 
     // One classified binary so the row exists to click.
-    events.emit(ProgressEvent::ClassificationComplete {
+    let classified = ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "UnknownThirdParty".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(classified.clone());
+    world
+        .wait_until_applied(&classified, |view| row_named(view, "fmod.dll").is_some())
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Wait for the row, then click its Classify button.
-    let mut listed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')",
-        ) {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(listed, "pipeline row for fmod.dll should exist");
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"] [data-action=\"classify\"]').click() === undefined",
-        false,
-    )
-    .expect("click classify button");
+    assert!(
+        tab.wait_for_bool(
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')"
+        )
+        .await,
+        "pipeline row for fmod.dll should exist"
+    );
+    tab.click(r#"#pipeline-binaries [data-binary="fmod.dll"] [data-action="classify"]"#);
 
     // The panel renders the recorded classification with its reasoning.
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('classification-override-panel')?.textContent?.includes('no known library') === true",
-        ) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let panel_text = eval_text(
-        &tab,
-        "document.getElementById('classification-override-panel')?.textContent || ''",
-    );
     assert!(
-        rendered,
-        "panel should render the recorded classification with reasoning, got: {panel_text}"
+        tab.wait_for_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('no known library') === true"
+        )
+        .await,
+        "panel should render the recorded classification with reasoning, got: {}",
+        tab.eval_text("document.getElementById('classification-override-panel')?.textContent || ''")
     );
+    let panel_text = tab
+        .eval_text("document.getElementById('classification-override-panel')?.textContent || ''");
     assert!(
         panel_text.contains("UnknownThirdParty"),
         "the current category should show, got: {panel_text}"
@@ -1619,45 +1175,28 @@ async fn test_headless_classification_override_panel() {
     );
 
     // Steer it: a known third-party crate replacement, then Apply.
-    tab.evaluate(
+    tab.run(
         "document.getElementById('clf-category').value = 'KnownThirdParty'",
-        false,
-    )
-    .expect("select category");
-    tab.evaluate(
+        "select category",
+    );
+    tab.run(
         "document.getElementById('clf-crate').value = 'fmod-rs'",
-        false,
-    )
-    .expect("fill crate");
-    tab.evaluate(
-        "document.getElementById('clf-apply').click() === undefined",
-        false,
-    )
-    .expect("click apply");
+        "fill crate",
+    );
+    tab.click("#clf-apply");
 
     // The panel adopts the override the server echoes back.
-    let mut applied = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('classification-override-panel')?.textContent?.includes('Override in force: KnownThirdParty') === true",
-        ) {
-            applied = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        applied,
-        "the panel should show the override after Apply, got: {}",
-        eval_text(
-            &tab,
-            "document.getElementById('classification-override-panel')?.textContent || ''"
+        tab.wait_for_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('Override in force: KnownThirdParty') === true"
         )
+        .await,
+        "the panel should show the override after Apply, got: {}",
+        tab.eval_text("document.getElementById('classification-override-panel')?.textContent || ''")
     );
 
     // The record landed in the workspace — a restarted run will use it.
-    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(world.repo_path());
     let record = reopened
         .get("fmod.dll")
         .expect("the override persists in the workspace");
@@ -1670,9 +1209,6 @@ async fn test_headless_classification_override_panel() {
         Some("fmod-rs"),
         "the crate replacement comes through"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser counterpart of the 503 contract: on a live router with
@@ -1681,145 +1217,90 @@ async fn test_headless_classification_override_panel() {
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_classification_override_honest_without_control() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    events.emit(ProgressEvent::ClassificationComplete {
+    let classified = ProgressEvent::ClassificationComplete {
         binary: "fmod.dll".into(),
         category: "UnknownThirdParty".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 10,
         imported_symbols: 4,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(classified.clone());
+    world
+        .wait_until_applied(&classified, |view| row_named(view, "fmod.dll").is_some())
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let mut listed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')",
-        ) {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(listed, "pipeline row for fmod.dll should exist");
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"] [data-action=\"classify\"]').click() === undefined",
-        false,
-    )
-    .expect("click classify button");
+    assert!(
+        tab.wait_for_bool(
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')"
+        )
+        .await,
+        "pipeline row for fmod.dll should exist"
+    );
+    tab.click(r#"#pipeline-binaries [data-binary="fmod.dll"] [data-action="classify"]"#);
 
     // The server's own reason renders — no controls, no fabricated state.
-    let mut honest = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('classification-override-panel')?.textContent?.includes('no classification override control') === true",
-        ) {
-            honest = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        honest,
+        tab.wait_for_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('no classification override control') === true"
+        )
+        .await,
         "the panel should render the server's honest 503 reason"
     );
     assert!(
-        !eval_bool(&tab, "!!document.getElementById('clf-apply')"),
+        !tab.eval_bool("!!document.getElementById('clf-apply')"),
         "no form controls when the endpoints are unavailable"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the unit analysis detail sections (issue #73):
-/// clicking a unit backed by a canned function analysis artifact and a
-/// canned per-binary call-graph record must render the Windows API mappings
+/// clicking a unit backed by a filed function analysis artifact and a
+/// filed per-binary call-graph record must render the Windows API mappings
 /// and call graph context sections with the artifact's names.
 ///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_unit_analysis_sections() {
     let fixture = TestFixture::new();
     write_canned_analysis_context(&fixture);
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     // Wait for the artifact-backed unit to appear in the queue list.
-    let mut listed = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
-        ) {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        listed,
+        tab.wait_for_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')"
+        )
+        .await,
         "queue list should contain the DrawPrimitive v2 unit"
     );
 
     // Click the unit to render its inline detail panel.
-    tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
-        false,
-    )
-    .expect("click queue item");
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"]"#);
 
     // The two analysis sections render asynchronously once the unit fetch
-    // settles; poll until both are present (up to ~5 seconds).
+    // settles; wait until both are present.
     let all_sections = "!!document.getElementById('api-mappings-section') && \
          !!document.getElementById('call-graph-section')";
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, all_sections) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        rendered,
+        tab.wait_for_bool(all_sections).await,
         "detail panel should render the API mappings and call graph sections"
     );
 
-    // The API mappings section lists the canned APIs with category and PAL mapping.
-    let api_text = eval_text(
-        &tab,
-        "document.getElementById('api-mappings-section')?.textContent || ''",
-    );
+    // The API mappings section lists the filed APIs with category and PAL mapping.
+    let api_text =
+        tab.eval_text("document.getElementById('api-mappings-section')?.textContent || ''");
     assert!(
         api_text.contains("Present")
             && api_text.contains("DirectX")
@@ -1828,15 +1309,55 @@ async fn test_headless_unit_analysis_sections() {
     );
 
     // The call graph section lists resolved caller and callee names.
-    let cg_text = eval_text(
-        &tab,
-        "document.getElementById('call-graph-section')?.textContent || ''",
-    );
+    let cg_text = tab.eval_text("document.getElementById('call-graph-section')?.textContent || ''");
     assert!(
         cg_text.contains("GameLoop") && cg_text.contains("BlitSurface"),
         "call graph section should list caller and callee names, got: {cg_text}"
     );
+}
 
-    tab.close_target().ok();
-    drop(browser);
+// ─────────────────────────────────────────────────────────────
+// Applied-wait helpers for this submodule (issue #475)
+// ─────────────────────────────────────────────────────────────
+
+/// True when the served `/api/pipeline` view already carries a row for the
+/// named binary — the applied state for a `QueuePlanned`, `BatchStarted`,
+/// or `ClassificationComplete` event.
+fn row_named<'a>(view: &'a serde_json::Value, binary: &str) -> Option<&'a serde_json::Value> {
+    view["binaries"]
+        .as_array()
+        .expect("binaries is an array")
+        .iter()
+        .find(|b| b["binary"] == binary)
+}
+
+/// The served `/api/pipeline` rows' binary names, in served display order —
+/// the applied state for a queue plan's row order.
+fn served_row_names(view: &serde_json::Value) -> Vec<String> {
+    view["binaries"]
+        .as_array()
+        .expect("binaries is an array")
+        .iter()
+        .map(|b| b["binary"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Poll `GET /api/scope` until `settled` accepts its body — the applied
+/// wait for the scope endpoint calls behind the scope panel's controls.
+/// It returns the body that satisfied the predicate, or the last one seen
+/// when the deadline passes, so the caller's own assertion names the
+/// posted change that never landed.
+async fn wait_for_scope_state(
+    client: &support::Client,
+    settled: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + support::APPLIED_WAIT_DEADLINE;
+    loop {
+        let (status, body) = client.get_json("/api/scope").await;
+        assert_eq!(status, 200, "the scope endpoint answers during a wait");
+        if settled(&body) || tokio::time::Instant::now() >= deadline {
+            return body;
+        }
+        tokio::time::sleep(support::APPLIED_WAIT_POLL).await;
+    }
 }

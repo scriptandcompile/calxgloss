@@ -902,6 +902,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-extra",
+ "calxgloss-callgraph",
  "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",

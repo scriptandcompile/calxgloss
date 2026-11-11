@@ -8,6 +8,9 @@
 //! Browser tests skip themselves at runtime when no Chrome/Chromium is
 //! installed; set `$CHROME` to name a browser binary outside the usual search.
 
+use calxgloss_callgraph::{
+    CallGraph, CallGraphEdge, CallGraphPersistor, CallType, FunctionCallGraph, NodeCategory,
+};
 use calxgloss_git::{FailureRecord, GitManager, InitConfig};
 use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_types::{
@@ -472,27 +475,6 @@ fn write_canned_classification_record(repo: &std::path::Path, binary: &str, cate
 // ─────────────────────────────────────────────────────────────
 // Server lifecycle endpoint tests (issue #60)
 // ─────────────────────────────────────────────────────────────
-
-/// Spawn a server whose accept loop watches the state's shutdown flag,
-/// exactly like `serve`/`serve_with_listener` do — so the shutdown/restart
-/// endpoints visibly stop it.
-async fn spawn_server_with_shutdown(
-    state: &ServerState,
-    router: axum::Router,
-    port: u16,
-) -> tokio::task::JoinHandle<()> {
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .expect("bind listener");
-    let shutdown = state.shutdown_signal();
-    // Same wiring `calxgloss live` uses, so the test exercises the
-    // production graceful-shutdown path rather than a hand-rolled one.
-    tokio::spawn(async move {
-        serve_with_listener(listener, router, shutdown)
-            .await
-            .expect("server runs to completion");
-    })
-}
 
 /// Counts global-subscriber events whose message is the test's probe
 /// marker, to prove a `PATCH /api/server/log-level` change actually alters
@@ -1722,29 +1704,61 @@ fn write_canned_analysis_context(fixture: &TestFixture) {
     )
     .expect("function artifact filed");
 
-    std::fs::write(
-        calxgloss_types::call_graph_record_path(fixture.repo_path(), "game_logic.dll"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "binary": "game_logic.dll",
-            "functions": [
-                {
-                    "name": "DrawPrimitive",
-                    "address": 4198400,
-                    "callers": [4198656],
-                    "callees": [
-                        { "source": 4198400, "target": 4198912, "call_site": 4198410, "call_type": "Direct", "callee_name": "BlitSurface" },
-                        { "source": 4198400, "target": 4199168, "call_site": 4198420, "call_type": "Direct", "callee_name": "" }
+    // The call-graph record rides its own module's persistor, so the
+    // fixture can never drift from the shape the analysis scan writes
+    // (issue #475). DrawPrimitive is called by GameLoop (the caller is
+    // stored as an address) and calls BlitSurface (an edge with a name)
+    // and InternalFlush (an edge with no name, matched by address).
+    CallGraphPersistor::new(fixture.repo_path())
+        .save(&CallGraph {
+            binary: "game_logic.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "DrawPrimitive".to_string(),
+                    address: 4198400,
+                    callers: vec![4198656],
+                    callees: vec![
+                        CallGraphEdge {
+                            source: 4198400,
+                            target: 4198912,
+                            call_site: 4198410,
+                            call_type: CallType::Direct,
+                            callee_name: "BlitSurface".to_string(),
+                        },
+                        CallGraphEdge {
+                            source: 4198400,
+                            target: 4199168,
+                            call_site: 4198420,
+                            call_type: CallType::Direct,
+                            callee_name: String::new(),
+                        },
                     ],
-                    "node_category": "Middle"
+                    node_category: NodeCategory::Middle,
                 },
-                { "name": "GameLoop", "address": 4198656, "callers": [], "callees": [], "node_category": "Root" },
-                { "name": "BlitSurface", "address": 4198912, "callers": [], "callees": [], "node_category": "Leaf" },
-                { "name": "InternalFlush", "address": 4199168, "callers": [], "callees": [], "node_category": "Leaf" }
-            ]
-        }))
-        .expect("serialize call graph"),
-    )
-    .expect("write call graph artifact");
+                FunctionCallGraph {
+                    name: "GameLoop".to_string(),
+                    address: 4198656,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: NodeCategory::Root,
+                },
+                FunctionCallGraph {
+                    name: "BlitSurface".to_string(),
+                    address: 4198912,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: NodeCategory::Leaf,
+                },
+                FunctionCallGraph {
+                    name: "InternalFlush".to_string(),
+                    address: 4199168,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: NodeCategory::Leaf,
+                },
+            ],
+        })
+        .expect("call graph artifact filed");
 }
 
 /// Adds a DrawPrimitive attempt branch with its own commit, so the

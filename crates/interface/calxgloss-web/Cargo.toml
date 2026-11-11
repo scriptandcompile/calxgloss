@@ -67,6 +67,9 @@ calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
 calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
+# The call-graph record module whose persistor files the per-binary
+# call-graph fixture the unit analysis views read (issue #475).
+calxgloss-callgraph = { path = "../../evidence/calxgloss-callgraph" }
 reqwest = { workspace = true, features = ["json", "stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-subscriber = { workspace = true }
