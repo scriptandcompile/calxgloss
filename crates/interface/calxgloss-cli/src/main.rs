@@ -30,7 +30,6 @@
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `doctor` — Report the analysis engine by loading a target in-process
-//! - `dashboard` — Show a structured terminal review dashboard
 //! - `gc` — Garbage-collect old translation branches (archive to refs/archive/)
 //! - `serve` — Start the web review UI HTTP server
 //! - `auto` — Detect project state and run the next step automatically
@@ -61,7 +60,7 @@ use calxgloss_web::LogLevelControl;
 use clap::Parser;
 use tracing::{debug, error, info};
 
-use cli_types::{Cli, Command, DashboardSubcommand, ScenarioAction};
+use cli_types::{Cli, Command, ScenarioAction};
 use settings::Settings;
 use utils::*;
 
@@ -72,10 +71,6 @@ use commands::batch_translate::handle_batch_translate;
 use commands::bdiff::handle_bdiff;
 use commands::capture_command::{CaptureRunOptions, handle_capture};
 use commands::classify::handle_classify;
-use commands::dashboard::{
-    handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
-    handle_dashboard_reject, handle_dashboard_view,
-};
 use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
 use commands::init::handle_init;
@@ -481,51 +476,6 @@ fn main() -> Result<()> {
                     &workspace,
                 ))
         }
-        Command::Dashboard {
-            follow: _,
-            interval: _,
-            command: Some(DashboardSubcommand::View { target }),
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_dashboard_view(&target)),
-        Command::Dashboard {
-            follow: _,
-            interval: _,
-            command: Some(DashboardSubcommand::Accept { target }),
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_dashboard_accept(&target)),
-        Command::Dashboard {
-            follow: _,
-            interval: _,
-            command: Some(DashboardSubcommand::SendBack { target, reason }),
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_dashboard_reject(&target, reason.as_deref())),
-        Command::Dashboard {
-            follow: _,
-            interval: _,
-            command: Some(DashboardSubcommand::AcceptAll { all }),
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_dashboard_accept_all(all)),
-        Command::Dashboard {
-            follow,
-            interval,
-            command: None,
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_dashboard(follow, interval)),
         Command::Init => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

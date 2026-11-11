@@ -11,7 +11,6 @@ pub mod capture_command;
 pub mod classify;
 pub mod consts;
 pub mod controlflow;
-pub mod dashboard;
 pub mod doctor;
 pub mod errhandling;
 pub mod floatsimd;

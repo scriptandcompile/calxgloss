@@ -80,7 +80,6 @@ fn the_top_level_help_names_the_entry_points_by_kebab_spelling() {
         "batch-translate",
         "global-state",
         "auto-shim",
-        "dashboard",
         "serve",
         "live",
         "gc",
@@ -154,6 +153,32 @@ fn a_bare_run_fails_naming_the_missing_target_dir_and_its_sources() {
         assert!(
             combined.contains(source),
             "the refusal names {source} as a way to supply it"
+        );
+    }
+}
+
+/// Issue #484 deleted the `dashboard` command family. Review lives on the
+/// web surfaces now. The command is absent from the help roster, and both
+/// the bare and the sub-invoked spellings fail with clap's
+/// unknown-subcommand wording rather than half-working.
+#[test]
+fn the_deleted_dashboard_command_is_refused_as_an_unknown_subcommand() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (ok, stdout, _) = run(cli(dir.path()).arg("--help"), dir.path());
+    assert!(ok, "--help succeeds");
+    assert!(
+        !listed_subcommands(&stdout).iter().any(|n| n == "dashboard"),
+        "the help roster drops the deleted dashboard command, got: {stdout}"
+    );
+    for invocation in [
+        vec!["dashboard"],
+        vec!["dashboard", "accept", "game_logic/DrawPrimitive"],
+    ] {
+        let (ok, _, stderr) = run(cli(dir.path()).args(&invocation), dir.path());
+        assert!(!ok, "`{invocation:?}` is refused");
+        assert!(
+            stderr.contains("unrecognized subcommand 'dashboard'"),
+            "the refusal is clap's unknown-subcommand wording, got: {stderr}"
         );
     }
 }

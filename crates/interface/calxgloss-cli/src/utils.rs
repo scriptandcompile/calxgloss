@@ -419,10 +419,6 @@ pub(super) fn dim(text: &str) -> String {
     format!("{}{}{}", "\x1b[2m", text, ANSI_RESET)
 }
 
-pub(super) fn format_dim(text: &str) -> String {
-    dim(text)
-}
-
 /// Width of horizontal dividers (no vertical borders, no corners).
 const SEP_WIDTH: usize = 78;
 
@@ -584,7 +580,7 @@ pub(super) fn print_seam_admissions(report: &calxgloss_types::CapabilityReport) 
 }
 
 // ============================================================
-// Dashboard accept/send-back helpers
+// Repository-root helper
 // ============================================================
 
 /// Walk up from CWD to find the Git repository root.
@@ -600,90 +596,6 @@ pub(super) fn find_repo_path() -> Result<PathBuf> {
         }
     }
     Ok(path)
-}
-
-/// Resolve a ViewTarget to the actual git branch name.
-///
-/// Searches all translation branches (`re/*`) and returns the first one
-/// whose DLL and function match the target, optionally checking the
-/// attempt number.
-pub(super) fn resolve_branch(
-    git: &calxgloss_git::GitManager,
-    target: &calxgloss_reports::dashboard::ViewTarget,
-) -> Result<String> {
-    let candidates = git.list_translation_branches()?;
-    let target_binary = target.binary.clone();
-    let target_func = target.function.clone();
-    let target_attempt = target.specific_attempt;
-
-    for branch in &candidates {
-        // Must start with re/
-        if !branch.starts_with("re/") {
-            continue;
-        }
-
-        // Use the public matching function from reports
-        if !calxgloss_reports::dashboard::branch_matches(
-            branch,
-            target_binary.as_str(),
-            &target_func,
-            target_attempt,
-        ) {
-            continue;
-        }
-
-        return Ok(branch.clone());
-    }
-
-    // Collect available branches for a helpful error message
-    let available: Vec<String> = candidates
-        .iter()
-        .filter(|b| {
-            b.starts_with("re/") && b.contains(target_binary.as_str()) && b.contains(&target_func)
-        })
-        .cloned()
-        .collect();
-
-    if available.is_empty() {
-        let all_branches: String = candidates
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "No translation branch found for '{}/{}'.\n\
-             Available branches: {}",
-            target_binary,
-            target_func,
-            all_branches
-        )
-    } else {
-        anyhow::bail!(
-            "No translation branch found for '{}/{}'.\n\
-             Possible matches (check attempt number): {}",
-            target_binary,
-            target_func,
-            available.join(", ")
-        )
-    }
-}
-
-/// Parse a git branch name back into (binary, function, attempt) components.
-///
-/// Delegates to [`calxgloss_types::parse_branch_name`], the one owner of the
-/// `re/{file}/{function}v{N}` grammar (issue #69). A name the grammar cannot
-/// read yields empty components, which [`calxgloss_types::GitBranch::new`]
-/// then rejects as an invalid branch name.
-pub(super) fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
-    match calxgloss_types::parse_branch_name(branch) {
-        Some(parts) => (
-            parts.binary.to_string(),
-            parts.function.unwrap_or_default(),
-            parts.attempt.unwrap_or(1),
-        ),
-        None => (String::new(), String::new(), 1),
-    }
 }
 
 #[cfg(test)]

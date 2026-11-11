@@ -104,7 +104,7 @@ pub async fn run_translation_for_dll(
     let workspace = *workspace;
     let settings = *settings;
 
-    // Announce the per-binary pass so the dashboard can mark this binary as
+    // Announce the per-binary pass so the live view can mark this binary as
     // being worked on before any unit event exists — function enumeration,
     // analysis recovery, and test generation can run for minutes first.
     if let Some(ev) = events {
@@ -144,7 +144,7 @@ pub async fn run_translation_for_dll(
     // observable in the batch summary and per-unit events.
     let function_names = scope_functions(binary, workspace, scope, function_names)?;
     if function_names.is_empty() {
-        // Still emit the batch summary so the dashboard sees the pass happened.
+        // Still emit the batch summary so the live view sees the pass happened.
         if let Some(ev) = events {
             ev.emit(ProgressEvent::BatchSummary {
                 binary: binary.to_string().into(),
@@ -383,7 +383,6 @@ pub async fn run_translation_for_dll(
     }
 
     println!();
-    println_content("To review, run: calxgloss dashboard");
     println_content(
         "To see the web UI (requires server feature): cargo run --features server --bin web_server",
     );
@@ -631,11 +630,6 @@ pub async fn handle_auto(
     pass_spec.refresh_cache = refresh_cache;
     run_controls.apply(&mut pass_spec);
 
-    // Issue #377: the binaries this run targets, captured where the queue is
-    // handed over, so the run close can name each target's unknown audit
-    // ledger.
-    let close_targets: Vec<String>;
-
     if continue_mode {
         // W2.5: the operator's binary scope filters the queue before the
         // plan is published — an excluded binary never enters the queue,
@@ -677,7 +671,6 @@ pub async fn handle_auto(
             spec: pass_spec.clone(),
             run: &run_controls,
         };
-        close_targets = classified.clone();
         run_binary_worklist(classified, &run_controls, |binary| {
             let target_dir = target_dir.clone();
             let pass_plumbing = pass_plumbing.clone();
@@ -717,7 +710,6 @@ pub async fn handle_auto(
         }
 
         let binary = &classified[choice - 1];
-        close_targets = vec![binary.clone()];
         println!();
         println!(
             "  {} Translating functions from {}…",
@@ -741,24 +733,10 @@ pub async fn handle_auto(
         .await?;
     }
 
-    // Issue #377: the run close is a claim list, not a quiet queue. Every
-    // binary this run translated closes with its unknown audit ledger —
-    // open records named by severity, the reviewer's settled rides counted
-    // beside them, and a ledger never filed or unreadable printed as
-    // *unknown*, never as a clean run. The terminal dashboard's audit
-    // section prints the same lines from the same derivation.
-    calxgloss_reports::dashboard::print_run_audit_ledger(&workspace, &close_targets);
-
-    // Issue #423: closing a run states its closure and its gaps together.
-    // The conformance section prints beside the unknown-ledger section.
-    // The close derives its rows straight from the filed documents: the
-    // obligation ledger joined with branch state, receipts, Accept
-    // actions, and open unknowns. The terminal dashboard prints the same
-    // lines from its own copy of that model. A target with no filed
-    // obligation ledger reads as *unknown* here, never as a clean run,
-    // and a review record that cannot be read stops the close naming
-    // the fault (issue #459).
-    calxgloss_reports::dashboard::print_run_conformance_audit(&workspace, &close_targets)?;
+    // Issue #484 (P56.4): the close prints no unknown audit ledger and no
+    // conformance section. The web binaries and queue pages show the run's
+    // audit findings after the run, derived from the same records, instead
+    // of terminal text that scrolls away.
 
     Ok(())
 }
@@ -773,7 +751,7 @@ pub async fn handle_auto(
 /// exactly once: translated if it has been resumed, left incomplete if it is
 /// still paused — one retry per pass, never a spin. Whenever the order
 /// changes the loop re-publishes [`ProgressEvent::QueuePlanned`] so the
-/// dashboard shows the run's real remaining order, not the plan from the
+/// web queue shows the run's real remaining order, not the plan from the
 /// first pass.
 ///
 /// The scope handle's **focus** slot (issue #284) is consulted at the same
@@ -812,7 +790,7 @@ where
     // (issue #107).
     let mut requeued: HashSet<String> = HashSet::new();
 
-    // Publish the plan before the first pass starts so the dashboard can
+    // Publish the plan before the first pass starts so the web queue can
     // show the whole queue — in this exact order — not just the binary
     // currently in flight.
     if let Some(ev) = events {
@@ -1576,18 +1554,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_auto_run_reaches_its_close_and_hands_the_targets_to_the_run_close_audits() {
-        // The whole handler runs. Both binaries read as classified, and the
-        // worklist never starts a pass: the stop signal is already stopped
-        // at the first queue boundary, so no scan and no LLM call happens.
-        // The run close then hands both named targets to both audit
-        // derivations — the unknown-ledger one (issue #377) and the
-        // conformance one (issue #423). One unknown ledger is filed and no
-        // obligation ledger is filed at all, so the conformance derivation
-        // reads both targets as unknown. Git is skipped, so a green claim
-        // could only read as its own citation fault, and none is filed
-        // here. Neither derivation fails the close. The sections' own lines
-        // are pinned in the reports crate's tests.
+    async fn the_auto_run_reaches_its_close_even_with_review_records_degraded() {
+        // Issue #484 (P56.4): the whole handler still runs to its close.
+        // Both binaries read as classified, and the worklist never starts a
+        // pass: the stop signal is already stopped at the first queue
+        // boundary, so no scan and no LLM call happens. The close prints no
+        // audit-ledger and no conformance section — the web binaries and
+        // queue pages show the run's audit findings instead, pinned at the
+        // payload seam (issue #482). The staged records below — one filed
+        // empty unknown ledger, one target with no ledger at all — stay as
+        // a tripwire: a future close that reads review records over
+        // degraded filings must still not fail the run. Git is skipped.
         let ws = temp_workspace();
         stage_classification(ws.path(), "game_logic.dll");
         stage_classification(ws.path(), "no_ledger.dll");

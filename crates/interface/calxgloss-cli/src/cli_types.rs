@@ -1,8 +1,8 @@
 //! CLI argument parsing types.
 //!
-//! Defines the [`Cli`], [`Command`], [`DashboardSubcommand`],
-//! [`TranslateArgs`], and [`BatchTranslateArgs`] types that `clap` uses
-//! for command-line argument parsing.
+//! Defines the [`Cli`], [`Command`], [`TranslateArgs`], and
+//! [`BatchTranslateArgs`] types that `clap` uses for command-line
+//! argument parsing.
 
 use std::path::PathBuf;
 
@@ -999,29 +999,6 @@ pub(super) enum Command {
         baseline_path: Option<PathBuf>,
     },
 
-    /// Show a structured terminal dashboard of review status
-    ///
-    /// Reads all `re/*` git branches, patch records, and baseline files
-    /// to produce a summary table of translation units and their status.
-    ///
-    /// Use `--follow` to watch for changes and auto-refresh.
-    /// Use subcommands to act on units:
-    /// - `accept <target>` — merge the unit's branch into main
-    /// - `send-back <target> --reason "..."` — send back with comments
-    /// - `view <target>` — inspect a single unit of work in detail
-    Dashboard {
-        /// Follow mode: continuously watch for new/changed branches
-        #[arg(long, short)]
-        follow: bool,
-
-        /// Refresh interval in seconds (default: 2, only in --follow mode)
-        #[arg(long, default_value = "2")]
-        interval: u64,
-
-        #[command(subcommand)]
-        command: Option<DashboardSubcommand>,
-    },
-
     /// Automatically detect project state and run the next step.
     ///
     /// Scans the target directory for DLLs and EXEs, checks whether classification
@@ -1231,100 +1208,6 @@ pub(super) enum Command {
         /// List candidates without archiving
         #[arg(long)]
         dry_run: bool,
-    },
-}
-
-/// Subcommands for the dashboard.
-#[derive(Subcommand, Debug)]
-pub(super) enum DashboardSubcommand {
-    /// Show a detailed view of a single translation unit
-    ///
-    /// Displays justification, diff summary, test results, and attempt history.
-    ///
-    /// # Arguments
-    ///
-    /// * `<target>` — Unit identifier in the format `binary/function` or `binary/function/vN`
-    ///
-    /// # Examples
-    ///
-    /// ```text
-    /// calxgloss dashboard view game_logic/DrawPrimitive
-    /// calxgloss dashboard view game_logic/DrawPrimitive/v3
-    /// ```
-    View {
-        /// Unit to view: `<binary>/<function>` or `<binary>/<function>/vN`
-        #[arg(value_name = "TARGET")]
-        target: String,
-    },
-
-    /// Accept a unit — merge its branch into main
-    ///
-    /// The unit identifier is in the format `binary/function` or
-    /// `binary/function/vN`.  If no version is given, the latest attempt is
-    /// accepted.
-    ///
-    /// # Examples
-    ///
-    /// ```text
-    /// calxgloss dashboard accept game_logic/DrawPrimitive
-    /// calxgloss dashboard accept game_logic/DrawPrimitive/v3
-    /// ```
-    Accept {
-        /// Unit to accept: `<binary>/<function>` or `<binary>/<function>/vN`
-        #[arg(value_name = "TARGET")]
-        target: String,
-    },
-
-    /// Send a unit back for fixes
-    ///
-    /// Records the send-back reason in `re/rejections/{binary}/{function}/vN.json`
-    /// so the dashboard can display send-back history.
-    ///
-    /// # Arguments
-    ///
-    /// * `<target>` — Unit identifier in the format `binary/function` or `binary/function/vN`
-    /// * `--reason` — Optional send-back reason (shown in the dashboard)
-    ///
-    /// # Examples
-    ///
-    /// ```text
-    /// calxgloss dashboard send-back game_logic/DrawPrimitive/v2 --reason "wrong shader mapping"
-    /// ```
-    SendBack {
-        /// Unit to send back: `<binary>/<function>` or `<binary>/<function>/vN`
-        #[arg(value_name = "TARGET")]
-        target: String,
-
-        /// Send-back reason (optional)
-        #[arg(long, short)]
-        reason: Option<String>,
-    },
-
-    /// Accept all pending units in dependency order
-    ///
-    /// Walks the review queue, topologically sorts units so dependencies
-    /// are accepted first, then merges each branch into `main` and writes
-    /// the acceptance record.
-    ///
-    /// Only units with status `Queued` or `PendingReview` are accepted.
-    /// Already-accepted or sent-back units are skipped silently.
-    ///
-    /// # Arguments
-    ///
-    /// * `--all` — Accept **all** not-yet-accepted `re/*` branches (including
-    ///   `Blocked` and `SendBack` units) instead of only queued/pending.
-    ///
-    /// # Examples
-    ///
-    /// ```text
-    /// calxgloss dashboard accept-all
-    /// calxgloss dashboard accept-all --all
-    /// ```
-    AcceptAll {
-        /// Accept every not-yet-accepted translation branch, including blocked and
-        /// send-back units.
-        #[arg(long, short)]
-        all: bool,
     },
 }
 

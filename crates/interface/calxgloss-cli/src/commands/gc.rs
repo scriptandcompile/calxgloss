@@ -49,7 +49,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
             continue;
         }
 
-        // Parse branch name into components using the same pattern as dashboard
+        // Parse branch name into components using the re/* branch grammar
         let (binary, function, attempt) = match parse_translation_branch(branch_name) {
             Some(p) => p,
             None => continue,

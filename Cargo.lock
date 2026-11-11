@@ -460,7 +460,6 @@ dependencies = [
  "calxgloss-llm",
  "calxgloss-memory",
  "calxgloss-pal",
- "calxgloss-reports",
  "calxgloss-serialize",
  "calxgloss-stringctx",
  "calxgloss-sync",

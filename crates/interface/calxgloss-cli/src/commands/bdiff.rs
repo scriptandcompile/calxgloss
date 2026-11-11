@@ -6,8 +6,8 @@
 //! the functions paired on neither side — old-only and new-only (issue
 //! #300). The command is pure report. It runs no scan, so it reads no
 //! evidence engine, and it never loads the Kuna engine: the filed
-//! documents are the whole input. Neither the web review surface nor the
-//! dashboard shows this track.
+//! documents are the whole input. The web review surface does not show
+//! this track.
 //!
 //! The staleness rule is the carry-over track's (issue #299): a document
 //! is live only when it self-names `binary` and its `new_bytes_sha256`

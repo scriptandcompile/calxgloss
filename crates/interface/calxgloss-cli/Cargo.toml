@@ -30,7 +30,6 @@ calxgloss-floatsimd = { path = "../../evidence/calxgloss-floatsimd" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
-calxgloss-reports = { path = "../calxgloss-reports" }
 calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
 calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
 calxgloss-config = { path = "../../shared/calxgloss-config" }
