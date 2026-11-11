@@ -1266,13 +1266,22 @@ function wireAttemptDiff(unitId) {
     reload();
 }
 
+// The two pickers change one at a time, so one reviewer switch fires two
+// fetches, and the browser may answer them out of order. This sequence
+// stamp lets only the newest pick render — a slower stale response must
+// never overwrite the diff the reviewer last asked for.
+let attemptDiffSeq = 0;
+
 async function loadAttemptDiff(unitId, from, to) {
     const body = document.getElementById("attempt-diff-body");
     if (!body) return;
+    const seq = ++attemptDiffSeq;
     try {
         const res = await API.unitAttemptDiff(unitId, from, to);
+        if (seq !== attemptDiffSeq) return;
         body.innerHTML = renderUnifiedDiff(res.diff);
     } catch (err) {
+        if (seq !== attemptDiffSeq) return;
         // A missing branch answers an honest error — show its reason,
         // never an empty diff pretending the branches matched.
         body.innerHTML = `<div class="decomp-empty">${escapeHtml(err.message)}</div>`;

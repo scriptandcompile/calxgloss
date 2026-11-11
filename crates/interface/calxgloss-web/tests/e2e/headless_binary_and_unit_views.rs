@@ -1252,18 +1252,30 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
     )
     .expect("click queue item");
 
+    // Poll an expression until it holds, bounded by a wall-clock
+    // deadline instead of a fixed iteration count: nothing extra is
+    // spent when the page is quick, and the window stays generous when
+    // many Chromes compete for the machine (issue #471's suite-load
+    // stabilization; this submodule's full conversion onto the world's
+    // waits comes with its own ticket).
+    async fn poll_until(tab: &headless_chrome::Tab, expr: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if eval_bool(tab, expr) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     // The attempts section fills asynchronously; poll until all three
-    // attempt entries are rendered (up to ~5 seconds).
+    // attempt entries are rendered, within the deadline above.
     let three_attempts =
         "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 3";
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, three_attempts) {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let rendered = poll_until(&tab, three_attempts).await;
     assert!(
         rendered,
         "attempts section should render all three attempts"
@@ -1291,14 +1303,7 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
     // added, styled as deletions and additions.
     let styled = "document.querySelectorAll('#attempt-diff-body .diff-line.deletion').length > 0 \
                   && document.querySelectorAll('#attempt-diff-body .diff-line.addition').length > 0";
-    let mut diff_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, styled) {
-            diff_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let diff_rendered = poll_until(&tab, styled).await;
     assert!(
         diff_rendered,
         "the attempt diff renders styled additions and deletions"
@@ -1327,14 +1332,7 @@ async fn test_headless_unit_attempt_diff_side_by_side() {
 
     let switched = "(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v2.rs') \
          && !(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v3')";
-    let mut changed = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, switched) {
-            changed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
+    let changed = poll_until(&tab, switched).await;
     assert!(
         changed,
         "picking a different attempt pair re-renders the diff, got: {}",
