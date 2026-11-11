@@ -189,9 +189,9 @@ async fn test_pipeline_phases_from_canned_events() {
     world
         .wait_until_applied(&last, |body| {
             body["phases"].as_array().is_some_and(|phases| {
-                phases.iter().any(|p| {
-                    p["phase"] == "test_generation" && p["completed"] == 2
-                })
+                phases
+                    .iter()
+                    .any(|p| p["phase"] == "test_generation" && p["completed"] == 2)
             })
         })
         .await;
@@ -898,8 +898,16 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
 
     // Durations recorded only for UpdateScene — a function the queued
     // DrawPrimitive/v2 unit is not, so the unit has no own history.
-    let mut update_first =
-        token_usage_entry("game_logic.dll", "UpdateScene", 1, "initial", 4096, true, "", 1767225600);
+    let mut update_first = token_usage_entry(
+        "game_logic.dll",
+        "UpdateScene",
+        1,
+        "initial",
+        4096,
+        true,
+        "",
+        1767225600,
+    );
     update_first.duration_secs = Some(300);
     let mut update_second = token_usage_entry(
         "game_logic.dll",
@@ -912,7 +920,10 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
         1767225900,
     );
     update_second.duration_secs = Some(500);
-    write_token_usage_fixture(fixture.repo_path().as_path(), &[update_first, update_second]);
+    write_token_usage_fixture(
+        fixture.repo_path().as_path(),
+        &[update_first, update_second],
+    );
 
     let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
@@ -1841,9 +1852,9 @@ async fn test_progress_enhanced_serves_live_scan_records() {
     world.emitter().emit(next_binary.clone());
     world
         .wait_until_enhanced_progress_applied(&next_binary, |body| {
-            body["scans"].as_array().is_some_and(|scans| {
-                scans.len() == 1 && scans[0]["binary"] == "game_logic.dll"
-            })
+            body["scans"]
+                .as_array()
+                .is_some_and(|scans| scans.len() == 1 && scans[0]["binary"] == "game_logic.dll")
         })
         .await;
     let body = get_enhanced().await;
@@ -1952,7 +1963,9 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
     };
     world.emitter().emit(beat.clone());
     world
-        .wait_until_enhanced_progress_applied(&beat, |body| body["activity"]["pass"] == "call graph")
+        .wait_until_enhanced_progress_applied(&beat, |body| {
+            body["activity"]["pass"] == "call graph"
+        })
         .await;
     let body = get_enhanced().await;
     assert_eq!(body["activity"]["pass"], "call graph");
@@ -1970,7 +1983,9 @@ async fn test_progress_enhanced_carries_the_worklist_heartbeat_beside_the_scans(
     };
     world.emitter().emit(beat.clone());
     world
-        .wait_until_enhanced_progress_applied(&beat, |body| body["activity"]["pass"] == "xref index")
+        .wait_until_enhanced_progress_applied(&beat, |body| {
+            body["activity"]["pass"] == "xref index"
+        })
         .await;
     let body = get_enhanced().await;
     assert_eq!(body["activity"]["pass"], "xref index");
