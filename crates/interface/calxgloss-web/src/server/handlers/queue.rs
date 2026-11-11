@@ -425,10 +425,7 @@ mod tests {
     fn overlay_reader(
         workspace: &std::path::Path,
     ) -> super::super::super::review_reader::ReviewSurfaceReader {
-        super::super::super::review_reader::ReviewSurfaceReader::new(
-            workspace.to_path_buf(),
-            None,
-        )
+        super::super::super::review_reader::ReviewSurfaceReader::new(workspace.to_path_buf(), None)
     }
 
     fn make_unit(id: &str, kind: WorkKind, status: ReviewStatus) -> UnitOfWork {

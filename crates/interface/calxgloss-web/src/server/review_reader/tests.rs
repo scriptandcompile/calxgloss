@@ -1047,7 +1047,10 @@ fn a_corrupt_shim_artifact_reads_as_no_artifact_not_a_zeroed_one() {
     let reader = reader_over(dir.path());
 
     let readout = reader.shim_readout("d3d9.dll");
-    assert!(readout.mappings.is_none(), "a corrupt artifact is no artifact");
+    assert!(
+        readout.mappings.is_none(),
+        "a corrupt artifact is no artifact"
+    );
     assert!(
         readout.verification.is_none(),
         "a never-filed document reads absent, not zeroed"
@@ -1098,7 +1101,11 @@ fn the_alphabetically_first_shim_directory_spelling_wins() {
 #[test]
 fn p_a_l_categories_come_from_the_binaries_readable_analysis_artifacts() {
     let dir = temp_workspace();
-    let analysis = dir.path().join("re").join("analysis").join("Game_Logic.dll");
+    let analysis = dir
+        .path()
+        .join("re")
+        .join("analysis")
+        .join("Game_Logic.dll");
     std::fs::create_dir_all(&analysis).expect("analysis dir");
     std::fs::write(
         analysis.join("DrawSprite.json"),
@@ -1128,7 +1135,9 @@ fn p_a_l_categories_come_from_the_binaries_readable_analysis_artifacts() {
          the directory matched case-insensitively"
     );
     assert!(
-        reader.api_call_categories("never_translated.dll").is_empty(),
+        reader
+            .api_call_categories("never_translated.dll")
+            .is_empty(),
         "a binary with no analysis directory has no recorded categories"
     );
 }
@@ -1148,8 +1157,7 @@ fn p_a_l_source_texts_cover_scratch_pal_and_generated_shim_sources_only() {
     let shim_dir = dir.path().join("re").join("shims").join("d3d9.dll");
     std::fs::create_dir_all(&shim_dir).expect("shim dir");
     std::fs::write(shim_dir.join("shim.rs"), "pub trait GraphicsDevice {").expect("shim source");
-    std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {")
-        .expect("shim tests");
+    std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {").expect("shim tests");
     let reader = reader_over(dir.path());
 
     let joined = reader.pal_source_texts().join("\n");
@@ -1168,7 +1176,11 @@ fn p_a_l_source_texts_cover_scratch_pal_and_generated_shim_sources_only() {
 #[test]
 fn one_function_artifact_read_serves_every_review_surface_that_needs_it() {
     let dir = temp_workspace();
-    let analysis = dir.path().join("re").join("analysis").join("game_logic.dll");
+    let analysis = dir
+        .path()
+        .join("re")
+        .join("analysis")
+        .join("game_logic.dll");
     std::fs::create_dir_all(&analysis).expect("analysis dir");
     std::fs::write(
         analysis.join("DrawSprite.json"),
@@ -1201,12 +1213,15 @@ fn one_function_artifact_read_serves_every_review_surface_that_needs_it() {
     assert_eq!(api.pal_mapping, "wgpu::Surface::present");
 
     assert!(
-        reader.function_artifact("game_logic.dll", "NeverTranslated")
+        reader
+            .function_artifact("game_logic.dll", "NeverTranslated")
             .is_none(),
         "a never-filed artifact is an honest absence"
     );
     assert!(
-        reader.function_artifact("game_logic.dll", "Broken").is_none(),
+        reader
+            .function_artifact("game_logic.dll", "Broken")
+            .is_none(),
         "a corrupt artifact names nothing"
     );
     assert!(

@@ -148,11 +148,8 @@ pub async fn api_get_unit(
     let diff_summary = super::diff::compute_diff_summary(&state, unit);
     let attempt_history = combined.reader.attempt_history(unit)?;
     let revision_count = super::decomp::compute_revision_count(&state, unit);
-    let queue_position = super::queue::compute_queue_position(
-        &dashboard,
-        unit,
-        &combined.reader.queue_overlay(),
-    );
+    let queue_position =
+        super::queue::compute_queue_position(&dashboard, unit, &combined.reader.queue_overlay());
     let process = super::process::build_unit_process(&combined.reader, unit);
     let analysis = super::analysis::build_unit_analysis(&combined.reader, unit);
 

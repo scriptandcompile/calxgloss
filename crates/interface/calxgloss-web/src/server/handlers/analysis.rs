@@ -30,10 +30,7 @@ use super::super::types::{ApiMappingRecord, CallGraphContext, UnitAnalysis};
 /// through the review-surface reader (issue #464) — the per-function
 /// artifact and the per-binary call-graph record are the seam's reads,
 /// and the degrade-to-empty policy stays here at the render site.
-pub(crate) fn build_unit_analysis(
-    reader: &ReviewSurfaceReader,
-    unit: &UnitOfWork,
-) -> UnitAnalysis {
+pub(crate) fn build_unit_analysis(reader: &ReviewSurfaceReader, unit: &UnitOfWork) -> UnitAnalysis {
     let function = unit.function.clone().unwrap_or_default();
     if function.is_empty() {
         return UnitAnalysis::default();
@@ -123,10 +120,7 @@ mod tests {
     fn unit_reader(
         workspace: &std::path::Path,
     ) -> super::super::super::review_reader::ReviewSurfaceReader {
-        super::super::super::review_reader::ReviewSurfaceReader::new(
-            workspace.to_path_buf(),
-            None,
-        )
+        super::super::super::review_reader::ReviewSurfaceReader::new(workspace.to_path_buf(), None)
     }
 
     /// A function-translation unit for `game_logic.dll!DrawPrimitive`.

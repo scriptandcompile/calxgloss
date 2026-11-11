@@ -18,9 +18,12 @@ impl ReviewSurfaceReader {
     /// on its own — a corrupt artifact is no artifact, and it never
     /// takes the readable document beside it down with it.
     pub(crate) fn shim_readout(&self, name: &str) -> ShimReadout {
-        let dir = self.binary_artifact_dir(&calxgloss_types::shim_artifacts_dir(&self.repo_path), name);
+        let dir =
+            self.binary_artifact_dir(&calxgloss_types::shim_artifacts_dir(&self.repo_path), name);
         ShimReadout {
-            mappings: dir.as_deref().and_then(|dir| read_artifact(dir, SHIM_MAPPINGS_FILE)),
+            mappings: dir
+                .as_deref()
+                .and_then(|dir| read_artifact(dir, SHIM_MAPPINGS_FILE)),
             verification: dir
                 .as_deref()
                 .and_then(|dir| read_artifact(dir, SHIM_VERIFICATION_FILE)),
@@ -33,10 +36,9 @@ impl ReviewSurfaceReader {
     /// categories; a corrupt artifact contributes nothing while the
     /// readable ones still answer. Sorted and deduplicated verbatim.
     pub(crate) fn api_call_categories(&self, name: &str) -> Vec<String> {
-        let Some(dir) = self.binary_artifact_dir(
-            &calxgloss_types::analysis_dir(&self.repo_path),
-            name,
-        ) else {
+        let Some(dir) =
+            self.binary_artifact_dir(&calxgloss_types::analysis_dir(&self.repo_path), name)
+        else {
             return Vec::new();
         };
         let mut categories: Vec<String> = std::fs::read_dir(&dir)
@@ -120,8 +122,11 @@ impl ReviewSurfaceReader {
     /// read whole. A never-filed or corrupt record is an empty graph — the
     /// honest no-context answer the unit detail renders as empty sections.
     pub(crate) fn call_graph_record(&self, binary: &str) -> CallGraphReading {
-        read_json_at(&calxgloss_types::call_graph_record_path(&self.repo_path, binary))
-            .unwrap_or_default()
+        read_json_at(&calxgloss_types::call_graph_record_path(
+            &self.repo_path,
+            binary,
+        ))
+        .unwrap_or_default()
     }
 
     /// The per-binary artifact directory under `root` whose directory

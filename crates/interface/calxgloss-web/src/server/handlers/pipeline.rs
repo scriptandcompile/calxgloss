@@ -263,8 +263,7 @@ pub async fn api_get_pipeline(
             .get(d)
             .is_some_and(|c| is_pal_strategy(&c.classification_strategy))
     });
-    let pal_sources = has_pal_row
-        .then(|| combined.reader.pal_source_texts());
+    let pal_sources = has_pal_row.then(|| combined.reader.pal_source_texts());
 
     let mut binaries = derive_binaries(
         &dll_names_vec,

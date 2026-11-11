@@ -8,15 +8,11 @@
 
 use std::path::Path;
 
-use calxgloss_types::{
-    ContextTier, FaultLog, TokenUsageEntry, TokenUsageLog, detect_complexity,
-};
+use calxgloss_types::{ContextTier, FaultLog, TokenUsageEntry, TokenUsageLog, detect_complexity};
 
 // The record tree's log layouts live with the shared record types
 // (issue #464). The review handlers reach them through these re-exports.
-pub(crate) use calxgloss_types::{
-    fault_log_path, prompt_strategy_log_path, token_usage_log_path,
-};
+pub(crate) use calxgloss_types::{fault_log_path, prompt_strategy_log_path, token_usage_log_path};
 
 use super::super::review_reader::ReviewSurfaceReader;
 use super::super::types::{
@@ -297,10 +293,7 @@ mod tests {
     fn unit_reader(
         workspace: &std::path::Path,
     ) -> super::super::super::review_reader::ReviewSurfaceReader {
-        super::super::super::review_reader::ReviewSurfaceReader::new(
-            workspace.to_path_buf(),
-            None,
-        )
+        super::super::super::review_reader::ReviewSurfaceReader::new(workspace.to_path_buf(), None)
     }
 
     #[test]
