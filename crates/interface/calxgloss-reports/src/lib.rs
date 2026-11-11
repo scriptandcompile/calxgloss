@@ -4,23 +4,23 @@
 //! results, verification outcomes, Git branch status, and interactive prompts
 //! in the terminal using ANSI-colored text output.
 //!
+//! The CLI's own terminal printers — the batch-summary, classification-report,
+//! verification-results, git-status, and failure printers and the doctor
+//! engine report — now live inside the CLI crate (issue #481). What remains
+//! here is the review-facing terminal output still standing in this crate:
+//! the dashboard, and the acceptance-prompt flow with the private printers
+//! it calls. Those go away when their surfaces do (issues #484, #485).
+//!
 //! # Functions
 //!
 //! - [`print_translation_summary`] — Display translation results (code, model, tokens)
-//! - [`print_verification_results`] — Display compilation and test results
-//! - [`print_git_status`] — Display Git branch creation status
 //! - [`print_success`] — Display successful translation with acceptance prompt (returns `true` if accepted)
-//! - [`print_failure`] — Display failed translation with diagnostic details
 //! - [`prompt_acceptance`] — Interactive y/n prompt for human acceptance
-//! - [`print_classification_report`] — Display DLL classification results
-//! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
 //! - [`verification_receipt_markdown`] — Render a *verification receipt*'s
 //!   human twin (re-exported from the record's owning crate)
 //! - [`dashboard::render_dashboard`] — Display the review dashboard as a text-based table
-//! - [`doctor::print_kuna_report`] — Display the `calxgloss doctor` Kuna engine report
 
 pub mod dashboard;
-pub mod doctor;
 
 /// Human rendering of a *verification receipt* at the review surface.
 ///
@@ -33,10 +33,7 @@ pub use calxgloss_types::verification_receipt_markdown;
 
 use std::io::{self, Write};
 
-use calxgloss_analysis::DllClassification;
-use calxgloss_analysis::ShimSuggestionReport;
-use calxgloss_analysis::Strategy;
-use calxgloss_translator::{BatchTranslationResult, Translation};
+use calxgloss_translator::Translation;
 use calxgloss_types::FailedTest;
 use calxgloss_types::GitBranch;
 use calxgloss_types::VerificationResult;
@@ -131,7 +128,7 @@ pub fn print_translation_summary(translation: &Translation) {
 ///
 /// Displays whether compilation succeeded, how many tests passed,
 /// and details of any compilation errors or test failures.
-pub fn print_verification_results(result: &VerificationResult) {
+fn print_verification_results(result: &VerificationResult) {
     if result.compiled {
         println!("  {}{}", white_bold("Compiled: "), green_bold("yes"));
 
@@ -246,7 +243,7 @@ fn print_failed_test_detail(failed: &FailedTest) {
 /// Print the Git branch creation status.
 ///
 /// Displays the branch name and whether it was newly created or already existed.
-pub fn print_git_status(branch: &GitBranch, merged: bool) {
+fn print_git_status(branch: &GitBranch, merged: bool) {
     if merged {
         println!(
             "  {}{}{}",
@@ -341,51 +338,6 @@ pub fn print_success(branch: &GitBranch, verification: &VerificationResult) -> b
 }
 
 // ============================================================
-// print_failure
-// ============================================================
-
-/// Print a failure summary with diagnostic details.
-///
-/// Displays the branch name, compilation errors, and test failures, then a
-/// tip that a retry gets a new branch. There is no acceptance prompt here:
-/// the run has already failed, so nothing is being accepted.
-pub fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
-    println!();
-    println!("{}", cyan_bold(&"╔".repeat(60)));
-    println!(
-        "  {}TRANSLATION FAILED{}",
-        cyan_bold("║  "),
-        cyan_bold(" ║")
-    );
-    println!("{}", cyan_bold(&"║".repeat(60)));
-
-    // Function info
-    println!("  {}{}", white_bold("  Function: "), branch.function);
-    println!("  {}{}", white_bold("  DLL: "), branch.binary);
-    println!("{}", cyan_bold(&"║".repeat(60)));
-
-    // Verification results
-    print_verification_results(verification);
-
-    // Git status
-    print_git_status(branch, false);
-
-    // Overall status
-    println!(
-        "  {}{}",
-        white_bold("  Status: "),
-        red_bold("FAIL \u{2717} — fix required")
-    );
-
-    println!("{}", cyan_bold(&"╚".repeat(60)));
-
-    println!(
-        "  {}",
-        dim("  Tip: A new branch will be created for retry attempt.")
-    );
-}
-
-// ============================================================
 // prompt_acceptance
 // ============================================================
 
@@ -409,309 +361,4 @@ pub fn prompt_acceptance() -> bool {
     }
 
     accepted
-}
-
-// ============================================================
-// Classify command output
-// ============================================================
-
-/// Print a DLL classification report.
-///
-/// Displays the DLL name, its category, the recommended strategy,
-/// and counts of exports and imports. When shim suggestions are
-/// provided, also displays a shim-layer summary section showing
-/// expected shim complexity for crate-replacement DLLs.
-pub fn print_classification_report(
-    classifications: &[DllClassification],
-    shim_report: &ShimSuggestionReport,
-) {
-    let sep = cyan_bold(&"═".repeat(58));
-    println!("{} DLL Classification Report", sep);
-    println!();
-
-    for classification in classifications {
-        let strategy_color = match &classification.strategy {
-            Strategy::PalMapping => green_bold,
-            Strategy::CrateReplacement { .. } => yellow_bold,
-            Strategy::ReverseEngineer => red_bold,
-            Strategy::DoNotTranslate => dim,
-        };
-
-        let strategy_text = match &classification.strategy {
-            Strategy::PalMapping => "PAL Mapping".to_string(),
-            Strategy::CrateReplacement { crate_name } => {
-                format!("Crate Replacement ({})", crate_name)
-            }
-            Strategy::ReverseEngineer => "Reverse Engineer".to_string(),
-            Strategy::DoNotTranslate => "Do Not Translate".to_string(),
-        };
-
-        println!("  {}{}", white_bold("  DLL: "), classification.binary);
-        println!(
-            "  {}{}",
-            white_bold("  Category: "),
-            format_category(&classification.category)
-        );
-        println!(
-            "  {}{}",
-            white_bold("  Strategy: "),
-            strategy_color(&strategy_text)
-        );
-        println!(
-            "  {}{} exports, {} imports",
-            white_bold("  "),
-            classification.exports_count,
-            classification.imports_count
-        );
-        if let Some(ref replacement) = classification.crate_replacement {
-            println!("  {}{}", dim("    Crate: "), dim(replacement));
-        }
-        println!();
-    }
-
-    // Per-DLL shim suggestion details.
-    if !shim_report.is_empty() {
-        println!("{}", cyan_bold(&"─".repeat(58)));
-        println!("  {} Shim Layer Suggestions", bold(&dim("SHIM LAYERS")));
-        println!();
-
-        for suggestion in &shim_report.suggestions {
-            let complexity_color = match suggestion.estimated_complexity {
-                calxgloss_types::ComplexityScore::Low => green_bold,
-                calxgloss_types::ComplexityScore::Medium => yellow_bold,
-                calxgloss_types::ComplexityScore::High => red_bold,
-            };
-
-            println!(
-                "  {} {} → {}",
-                dim("  DLL:"),
-                white_bold(&suggestion.source_dll),
-                dim(&suggestion.target_crate)
-            );
-            println!(
-                "    {} {} estimated mappings",
-                dim("  Exports:"),
-                suggestion.estimated_mappings
-            );
-            println!(
-                "    {} {}",
-                dim("  Complexity:"),
-                complexity_color(&format!("{:?}", suggestion.estimated_complexity))
-            );
-            println!(
-                "    {} {:.0}% confidence",
-                dim("  Confidence:"),
-                suggestion.estimated_confidence * 100.0
-            );
-            println!();
-        }
-    }
-
-    println!("{}", sep);
-
-    // Summary counts
-    let pal_count = classifications
-        .iter()
-        .filter(|c| matches!(c.strategy, Strategy::PalMapping))
-        .count();
-    let crate_count = classifications
-        .iter()
-        .filter(|c| matches!(c.strategy, Strategy::CrateReplacement { .. }))
-        .count();
-    let re_count = classifications
-        .iter()
-        .filter(|c| matches!(c.strategy, Strategy::ReverseEngineer))
-        .count();
-    let parked_count = classifications
-        .iter()
-        .filter(|c| matches!(c.strategy, Strategy::DoNotTranslate))
-        .count();
-
-    println!(
-        "  {} Summary: {} PAL, {} crate replacement, {} reverse engineer, {} parked",
-        bold(&dim("  Summary:")),
-        green_bold(&pal_count.to_string()),
-        yellow_bold(&crate_count.to_string()),
-        red_bold(&re_count.to_string()),
-        dim(&parked_count.to_string())
-    );
-}
-
-/// Format a DLL category for display.
-fn format_category(category: &calxgloss_types::DllCategory) -> String {
-    match category {
-        calxgloss_types::DllCategory::WindowsOs => "Windows OS".to_string(),
-        calxgloss_types::DllCategory::MicrosoftSdk => "Microsoft SDK".to_string(),
-        calxgloss_types::DllCategory::KnownThirdParty => "Known Third-Party".to_string(),
-        calxgloss_types::DllCategory::ProjectSpecific => "Project-Specific".to_string(),
-        calxgloss_types::DllCategory::UnknownThirdParty => "Unknown Third-Party".to_string(),
-        calxgloss_types::DllCategory::RuntimeLibrary => "Runtime Library".to_string(),
-        calxgloss_types::DllCategory::DotNetManaged => ".NET Managed".to_string(),
-    }
-}
-
-// ============================================================
-// Batch translation summary
-// ============================================================
-
-/// Print a summary of a batch translation run.
-///
-/// Displays:
-/// - A header with the DLL name and total function count
-/// - Per-function pass/fail lines with model used
-/// - A summary row showing total succeeded, failed, and the pass rate
-pub fn print_batch_summary(result: &BatchTranslationResult) {
-    let sep = cyan_bold(&"═".repeat(58));
-    println!();
-    println!("{} Batch Translation — {}", sep, result.binary);
-    println!("{}", sep);
-
-    for (idx, func_result) in result.results.iter().enumerate() {
-        let func_line = format!("  {}. {}", idx + 1, func_result.function);
-
-        if func_result.success {
-            println!("  {} {}", green_bold("\u{2713}"), func_line);
-            if let Some(rust_code) = &func_result.rust_code {
-                let lines = rust_code.lines().count();
-                println!(
-                    "     {}{} Rust code, {} lines",
-                    dim("  model: "),
-                    func_result
-                        .retry_result
-                        .success_strategy
-                        .as_deref()
-                        .unwrap_or("initial"),
-                    lines
-                );
-            }
-        } else {
-            println!("  {} {}", red_bold("\u{2717}"), func_line);
-            // Show how many attempts were made
-            let attempts = func_result.retry_result.attempts.len();
-            if attempts > 0 {
-                println!("     {}{} attempts exhausted", dim("  "), attempts);
-            }
-        }
-    }
-
-    println!("{}", sep);
-
-    let total = result.total_count();
-    let success = result.success_count();
-    let failure = result.failure_count();
-
-    let overall_color = if failure == 0 && total > 0 {
-        green_bold
-    } else if success > 0 {
-        yellow_bold
-    } else {
-        red_bold
-    };
-
-    let pass_rate = if total > 0 {
-        success as f64 / total as f64 * 100.0
-    } else {
-        0.0
-    };
-
-    println!(
-        "  {}{} succeeded, {} failed ({:.0}% pass rate)",
-        overall_color(&success.to_string()),
-        white_bold(&dim(" ").to_string()),
-        red_bold(&failure.to_string()),
-        pass_rate
-    );
-
-    // Token usage summary
-    let total_tokens: usize = result
-        .results
-        .iter()
-        .flat_map(|r| &r.retry_result.attempts)
-        .filter_map(|a| a.tokens_used)
-        .sum();
-
-    if total_tokens > 0 {
-        let tokens_str = format!(
-            "  {}{} tokens consumed across {} attempts",
-            white_bold("  Tokens: "),
-            white_bold(&total_tokens.to_string()),
-            result
-                .results
-                .iter()
-                .map(|r| r.retry_result.attempts.len())
-                .sum::<usize>()
-        );
-        println!("{}", tokens_str);
-    }
-
-    if !result.results.is_empty() {
-        let all = result.all_success();
-        let label = if all { "ALL PASS" } else { "INCOMPLETE" };
-        println!(
-            "  {}",
-            if all {
-                green_bold(label)
-            } else {
-                yellow_bold(label)
-            }
-        );
-    }
-}
-
-// ============================================================
-// Tests
-// ============================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_category() {
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::WindowsOs),
-            "Windows OS"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::MicrosoftSdk),
-            "Microsoft SDK"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::KnownThirdParty),
-            "Known Third-Party"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::ProjectSpecific),
-            "Project-Specific"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::UnknownThirdParty),
-            "Unknown Third-Party"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::RuntimeLibrary),
-            "Runtime Library"
-        );
-        assert_eq!(
-            format_category(&calxgloss_types::DllCategory::DotNetManaged),
-            ".NET Managed"
-        );
-    }
-
-    #[test]
-    fn test_failed_test_display_json_types() {
-        let failed = FailedTest {
-            test_index: 0,
-            inputs: serde_json::json!([1, 2, 3]),
-            expected: serde_json::json!(6),
-            actual: serde_json::json!(7),
-            error: "expected 6, got 7".to_string(),
-            expected_side_effects: vec![],
-            expected_api_calls: vec![],
-            actual_api_calls: vec![],
-            trace_divergence_index: None,
-        };
-        assert_eq!(failed.test_index, 0);
-        assert_eq!(failed.error, "expected 6, got 7");
-    }
 }

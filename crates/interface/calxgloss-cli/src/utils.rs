@@ -1,7 +1,7 @@
 //! Utility functions for the CLI.
 
 use anyhow::{Context, Result};
-pub use calxgloss_reports::{
+pub(crate) use crate::printers::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
 };
@@ -376,7 +376,8 @@ pub(crate) fn attempt_commit_files(
 }
 
 // ============================================================
-// Terminal formatting helpers (mirrors calxgloss-reports internals)
+// Terminal formatting helpers for the scan commands (the printers
+// in crate::printers keep their own colour set; see its module doc)
 // ============================================================
 
 const ANSI_RESET: &str = "\x1b[0m";

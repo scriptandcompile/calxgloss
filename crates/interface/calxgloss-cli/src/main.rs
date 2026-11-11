@@ -49,6 +49,7 @@
 
 mod cli_types;
 mod commands;
+mod printers;
 mod settings;
 mod utils;
 

@@ -1,0 +1,565 @@
+//! The CLI's own terminal printers (issue #481).
+//!
+//! Every surviving command's terminal output is printed from this module —
+//! the ANSI colour set, the bold/dim helpers, and the batch-summary,
+//! classification-report, verification-results, git-status, and failure
+//! printers. The code was lifted verbatim from `calxgloss-reports` so the
+//! bytes on stdout do not move. The reports crate keeps its own copies only
+//! for the review-facing terminal output still standing there. Those copies
+//! are deleted as their commands go (issues #484, #485).
+//!
+//! The colour set stays separate from `utils`' terminal helpers on purpose.
+//! `utils` closes every bold run with a reset code; these printers never
+//! did, and merging the two sets would change the bytes on stdout. They can
+//! merge once #485 strips the reports crate and one set is left standing.
+
+use calxgloss_analysis::DllClassification;
+use calxgloss_analysis::ShimSuggestionReport;
+use calxgloss_analysis::Strategy;
+use calxgloss_translator::BatchTranslationResult;
+use calxgloss_types::FailedTest;
+use calxgloss_types::GitBranch;
+use calxgloss_types::VerificationResult;
+
+// ============================================================
+// ANSI color codes
+// ============================================================
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_CYAN: &str = "\x1b[36m";
+
+pub(crate) fn bold(text: &str) -> String {
+    format!("{}{}", ANSI_BOLD, text)
+}
+
+pub(crate) fn bold_color(text: &str, code: &str) -> String {
+    format!("{}{}{}", ANSI_BOLD, code, text)
+}
+
+pub(crate) fn dim(text: &str) -> String {
+    format!("{}{}{}", ANSI_DIM, text, ANSI_RESET)
+}
+
+pub(crate) fn green_bold(text: &str) -> String {
+    bold_color(text, ANSI_GREEN)
+}
+
+pub(crate) fn red_bold(text: &str) -> String {
+    bold_color(text, ANSI_RED)
+}
+
+pub(crate) fn yellow_bold(text: &str) -> String {
+    bold_color(text, ANSI_YELLOW)
+}
+
+pub(crate) fn cyan_bold(text: &str) -> String {
+    bold_color(text, ANSI_CYAN)
+}
+
+pub(crate) fn white_bold(text: &str) -> String {
+    bold(text)
+}
+
+// ============================================================
+// print_verification_results
+// ============================================================
+
+/// Print verification results (compilation status, test pass/fail counts, errors).
+///
+/// Displays whether compilation succeeded, how many tests passed,
+/// and details of any compilation errors or test failures.
+pub(crate) fn print_verification_results(result: &VerificationResult) {
+    if result.compiled {
+        println!("  {}{}", white_bold("Compiled: "), green_bold("yes"));
+
+        if result.tests_total > 0 {
+            let pass_rate = result.tests_passed as f64 / result.tests_total as f64 * 100.0;
+            let color = if result.tests_passed == result.tests_total {
+                green_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
+            } else if pass_rate >= 90.0 {
+                yellow_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
+            } else {
+                red_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
+            };
+            println!("  {}", color);
+        } else {
+            println!("  {}", dim("Tests: none"));
+        }
+
+        if !result.failed_tests.is_empty() {
+            println!("  {}", yellow_bold("  Failed:"));
+            for failed in &result.failed_tests {
+                print_failed_test_detail(failed);
+            }
+        }
+    } else {
+        println!("  {}{}", white_bold("Compiled: "), red_bold("no"));
+
+        if !result.compilation_errors.is_empty() {
+            println!("  {}", red_bold("  Errors:"));
+            for error in &result.compilation_errors {
+                for line in error.lines() {
+                    println!("    {}", dim(line));
+                }
+            }
+        }
+    }
+}
+
+/// Print details of a single failed test.
+fn print_failed_test_detail(failed: &FailedTest) {
+    let inputs_str = match &failed.inputs {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Array(arr) => {
+            let strs: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_i64())
+                .map(|n| n.to_string())
+                .collect();
+            format!("[{}]", strs.join(", "))
+        }
+        serde_json::Value::String(s) => format!("\"{}\"", s),
+        _ => format!("{}", failed.inputs),
+    };
+
+    let expected_str = match &failed.expected {
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("\"{}\"", s),
+        _ => format!("{}", failed.expected),
+    };
+
+    let actual_str = match &failed.actual {
+        serde_json::Value::String(s) if s.contains("panicked") || s.contains("PANIC") => {
+            format!("panicked ({})", s)
+        }
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => format!("\"{}\"", s),
+        _ => format!("{}", failed.actual),
+    };
+
+    println!(
+        "    {}{}: {} (expected {}, got {})",
+        dim("input_"),
+        failed.test_index,
+        white_bold(&inputs_str),
+        expected_str,
+        actual_str
+    );
+
+    // A failed test whose case expected global side effects lists them
+    // by their typed kinds, so the difference in global handling shows
+    // up as `GlobalWrite DAT_...` instead of prose to be parsed.
+    if !failed.expected_side_effects.is_empty() {
+        let named: Vec<String> = failed
+            .expected_side_effects
+            .iter()
+            .map(|effect| match &effect.kind {
+                calxgloss_types::SideEffectKind::Other(note) => format!("Other {note}"),
+                kind => format!("{kind:?} {}", effect.detail),
+            })
+            .collect();
+        println!(
+            "    {}{}",
+            dim("expected side effects: "),
+            dim(&named.join(", "))
+        );
+    }
+}
+
+// ============================================================
+// print_git_status
+// ============================================================
+
+/// Print the Git branch creation status.
+///
+/// Displays the branch name and whether it was newly created or already existed.
+pub(crate) fn print_git_status(branch: &GitBranch, merged: bool) {
+    if merged {
+        println!(
+            "  {}{}{}",
+            white_bold("  Branch: "),
+            branch.name,
+            dim(" → merged to main")
+        );
+    } else {
+        println!(
+            "  {}{}{}",
+            white_bold("  Branch: "),
+            branch.name,
+            dim(" (not merged)")
+        );
+    }
+
+    let status_color = if merged { green_bold } else { yellow_bold };
+    let status_text = if merged { "MERGED" } else { "UNMERGED" };
+    println!(
+        "  {}{}",
+        white_bold("  Status: "),
+        status_color(status_text)
+    );
+}
+
+// ============================================================
+// print_failure
+// ============================================================
+
+/// Print a failure summary with diagnostic details.
+///
+/// Displays the branch name, compilation errors, and test failures, then a
+/// tip that a retry gets a new branch. There is no acceptance prompt here:
+/// the run has already failed, so nothing is being accepted.
+pub(crate) fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
+    println!();
+    println!("{}", cyan_bold(&"╔".repeat(60)));
+    println!(
+        "  {}TRANSLATION FAILED{}",
+        cyan_bold("║  "),
+        cyan_bold(" ║")
+    );
+    println!("{}", cyan_bold(&"║".repeat(60)));
+
+    // Function info
+    println!("  {}{}", white_bold("  Function: "), branch.function);
+    println!("  {}{}", white_bold("  DLL: "), branch.binary);
+    println!("{}", cyan_bold(&"║".repeat(60)));
+
+    // Verification results
+    print_verification_results(verification);
+
+    // Git status
+    print_git_status(branch, false);
+
+    // Overall status
+    println!(
+        "  {}{}",
+        white_bold("  Status: "),
+        red_bold("FAIL \u{2717} — fix required")
+    );
+
+    println!("{}", cyan_bold(&"╚".repeat(60)));
+
+    println!(
+        "  {}",
+        dim("  Tip: A new branch will be created for retry attempt.")
+    );
+}
+
+// ============================================================
+// Classify command output
+// ============================================================
+
+/// Print a DLL classification report.
+///
+/// Displays the DLL name, its category, the recommended strategy,
+/// and counts of exports and imports. When shim suggestions are
+/// provided, also displays a shim-layer summary section showing
+/// expected shim complexity for crate-replacement DLLs.
+pub(crate) fn print_classification_report(
+    classifications: &[DllClassification],
+    shim_report: &ShimSuggestionReport,
+) {
+    let sep = cyan_bold(&"═".repeat(58));
+    println!("{} DLL Classification Report", sep);
+    println!();
+
+    for classification in classifications {
+        let strategy_color = match &classification.strategy {
+            Strategy::PalMapping => green_bold,
+            Strategy::CrateReplacement { .. } => yellow_bold,
+            Strategy::ReverseEngineer => red_bold,
+            Strategy::DoNotTranslate => dim,
+        };
+
+        let strategy_text = match &classification.strategy {
+            Strategy::PalMapping => "PAL Mapping".to_string(),
+            Strategy::CrateReplacement { crate_name } => {
+                format!("Crate Replacement ({})", crate_name)
+            }
+            Strategy::ReverseEngineer => "Reverse Engineer".to_string(),
+            Strategy::DoNotTranslate => "Do Not Translate".to_string(),
+        };
+
+        println!("  {}{}", white_bold("  DLL: "), classification.binary);
+        println!(
+            "  {}{}",
+            white_bold("  Category: "),
+            format_category(&classification.category)
+        );
+        println!(
+            "  {}{}",
+            white_bold("  Strategy: "),
+            strategy_color(&strategy_text)
+        );
+        println!(
+            "  {}{} exports, {} imports",
+            white_bold("  "),
+            classification.exports_count,
+            classification.imports_count
+        );
+        if let Some(ref replacement) = classification.crate_replacement {
+            println!("  {}{}", dim("    Crate: "), dim(replacement));
+        }
+        println!();
+    }
+
+    // Per-DLL shim suggestion details.
+    if !shim_report.is_empty() {
+        println!("{}", cyan_bold(&"─".repeat(58)));
+        println!("  {} Shim Layer Suggestions", bold(&dim("SHIM LAYERS")));
+        println!();
+
+        for suggestion in &shim_report.suggestions {
+            let complexity_color = match suggestion.estimated_complexity {
+                calxgloss_types::ComplexityScore::Low => green_bold,
+                calxgloss_types::ComplexityScore::Medium => yellow_bold,
+                calxgloss_types::ComplexityScore::High => red_bold,
+            };
+
+            println!(
+                "  {} {} → {}",
+                dim("  DLL:"),
+                white_bold(&suggestion.source_dll),
+                dim(&suggestion.target_crate)
+            );
+            println!(
+                "    {} {} estimated mappings",
+                dim("  Exports:"),
+                suggestion.estimated_mappings
+            );
+            println!(
+                "    {} {}",
+                dim("  Complexity:"),
+                complexity_color(&format!("{:?}", suggestion.estimated_complexity))
+            );
+            println!(
+                "    {} {:.0}% confidence",
+                dim("  Confidence:"),
+                suggestion.estimated_confidence * 100.0
+            );
+            println!();
+        }
+    }
+
+    println!("{}", sep);
+
+    // Summary counts
+    let pal_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::PalMapping))
+        .count();
+    let crate_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::CrateReplacement { .. }))
+        .count();
+    let re_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::ReverseEngineer))
+        .count();
+    let parked_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::DoNotTranslate))
+        .count();
+
+    println!(
+        "  {} Summary: {} PAL, {} crate replacement, {} reverse engineer, {} parked",
+        bold(&dim("  Summary:")),
+        green_bold(&pal_count.to_string()),
+        yellow_bold(&crate_count.to_string()),
+        red_bold(&re_count.to_string()),
+        dim(&parked_count.to_string())
+    );
+}
+
+/// Format a DLL category for display.
+fn format_category(category: &calxgloss_types::DllCategory) -> String {
+    match category {
+        calxgloss_types::DllCategory::WindowsOs => "Windows OS".to_string(),
+        calxgloss_types::DllCategory::MicrosoftSdk => "Microsoft SDK".to_string(),
+        calxgloss_types::DllCategory::KnownThirdParty => "Known Third-Party".to_string(),
+        calxgloss_types::DllCategory::ProjectSpecific => "Project-Specific".to_string(),
+        calxgloss_types::DllCategory::UnknownThirdParty => "Unknown Third-Party".to_string(),
+        calxgloss_types::DllCategory::RuntimeLibrary => "Runtime Library".to_string(),
+        calxgloss_types::DllCategory::DotNetManaged => ".NET Managed".to_string(),
+    }
+}
+
+// ============================================================
+// Batch translation summary
+// ============================================================
+
+/// Print a summary of a batch translation run.
+///
+/// Displays:
+/// - A header with the DLL name and total function count
+/// - Per-function pass/fail lines with model used
+/// - A summary row showing total succeeded, failed, and the pass rate
+pub(crate) fn print_batch_summary(result: &BatchTranslationResult) {
+    let sep = cyan_bold(&"═".repeat(58));
+    println!();
+    println!("{} Batch Translation — {}", sep, result.binary);
+    println!("{}", sep);
+
+    for (idx, func_result) in result.results.iter().enumerate() {
+        let func_line = format!("  {}. {}", idx + 1, func_result.function);
+
+        if func_result.success {
+            println!("  {} {}", green_bold("\u{2713}"), func_line);
+            if let Some(rust_code) = &func_result.rust_code {
+                let lines = rust_code.lines().count();
+                println!(
+                    "     {}{} Rust code, {} lines",
+                    dim("  model: "),
+                    func_result
+                        .retry_result
+                        .success_strategy
+                        .as_deref()
+                        .unwrap_or("initial"),
+                    lines
+                );
+            }
+        } else {
+            println!("  {} {}", red_bold("\u{2717}"), func_line);
+            // Show how many attempts were made
+            let attempts = func_result.retry_result.attempts.len();
+            if attempts > 0 {
+                println!("     {}{} attempts exhausted", dim("  "), attempts);
+            }
+        }
+    }
+
+    println!("{}", sep);
+
+    let total = result.total_count();
+    let success = result.success_count();
+    let failure = result.failure_count();
+
+    let overall_color = if failure == 0 && total > 0 {
+        green_bold
+    } else if success > 0 {
+        yellow_bold
+    } else {
+        red_bold
+    };
+
+    let pass_rate = if total > 0 {
+        success as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    println!(
+        "  {}{} succeeded, {} failed ({:.0}% pass rate)",
+        overall_color(&success.to_string()),
+        white_bold(&dim(" ").to_string()),
+        red_bold(&failure.to_string()),
+        pass_rate
+    );
+
+    // Token usage summary
+    let total_tokens: usize = result
+        .results
+        .iter()
+        .flat_map(|r| &r.retry_result.attempts)
+        .filter_map(|a| a.tokens_used)
+        .sum();
+
+    if total_tokens > 0 {
+        let tokens_str = format!(
+            "  {}{} tokens consumed across {} attempts",
+            white_bold("  Tokens: "),
+            white_bold(&total_tokens.to_string()),
+            result
+                .results
+                .iter()
+                .map(|r| r.retry_result.attempts.len())
+                .sum::<usize>()
+        );
+        println!("{}", tokens_str);
+    }
+
+    if !result.results.is_empty() {
+        let all = result.all_success();
+        let label = if all { "ALL PASS" } else { "INCOMPLETE" };
+        println!(
+            "  {}",
+            if all {
+                green_bold(label)
+            } else {
+                yellow_bold(label)
+            }
+        );
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_category() {
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::WindowsOs),
+            "Windows OS"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::MicrosoftSdk),
+            "Microsoft SDK"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::KnownThirdParty),
+            "Known Third-Party"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::ProjectSpecific),
+            "Project-Specific"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::UnknownThirdParty),
+            "Unknown Third-Party"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::RuntimeLibrary),
+            "Runtime Library"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::DotNetManaged),
+            ".NET Managed"
+        );
+    }
+
+    #[test]
+    fn test_failed_test_display_json_types() {
+        let failed = FailedTest {
+            test_index: 0,
+            inputs: serde_json::json!([1, 2, 3]),
+            expected: serde_json::json!(6),
+            actual: serde_json::json!(7),
+            error: "expected 6, got 7".to_string(),
+            expected_side_effects: vec![],
+            expected_api_calls: vec![],
+            actual_api_calls: vec![],
+            trace_divergence_index: None,
+        };
+        assert_eq!(failed.test_index, 0);
+        assert_eq!(failed.error, "expected 6, got 7");
+    }
+}
