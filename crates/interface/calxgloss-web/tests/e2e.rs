@@ -42,3 +42,5 @@ mod scenario_status;
 mod support;
 #[path = "e2e/unit_detail_and_server_basics.rs"]
 mod unit_detail_and_server_basics;
+#[path = "e2e/unknown_ledger_web.rs"]
+mod unknown_ledger_web;

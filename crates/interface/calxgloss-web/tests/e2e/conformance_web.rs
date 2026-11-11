@@ -8,6 +8,14 @@
 //! *unknown* — never zero, never closed — and no conformance evidence
 //! touches per-unit review state: statuses stand, no action record is
 //! written, and accept is not blocked on a verdict's say-so.
+//!
+//! Issue #482 (P56.2) re-pins the rest of the terminal conformance suite's
+//! claims at this same seam: a fully-evidenced binary reading *complete*
+//! sealed by its own ledger digest, every honest disposition keeping its
+//! own tally apart from the verified, a merged unit with no standing
+//! Accept reading *un-reviewed* with the broken link named, tampered
+//! ledger bytes falling to *unknown* with the digest mismatch named, and
+//! an unreadable unknown ledger keeping a green row short of complete.
 
 use super::*;
 
@@ -371,4 +379,368 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
          unit {unit_id} answered {status}: {body}"
     );
     assert_eq!(body["action"], "accept");
+}
+
+// ── Issue #482 (P56.2): the terminal suite's remaining claims at this seam ──
+
+/// Stage a fully-evidenced translation attempt the way the verify gate
+/// and the review door file it: the attempt branch carries the translated
+/// source and a sealed, committed receipt pair, and `accept_branch`
+/// leaves a standing Accept review action and the merge into main.
+/// Returns the branch tip an obligation entry must cite as its owner and
+/// the receipt digest it must cite. Shared by the complete, un-reviewed,
+/// and tampered-bytes pins below, mirroring the single fixture the CLI
+/// suite stood its claims on.
+fn stage_fully_evidenced_attempt(repo: &std::path::Path, function: &str) -> (String, String) {
+    let git = GitManager::open(repo).expect("open the booted world's repository");
+    let branch = git
+        .create_branch("game_logic.dll", function, 1, None)
+        .expect("translation branch")
+        .branch;
+    let source = format!("src/game_logic.dll_{function}_v1.rs");
+    std::fs::write(repo.join(&source), "// translated").expect("write source");
+
+    let mut dimensions = std::collections::BTreeMap::new();
+    dimensions.insert(
+        "values".to_string(),
+        calxgloss_types::DimensionCounts {
+            assessed: 2,
+            passed: 2,
+        },
+    );
+    let mut receipt = calxgloss_types::VerificationReceipt {
+        binary: calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+        function: function.to_string(),
+        attempt: 1,
+        retry_strategy: "initial".to_string(),
+        attempt_path: "strategy_prompt".to_string(),
+        verifier_command: calxgloss_types::VerifierCommand::CompileAndBaselineTest,
+        baseline_suite_digest: "sha256:suite".to_string(),
+        covered_case_kinds: calxgloss_types::CaseKind::ALL.iter().copied().collect(),
+        dimensions,
+        compile_ms: 10,
+        test_run_ms: 5,
+        total_ms: 15,
+        verdict: calxgloss_types::VerificationVerdict::Passed,
+        failed_cases: Vec::new(),
+        harness_error_reason: None,
+        digest: String::new(),
+    };
+    receipt.digest = receipt.content_digest().expect("digests");
+    let json_rel = format!("re/verification/game_logic.dll/{function}/attempt-1.json");
+    let md_rel = format!("re/verification/game_logic.dll/{function}/attempt-1.md");
+    let json_path = repo.join(&json_rel);
+    std::fs::create_dir_all(json_path.parent().expect("receipt dir")).expect("receipt dir");
+    std::fs::write(
+        &json_path,
+        serde_json::to_string(&receipt).expect("serializes"),
+    )
+    .expect("file receipt JSON");
+    std::fs::write(
+        json_path.with_extension("md"),
+        calxgloss_types::verification_receipt_markdown(&receipt),
+    )
+    .expect("file receipt twin");
+
+    let commit = git
+        .commit(
+            &branch,
+            &format!("re: translate {function}"),
+            &[source.as_str(), json_rel.as_str(), md_rel.as_str()],
+        )
+        .expect("attempt commit");
+    git.accept_branch(&branch).expect("accept branch");
+    (commit.hash, receipt.digest)
+}
+
+/// File the binary's unknown ledger with no records: the gate proven
+/// open-free, the way the CLI suite's fully-evidenced fixture filed it.
+fn file_empty_unknown_ledger(repo: &std::path::Path) {
+    calxgloss_types::save_json(
+        &calxgloss_types::unknown_ledger_path(
+            repo,
+            &calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+        ),
+        &calxgloss_types::UnknownLedger {
+            binary: calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+            filed_at: 1_700_000_000,
+            records: Some(Vec::new()),
+        },
+    )
+    .expect("file the open-free ledger");
+}
+
+/// File the obligation ledger for one fully-closed green claim.
+fn stage_closed_claim(
+    repo: &std::path::Path,
+    function: &str,
+    owner: &str,
+    citation: &str,
+) {
+    let mut entry = calxgloss_types::ObligationEntry::new(
+        function,
+        1,
+        owner,
+        calxgloss_types::ObligationDisposition::ClaimedVerified,
+    );
+    entry.receipt_digest = Some(citation.to_string());
+    stage_obligation_ledger(repo, "game_logic.dll", vec![entry]);
+}
+
+#[tokio::test]
+async fn the_dashboard_payload_prints_a_complete_row_sealed_by_its_own_ledger_digest() {
+    // The CLI suite's complete line — "complete (1 verified, sealed
+    // {digest})" — re-pinned at the payload: the closed evidence chain
+    // counts one verified, the filed ledger's own seal rides as the
+    // closure digest, and a proven open-free unknown gate lets the row
+    // read complete at all.
+    let world = support::ReviewWorld::boot_plain().await;
+    let (owner, citation) = stage_fully_evidenced_attempt(world.repo_path().as_path(), "Restitch");
+    stage_closed_claim(world.repo_path().as_path(), "Restitch", &owner, &citation);
+    file_empty_unknown_ledger(world.repo_path().as_path());
+
+    let body = dashboard_body(&world).await;
+    let row = support::conformance_row(&body, "game_logic.dll");
+    let filed = std::fs::read_to_string(calxgloss_types::obligation_ledger_path(
+        world.repo_path().as_path(),
+        &calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+    ))
+    .expect("filed ledger text");
+    let digest = serde_json::from_str::<serde_json::Value>(&filed).expect("ledger json")["digest"]
+        .as_str()
+        .expect("digest field")
+        .to_string();
+    assert_eq!(
+        row,
+        serde_json::json!({
+            "binary": "game_logic.dll",
+            "verdict": "complete",
+            "causes": [],
+            "closure_digest": digest,
+            "tally": {
+                "verified": 1,
+                "skipped": 0,
+                "parked": 0,
+                "overridden": 0,
+                "un_reviewed": 0,
+                "no_baseline": 0
+            },
+            "first_open": null,
+            "blocking_unknowns": []
+        }),
+        "the fully-evidenced binary reads complete whole, sealed by the \
+         digest its own filed ledger carries: {row}"
+    );
+}
+
+#[tokio::test]
+async fn the_dashboard_payload_tallies_every_honest_disposition_apart_from_verified() {
+    // The CLI suite's tally line — "incomplete (1 verified, 1 skipped,
+    // 1 parked, 1 overridden, 1 un-reviewed, 1 no-baseline)" — re-pinned:
+    // every honest disposition keeps its own tally slot, never folded
+    // into the verified, and the row stays short of complete.
+    let world = support::ReviewWorld::boot_plain().await;
+    stage_obligation_ledger(
+        world.repo_path().as_path(),
+        "game_logic.dll",
+        [
+            ("SkipMe", calxgloss_types::ObligationDisposition::Skipped),
+            ("ParkMe", calxgloss_types::ObligationDisposition::Parked),
+            (
+                "OverrideMe",
+                calxgloss_types::ObligationDisposition::Overridden,
+            ),
+            (
+                "ReviewMeNot",
+                calxgloss_types::ObligationDisposition::UnReviewed,
+            ),
+            ("NoCover", calxgloss_types::ObligationDisposition::NoBaseline),
+        ]
+        .into_iter()
+        .map(|(function, disposition)| {
+            calxgloss_types::ObligationEntry::new(
+                function,
+                1,
+                "0000000000000000000000000000000000000000",
+                disposition,
+            )
+        })
+        .collect(),
+    );
+
+    let body = dashboard_body(&world).await;
+    let row = support::conformance_row(&body, "game_logic.dll");
+    assert_eq!(
+        row["verdict"], "incomplete",
+        "honest dispositions hold the binary short of complete: {row}"
+    );
+    assert_eq!(
+        row["tally"],
+        serde_json::json!({
+            "verified": 0,
+            "skipped": 1,
+            "parked": 1,
+            "overridden": 1,
+            "un_reviewed": 1,
+            "no_baseline": 1
+        }),
+        "each honest disposition tallies apart from the verified, never \
+         as verified: {row}"
+    );
+}
+
+#[tokio::test]
+async fn a_merged_unit_with_no_accept_record_reads_un_reviewed_naming_the_link() {
+    // The CLI suite's join-derived line — "incomplete (0 verified,
+    // 1 un-reviewed)" beside "no Accept review action stands" —
+    // re-pinned: review is the only door into verified. A merged branch
+    // with every other leg standing, minus the Accept record, counts
+    // un-reviewed in its own slot and names the broken link as first
+    // open.
+    let world = support::ReviewWorld::boot_plain().await;
+    let (owner, citation) = stage_fully_evidenced_attempt(world.repo_path().as_path(), "Restitch");
+    std::fs::remove_file(
+        world
+            .repo_path()
+            .join("re/accepts/game_logic.dll/Restitch/v1.json"),
+    )
+    .expect("withdraw the Accept record");
+    stage_closed_claim(world.repo_path().as_path(), "Restitch", &owner, &citation);
+    file_empty_unknown_ledger(world.repo_path().as_path());
+
+    let body = dashboard_body(&world).await;
+    let row = support::conformance_row(&body, "game_logic.dll");
+    assert_eq!(
+        row["verdict"], "incomplete",
+        "a merged unit nobody reviewed never reads complete: {row}"
+    );
+    assert_eq!(
+        row["tally"],
+        serde_json::json!({
+            "verified": 0,
+            "skipped": 0,
+            "parked": 0,
+            "overridden": 0,
+            "un_reviewed": 1,
+            "no_baseline": 0
+        }),
+        "the join counts the never-reviewed attempt in its own slot, \
+         never verified: {row}"
+    );
+    assert_eq!(
+        row["first_open"],
+        serde_json::json!({
+            "function": "Restitch",
+            "attempt": 1,
+            "link": "no Accept review action stands for this attempt",
+        }),
+        "the broken review link names itself beside the counts: {row}"
+    );
+}
+
+#[tokio::test]
+async fn tampered_obligation_ledger_bytes_fall_to_unknown_naming_the_digest_mismatch() {
+    // The CLI suite's tampered-bytes edge, re-pinned at the payload: an
+    // entry edited under an unchanged seal is an input error at the read.
+    // The row falls to *unknown* with the digest mismatch named, and the
+    // broken document's seal rides nothing — never a stale complete.
+    // (Unreadable bytes already stand pinned in `honest_degradation.rs`;
+    // this is the quiet tamper that still parses.)
+    let world = support::ReviewWorld::boot_plain().await;
+    let (owner, citation) = stage_fully_evidenced_attempt(world.repo_path().as_path(), "Restitch");
+    stage_closed_claim(world.repo_path().as_path(), "Restitch", &owner, &citation);
+    file_empty_unknown_ledger(world.repo_path().as_path());
+
+    let path = calxgloss_types::obligation_ledger_path(
+        world.repo_path().as_path(),
+        &calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+    );
+    let filed = std::fs::read_to_string(&path).expect("filed ledger text");
+    let mut doc: serde_json::Value = serde_json::from_str(&filed).expect("ledger json");
+    let owner_field = doc["entries"][0]["owner_commit"]
+        .as_str()
+        .expect("the entry carries its owner")
+        .to_string();
+    let forged = if owner_field.starts_with('0') { '1' } else { '0' };
+    doc["entries"][0]["owner_commit"] =
+        serde_json::json!(format!("{forged}{}", &owner_field[1..]));
+    std::fs::write(&path, doc.to_string()).expect("edit a sealed entry under the unchanged seal");
+
+    let body = dashboard_body(&world).await;
+    let row = support::conformance_row(&body, "game_logic.dll");
+    assert_eq!(
+        row["verdict"], "unknown",
+        "tampered bytes fall the verdict to unknown, never the sealed claim: {row}"
+    );
+    assert_eq!(
+        row["causes"],
+        serde_json::json!(["digest_mismatch"]),
+        "the read names the mismatch as the cause: {row}"
+    );
+    assert!(
+        row["closure_digest"].is_null(),
+        "the seal over broken bytes rides nothing: {row}"
+    );
+    assert_eq!(
+        row["tally"]["verified"],
+        serde_json::json!(0),
+        "a tampered roster verifies nothing: {row}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_unknown_ledger_keeps_a_green_row_short_of_complete_naming_the_fault() {
+    // The payload names the fault the CLI read printed to stderr: an
+    // unreadable *unknown* ledger proves no gate. A row that reached
+    // *complete* on the green chain falls back short of complete once
+    // the ledger's bytes stop parsing, and it says why — the ledger
+    // never reported its open set. The ledger row itself falls to the
+    // unknown reading, pinned beside it in `unknown_ledger_web.rs`.
+    let world = support::ReviewWorld::boot_plain().await;
+    let (owner, citation) = stage_fully_evidenced_attempt(world.repo_path().as_path(), "Restitch");
+    stage_closed_claim(world.repo_path().as_path(), "Restitch", &owner, &citation);
+    file_empty_unknown_ledger(world.repo_path().as_path());
+
+    // The green chain reaches complete first — the corrupt bytes are
+    // what move it, so the fall below is proven real.
+    let body = dashboard_body(&world).await;
+    assert_eq!(
+        support::conformance_row(&body, "game_logic.dll")["verdict"],
+        "complete"
+    );
+
+    support::file_unreadable_record_bytes(&calxgloss_types::unknown_ledger_path(
+        world.repo_path().as_path(),
+        &calxgloss_types::BinaryIdentity::from("game_logic.dll"),
+    ));
+    let body = dashboard_body(&world).await;
+    let row = support::conformance_row(&body, "game_logic.dll");
+    assert_eq!(
+        row["verdict"], "incomplete",
+        "an unproven gate never reads as a clean run: {row}"
+    );
+    assert!(
+        row["blocking_unknowns"]
+            .as_array()
+            .expect("blocking_unknowns is an array")
+            .iter()
+            .any(|reason| {
+                reason
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("never reported its open set"))
+            }),
+        "the row names the unreadable ledger as the fault holding it shut: {row}"
+    );
+    let ledger_row = body["dashboard"]["unknown_ledgers"]
+        .as_array()
+        .expect("unknown_ledgers is an array")
+        .iter()
+        .find(|row| row["binary"] == "game_logic.dll")
+        .expect("the unknown-ledger row rides the model")
+        .clone();
+    assert_eq!(
+        ledger_row["unknowns"]["open"],
+        serde_json::Value::Null,
+        "the unreadable ledger's own reading falls to unknown: {ledger_row}"
+    );
 }
