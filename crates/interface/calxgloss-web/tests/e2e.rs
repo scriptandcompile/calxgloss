@@ -16,17 +16,15 @@ use calxgloss_translator::assembly::PipelineSpec;
 use calxgloss_types::{
     ApiCategory, BinaryClassificationOverride, ClassificationOverrides, ClassificationRecord,
     ComplexityScore, DllCategory, FaultCategory, FaultEvent, FaultLog, FaultSeverity, GitBranch,
-    PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, PromptStrategyEntry,
-    PromptStrategyLog, RunPhase, RunRequestSignal, RunScope, RunTarget, SHIM_MAPPINGS_FILE,
-    SHIM_VERIFICATION_FILE, ShimApiMapping, ShimLayer, ShimVerificationResult, TestCase,
-    TestResult, TokenUsageEntry, TokenUsageLog, TranslationEvents, WindowsApiCall,
-    shim_artifacts_dir,
+    PipelineRunRequest, PipelineState, ProgressEvent, PromptStrategyEntry, PromptStrategyLog,
+    RunPhase, RunScope, RunTarget, SHIM_MAPPINGS_FILE, SHIM_VERIFICATION_FILE, ShimApiMapping,
+    ShimLayer, ShimVerificationResult, TestCase, TestResult, TokenUsageEntry, TokenUsageLog,
+    TranslationEvents, WindowsApiCall, shim_artifacts_dir,
 };
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
     build_router, build_router_with_actions, build_router_with_ws, serve_with_listener,
 };
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -43,7 +41,6 @@ struct TestFixture {
     /// from a second world (a server restart); the directory is removed
     /// when the last holder drops.
     dir: std::sync::Arc<tempfile::TempDir>,
-    port: u16,
 }
 
 // Scenario tests split out of this file; they see the helpers below through
@@ -75,15 +72,12 @@ mod support;
 #[path = "e2e/unit_detail_and_server_basics.rs"]
 mod unit_detail_and_server_basics;
 
-// The browser helpers moved into the support module (issue #471). The
-// booted world drives them there. Pins not yet converted to the world
-// still resolve them here through their `use super::*;`.
-use support::{eval_bool, eval_count, eval_text, launch_headless_browser, open_dashboard_tab};
+// The browser helpers live in the support module (issue #471); a booted
+// world is what hands each browser test its tab.
 
 impl TestFixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let port = Self::find_free_port();
 
         // Initialise a bare-bones git repo with a README on `main`.
         let config = InitConfig {
@@ -100,25 +94,11 @@ impl TestFixture {
 
         Self {
             dir: std::sync::Arc::new(dir),
-            port,
         }
     }
 
     fn repo_path(&self) -> PathBuf {
         self.dir.path().to_path_buf()
-    }
-
-    fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// Finds a free TCP port by binding to port 0.
-    fn find_free_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0")
-            .expect("bind free port")
-            .local_addr()
-            .unwrap()
-            .port()
     }
 
     /// Creates sample data the DashboardBuilder can read:
@@ -416,31 +396,6 @@ fn baseline_result(
 /// specifies for a server started without LLM settings.
 fn ws_actions(fixture: &TestFixture) -> ActionsState {
     ActionsState::new(fixture.repo_path(), PipelineSpec::default())
-}
-
-async fn spawn_server(router: axum::Router, port: u16) -> tokio::task::JoinHandle<()> {
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .expect("bind listener");
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    })
-}
-
-// ─────────────────────────────────────────────────────────────
-// Pipeline lifecycle control (issue #90, W2.1)
-// ─────────────────────────────────────────────────────────────
-
-/// POST helper for the lifecycle endpoints (they take no body).
-async fn post_lifecycle(port: u16, path: &str) -> (reqwest::StatusCode, serde_json::Value) {
-    let resp = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{port}{path}"))
-        .send()
-        .await
-        .expect("lifecycle request reaches server");
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().await.expect("lifecycle body is JSON");
-    (status, body)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1637,26 +1592,6 @@ struct FunctionArtifact<'a> {
     decompiler_output: &'a str,
     windows_apis: &'a [WindowsApiCall],
     call_graph: &'a [serde_json::Value],
-}
-
-/// Fetches the unit detail body for `unit_id` from a plain `serve` router.
-async fn fetch_unit_detail(fixture: &TestFixture, unit_id: &str) -> serde_json::Value {
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}",
-        fixture.port(),
-        urlencoding::encode(unit_id)
-    ))
-    .await
-    .expect("unit detail request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("unit detail body is JSON")
 }
 
 // ─────────────────────────────────────────────────────────────

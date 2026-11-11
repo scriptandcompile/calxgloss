@@ -33,7 +33,9 @@ async fn test_headless_binary_translation_toggle_matrix() {
     };
     world.emitter().emit(planned.clone());
     world
-        .wait_until_applied(&planned, |view| row_named(view, "game_logic.dll").is_some())
+        .wait_until_applied(&planned, |view| {
+            support::row_named(view, "game_logic.dll").is_some()
+        })
         .await;
     let working = ProgressEvent::BatchStarted {
         binary: "game_logic.dll".into(),
@@ -41,7 +43,7 @@ async fn test_headless_binary_translation_toggle_matrix() {
     world.emitter().emit(working.clone());
     world
         .wait_until_applied(&working, |view| {
-            row_named(view, "game_logic.dll").is_some_and(|b| b["processing"] == true)
+            support::row_named(view, "game_logic.dll").is_some_and(|b| b["processing"] == true)
         })
         .await;
 
@@ -271,7 +273,7 @@ async fn test_headless_binary_start_swaps_the_rows() {
     world.emitter().emit(working.clone());
     world
         .wait_until_applied(&working, |view| {
-            row_named(view, "a.dll").is_some_and(|b| b["processing"] == true)
+            support::row_named(view, "a.dll").is_some_and(|b| b["processing"] == true)
         })
         .await;
 
@@ -460,7 +462,7 @@ async fn test_headless_scope_controls_panel() {
                     "d3d9.dll",
                 ]
                 .iter()
-                .all(|name| row_named(view, name).is_some())
+                .all(|name| support::row_named(view, name).is_some())
             },
         )
         .await;
@@ -1137,7 +1139,9 @@ async fn test_headless_classification_override_panel() {
     };
     world.emitter().emit(classified.clone());
     world
-        .wait_until_applied(&classified, |view| row_named(view, "fmod.dll").is_some())
+        .wait_until_applied(&classified, |view| {
+            support::row_named(view, "fmod.dll").is_some()
+        })
         .await;
 
     let Some(tab) = world.open_dashboard_tab() else {
@@ -1229,7 +1233,9 @@ async fn test_headless_classification_override_honest_without_control() {
     };
     world.emitter().emit(classified.clone());
     world
-        .wait_until_applied(&classified, |view| row_named(view, "fmod.dll").is_some())
+        .wait_until_applied(&classified, |view| {
+            support::row_named(view, "fmod.dll").is_some()
+        })
         .await;
 
     let Some(tab) = world.open_dashboard_tab() else {
@@ -1319,17 +1325,6 @@ async fn test_headless_unit_analysis_sections() {
 // ─────────────────────────────────────────────────────────────
 // Applied-wait helpers for this submodule (issue #475)
 // ─────────────────────────────────────────────────────────────
-
-/// True when the served `/api/pipeline` view already carries a row for the
-/// named binary — the applied state for a `QueuePlanned`, `BatchStarted`,
-/// or `ClassificationComplete` event.
-fn row_named<'a>(view: &'a serde_json::Value, binary: &str) -> Option<&'a serde_json::Value> {
-    view["binaries"]
-        .as_array()
-        .expect("binaries is an array")
-        .iter()
-        .find(|b| b["binary"] == binary)
-}
 
 /// The served `/api/pipeline` rows' binary names, in served display order —
 /// the applied state for a queue plan's row order.

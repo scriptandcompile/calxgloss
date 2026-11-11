@@ -1082,6 +1082,23 @@ impl Client {
             .await
     }
 
+    /// `GET /api/units/{id}/diff` with the unit id URL-encoded, as the
+    /// route's path parameter expects.
+    pub async fn unit_diff(&self, unit_id: &str) -> (reqwest::StatusCode, serde_json::Value) {
+        self.get_json(&format!("/api/units/{}/diff", urlencoding::encode(unit_id)))
+            .await
+    }
+
+    /// `GET /api/units/{id}/decomp` with the unit id URL-encoded, as the
+    /// route's path parameter expects.
+    pub async fn unit_decomp(&self, unit_id: &str) -> (reqwest::StatusCode, serde_json::Value) {
+        self.get_json(&format!(
+            "/api/units/{}/decomp",
+            urlencoding::encode(unit_id)
+        ))
+        .await
+    }
+
     /// POST to an endpoint that takes no body (the lifecycle and review
     /// actions) and decode the JSON reply.
     pub async fn post_lifecycle(&self, path: &str) -> (reqwest::StatusCode, serde_json::Value) {
@@ -1210,6 +1227,16 @@ pub fn file_unreadable_record_bytes(path: &std::path::Path) {
         std::fs::create_dir_all(parent).expect("parent dir for unreadable record bytes");
     }
     std::fs::write(path, "{ not json").expect("unreadable record bytes filed");
+}
+
+/// The pipeline-view row for one binary, from a live `/api/pipeline` body.
+/// Applied-wait predicates use it to name the row whose event they await.
+pub fn row_named<'a>(view: &'a serde_json::Value, binary: &str) -> Option<&'a serde_json::Value> {
+    view["binaries"]
+        .as_array()
+        .expect("binaries is an array")
+        .iter()
+        .find(|b| b["binary"] == binary)
 }
 
 /// Pin (issue #466): one boot gives a reachable server — `/health`

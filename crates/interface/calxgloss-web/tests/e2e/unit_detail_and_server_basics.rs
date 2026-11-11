@@ -9,24 +9,20 @@ use super::*;
 #[tokio::test]
 async fn test_patch_without_llm_settings_reports_assembly_error() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
     // Target dir configured, so the one thing missing is the LLM selection:
     // the seam builds the LLM before it ever reads a binary.
     let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default())
         .with_target_dir(fixture.repo_path());
-    let router = build_router_with_actions(state, actions);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_with_actions_backend(&fixture, actions).await;
 
     let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let resp = reqwest::Client::new()
-        .post(format!(
-            "http://127.0.0.1:{}/api/units/{}/patch",
-            fixture.port(),
-            encoded_id
-        ))
+        .post(
+            world
+                .client()
+                .url(&format!("/api/units/{}/patch", encoded_id)),
+        )
         .json(&serde_json::json!({"issue": "off-by-one in loop bound"}))
         .send()
         .await
@@ -44,7 +40,7 @@ async fn test_patch_without_llm_settings_reports_assembly_error() {
     );
 
     // Nothing half-created behind the failed request: no v3 attempt branch.
-    let repo_path = fixture.repo_path();
+    let repo_path = world.repo_path();
     let git = GitManager::open(&repo_path).expect("open git");
     let v3_branches: Vec<_> = git
         .list_translation_branches()
@@ -63,39 +59,21 @@ async fn test_patch_without_llm_settings_reports_assembly_error() {
 #[tokio::test]
 async fn test_actions_router_dashboard() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
-    let router = build_router_with_actions(state.clone(), actions);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_with_actions_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
-        .await
-        .expect("dashboard request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let (status, body) = world.client().get_json("/api/dashboard").await;
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 
     // The server management endpoints are in all three routers: the
     // actions router must serve the status endpoint too.
-    let status_resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/server/status",
-        fixture.port()
-    ))
-    .await
-    .expect("server status request succeeds");
-    assert_eq!(status_resp.status(), 200);
-    let status_body: serde_json::Value = status_resp.json().await.expect("status is JSON");
+    let (status, status_body) = world.client().get_json("/api/server/status").await;
+    assert_eq!(status, 200);
     assert_eq!(status_body["pipeline_status"], "unavailable");
 
     // The enhanced /health is routed here too (issue #59: all three routers).
-    let health_resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
-        .await
-        .expect("health request succeeds");
-    assert_eq!(health_resp.status(), 200);
-    let health_body: serde_json::Value = health_resp.json().await.expect("health is JSON");
+    let (status, health_body) = world.client().get_json("/health").await;
+    assert_eq!(status, 200);
     assert_eq!(health_body["status"], "ok");
     assert!(health_body["uptime_secs"].as_u64().is_some());
     assert_eq!(health_body["version"], env!("CARGO_PKG_VERSION"));
@@ -109,33 +87,23 @@ async fn test_actions_router_dashboard() {
 #[tokio::test]
 async fn test_send_back_verdict_survives_rebuild() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let actions = ActionsState::new(fixture.repo_path(), PipelineSpec::default());
-    let router = build_router_with_actions(state.clone(), actions);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_with_actions_on(&fixture).await;
 
     let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!(
-            "http://127.0.0.1:{}/api/units/{}/send-back",
-            fixture.port(),
-            encoded_id
-        ))
-        .json(&serde_json::json!({"reason": "shader constant mapping wrong"}))
-        .send()
-        .await
-        .expect("send-back request succeeds");
+    let (status, body) = world
+        .client()
+        .post_json(
+            &format!("/api/units/{}/send-back", encoded_id),
+            serde_json::json!({"reason": "shader constant mapping wrong"}),
+        )
+        .await;
 
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("send-back body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["action"], "send_back");
 
     // Rebuild the dashboard from disk — the verdict must survive the rebuild.
-    let dashboard = build_dashboard(&fixture.repo_path()).expect("rebuild dashboard");
+    let dashboard = build_dashboard(&world.repo_path()).expect("rebuild dashboard");
     let unit = dashboard
         .review_queue
         .iter()
@@ -149,14 +117,10 @@ async fn test_send_back_verdict_survives_rebuild() {
 #[tokio::test]
 async fn test_static_files_served() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
     // CSS file
-    let css_resp = reqwest::get(format!("http://127.0.0.1:{}/app.css", fixture.port()))
+    let css_resp = reqwest::get(world.client().url("/app.css"))
         .await
         .expect("CSS request succeeds");
 
@@ -172,7 +136,7 @@ async fn test_static_files_served() {
     );
 
     // JS file
-    let js_resp = reqwest::get(format!("http://127.0.0.1:{}/app.js", fixture.port()))
+    let js_resp = reqwest::get(world.client().url("/app.js"))
         .await
         .expect("JS request succeeds");
 
@@ -189,12 +153,9 @@ async fn test_static_files_served() {
 
     // Files under js/ must be served too: the page loads them natively
     // through `import`, so nested paths have to resolve.
-    let module_resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/js/dashboard.js",
-        fixture.port()
-    ))
-    .await
-    .expect("module request succeeds");
+    let module_resp = reqwest::get(world.client().url("/js/dashboard.js"))
+        .await
+        .expect("module request succeeds");
 
     assert_eq!(module_resp.status(), 200);
     let module_type = module_resp
@@ -208,12 +169,9 @@ async fn test_static_files_served() {
     );
 
     // Non-existent file should 404
-    let notfound_resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/does-not-exist.css",
-        fixture.port()
-    ))
-    .await
-    .expect("404 request succeeds");
+    let notfound_resp = reqwest::get(world.client().url("/does-not-exist.css"))
+        .await
+        .expect("404 request succeeds");
 
     assert_eq!(notfound_resp.status(), 404);
 }
@@ -223,21 +181,12 @@ async fn test_static_files_served() {
 #[tokio::test]
 async fn test_websocket_upgrade_exists() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let (manager, _event_tx) = SessionManager::new();
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // Attempt a WebSocket upgrade — it should not return a 404.
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/events/upgrade",
-        fixture.port()
-    ))
-    .await
-    .expect("upgrade endpoint exists");
+    let resp = reqwest::get(world.client().url("/api/events/upgrade"))
+        .await
+        .expect("upgrade endpoint exists");
 
     // Not 404 — the WS upgrade fails here in a different way.
     assert_ne!(
@@ -255,24 +204,14 @@ async fn test_websocket_upgrade_exists() {
 #[tokio::test]
 async fn test_unit_diff_endpoint() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (status, body) = world
+        .client()
+        .unit_diff("game_logic.dll/DrawPrimitive/v2")
+        .await;
 
-    let unit_id = "game_logic.dll/DrawPrimitive/v2";
-    let encoded_id = urlencoding::encode(unit_id);
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}/diff",
-        fixture.port(),
-        encoded_id
-    ))
-    .await
-    .expect("diff request succeeds");
-
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("diff body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 
     let files = body["diff"].as_array().expect("diff is array");
@@ -290,25 +229,15 @@ async fn test_unit_diff_endpoint() {
 #[tokio::test]
 async fn test_unit_decomp_missing_artifacts() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let unit_id = "game_logic.dll/DrawPrimitive/v2";
-    let encoded_id = urlencoding::encode(unit_id);
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}/decomp",
-        fixture.port(),
-        encoded_id
-    ))
-    .await
-    .expect("decomp request succeeds");
+    let (status, body) = world
+        .client()
+        .unit_decomp("game_logic.dll/DrawPrimitive/v2")
+        .await;
 
     // Answers success:true with no context when the analysis artifact is missing.
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("decomp body is JSON");
+    assert_eq!(status, 200);
     assert_eq!(body["success"], true);
 }
 
@@ -316,7 +245,12 @@ async fn test_unit_decomp_missing_artifacts() {
 async fn test_unit_process_sections_from_canned_artifacts() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry(&fixture);
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/DrawPrimitive/v2")
+        .await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["success"], true);
     let process = body["unit"]["process"]
@@ -397,7 +331,12 @@ async fn test_unit_process_sections_from_canned_artifacts() {
 #[tokio::test]
 async fn test_unit_process_degrades_to_empty_sections() {
     let fixture = TestFixture::new();
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/UpdateScene/v1").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/UpdateScene/v1")
+        .await;
+    assert_eq!(status, 200);
 
     // This unit has no telemetry artifacts: every section must be present
     // but empty, and the response must still report success.
@@ -427,18 +366,24 @@ async fn test_unit_process_degrades_to_empty_sections() {
 #[tokio::test]
 async fn test_unit_process_corrupt_artifacts_degrade() {
     let fixture = TestFixture::new();
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-    std::fs::write(analysis_dir.join("token_usage.json"), "{{{ not json")
-        .expect("write corrupt token log");
-    std::fs::write(analysis_dir.join("fault_log.json"), "garbage")
-        .expect("write corrupt fault log");
-    let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
-    std::fs::write(dll_dir.join("DrawPrimitive.json"), "also not json")
-        .expect("write corrupt decomp artifact");
+    // Deliberately unreadable bytes at each record's own path: no reader
+    // can parse them, and the unit detail must degrade rather than error.
+    support::file_unreadable_record_bytes(&calxgloss_types::token_usage_log_path(
+        fixture.repo_path(),
+    ));
+    support::file_unreadable_record_bytes(&calxgloss_types::fault_log_path(fixture.repo_path()));
+    support::file_unreadable_record_bytes(&calxgloss_types::analysis_artifact_path(
+        fixture.repo_path(),
+        "game_logic.dll",
+        "DrawPrimitive",
+    ));
 
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/DrawPrimitive/v2")
+        .await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["success"], true, "corrupt artifacts must not error");
     let process = body["unit"]["process"]
@@ -454,7 +399,12 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
 async fn test_unit_detail_analysis_from_canned_artifacts() {
     let fixture = TestFixture::new();
     write_canned_analysis_context(&fixture);
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/DrawPrimitive/v2")
+        .await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["success"], true);
     let analysis = body["unit"]["analysis"]
@@ -494,7 +444,12 @@ async fn test_unit_detail_analysis_from_canned_artifacts() {
 #[tokio::test]
 async fn test_unit_detail_analysis_degrades_to_empty() {
     let fixture = TestFixture::new();
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/DrawPrimitive/v2")
+        .await;
+    assert_eq!(status, 200);
 
     // No analysis artifacts here: both sections must be present but empty,
     // and the response must still report success.
@@ -525,18 +480,24 @@ async fn test_unit_detail_analysis_degrades_to_empty() {
 #[tokio::test]
 async fn test_unit_detail_analysis_corrupt_artifacts_degrade() {
     let fixture = TestFixture::new();
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
-    std::fs::write(dll_dir.join("DrawPrimitive.json"), "{{{ not json")
-        .expect("write corrupt function artifact");
-    std::fs::write(
-        analysis_dir.join("game_logic.dll_call_graph.json"),
-        "also not json",
-    )
-    .expect("write corrupt call graph artifact");
+    // Deliberately unreadable bytes at each record's own path: the analysis
+    // sections must degrade to empty rather than error.
+    support::file_unreadable_record_bytes(&calxgloss_types::analysis_artifact_path(
+        fixture.repo_path(),
+        "game_logic.dll",
+        "DrawPrimitive",
+    ));
+    support::file_unreadable_record_bytes(&calxgloss_types::call_graph_record_path(
+        fixture.repo_path(),
+        "game_logic.dll",
+    ));
 
-    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
+    let (status, body) = world
+        .client()
+        .unit_detail("game_logic.dll/DrawPrimitive/v2")
+        .await;
+    assert_eq!(status, 200);
 
     assert_eq!(body["success"], true, "corrupt artifacts must not error");
     let analysis = body["unit"]["analysis"]
@@ -624,27 +585,21 @@ async fn test_build_dashboard_api() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_browser_page_loads() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    // Navigate to the server's root (HTML page) and wait for it to load.
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Verify the page title contains Calxgloss.
-    let title = tab.get_title().expect("get page title");
+    let title = tab.eval_text("document.title");
     assert!(
         title.contains("Calxgloss"),
         "Page title should contain 'Calxgloss', got: {title}"
     );
 
     // Verify the page content is non-empty.
-    let content = tab.get_content().expect("get page content");
+    let content = tab.eval_text("document.documentElement.outerHTML");
     assert!(
         content.len() > 100,
         "Page content should be non-trivial (got {} chars)",
@@ -658,41 +613,18 @@ async fn test_headless_browser_page_loads() {
     );
 
     // The dependency graph endpoint is reachable through fetch.
-    // `awaitPromise` must be true here — the expression evaluates to a
-    // Promise, and without awaiting it the value is the promise object itself.
-    let graph_result = tab
-        .evaluate(
-            "fetch('/api/graph').then(r => r.ok).catch(() => false)",
-            true,
-        )
-        .expect("evaluate fetch graph");
-    let is_graph_ok: bool = graph_result
-        .value
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // `eval_promise_bool` awaits the fetch's Promise — reading the promise
+    // object itself would never agree.
     assert!(
-        is_graph_ok,
+        tab.eval_promise_bool("fetch('/api/graph').then(r => r.ok).catch(() => false)"),
         "Dependency graph API should be reachable from browser"
     );
 
     // The dashboard endpoint is reachable through fetch.
-    let dashboard_result = tab
-        .evaluate(
-            "fetch('/api/dashboard').then(r => r.ok).catch(() => false)",
-            true,
-        )
-        .expect("evaluate fetch dashboard");
-    let is_dashboard_ok: bool = dashboard_result
-        .value
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     assert!(
-        is_dashboard_ok,
+        tab.eval_promise_bool("fetch('/api/dashboard').then(r => r.ok).catch(() => false)"),
         "Dashboard API should be reachable from browser"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the dashboard server status card (issue #59).
@@ -702,44 +634,24 @@ async fn test_headless_browser_page_loads() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_server_status_card() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The card renders asynchronously once the dashboard fetches settle;
-    // poll until it appears (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        let found = tab
-            .evaluate("!!document.getElementById('server-status-card')", false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if found {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(rendered, "dashboard should render the server status card");
+    // the bounded DOM wait returns as soon as it appears.
+    assert!(
+        tab.wait_for_bool("!!document.getElementById('server-status-card')")
+            .await,
+        "dashboard should render the server status card"
+    );
 
     let text_of = |id: &str| -> String {
-        tab.evaluate(
-            &format!("document.getElementById('{id}')?.textContent || ''",),
-            false,
-        )
-        .expect("evaluate card text")
-        .value
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default()
+        tab.eval_text(&format!(
+            "document.getElementById('{id}')?.textContent || ''",
+        ))
     };
 
     let version_text = text_of("server-status-version");
@@ -760,9 +672,6 @@ async fn test_headless_server_status_card() {
         "no pipeline",
         "plain serve status card should report 'no pipeline'"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the dashboard server control panel (issue #60).
@@ -772,48 +681,32 @@ async fn test_headless_server_status_card() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_server_control_panel() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The panel renders asynchronously once the dashboard fetches settle;
-    // poll until it appears (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        let found = tab
-            .evaluate("!!document.getElementById('server-control-panel')", false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if found {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(rendered, "dashboard should render the server control panel");
+    // the bounded DOM wait returns as soon as it appears.
+    assert!(
+        tab.wait_for_bool("!!document.getElementById('server-control-panel')")
+            .await,
+        "dashboard should render the server control panel"
+    );
 
     assert!(
-        eval_bool(&tab, "!!document.getElementById('server-shutdown-btn')"),
+        tab.eval_bool("!!document.getElementById('server-shutdown-btn')"),
         "control panel should have a shutdown button"
     );
     assert!(
-        eval_bool(&tab, "!!document.getElementById('server-restart-btn')"),
+        tab.eval_bool("!!document.getElementById('server-restart-btn')"),
         "control panel should have a restart button"
     );
 
     // The log-level select must offer the levels the server accepts.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "['off','error','warn','info','debug','trace'].every(\
                 l => [...document.getElementById('server-loglevel-select').options]\
                     .some(o => o.value === l))"
@@ -822,16 +715,12 @@ async fn test_headless_server_control_panel() {
     );
     // It also pre-selects the level the server reports.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.getElementById('server-loglevel-select').value === \
                 document.getElementById('server-status-loglevel').textContent"
         ),
         "log-level select should pre-select the current server log level"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the dashboard pipeline phase bar (issue #61).
@@ -842,68 +731,64 @@ async fn test_headless_server_control_panel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_phase_bar_live() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // A little live data so the pipeline panel is visible.
-    events.emit(ProgressEvent::ClassificationComplete {
+    let classified = ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
-    });
-    events.emit(ProgressEvent::TranslationStarted {
+    };
+    world.emitter().emit(classified.clone());
+    world
+        .wait_until_applied(&classified, |view| {
+            support::row_named(view, "d3d9.dll").is_some()
+        })
+        .await;
+    world.emitter().emit(ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
-    events.emit(ProgressEvent::TestsGenerated {
+    let tests_generated = ProgressEvent::TestsGenerated {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         test_count: 3,
-    });
+    };
+    world.emitter().emit(tests_generated.clone());
+    // The event consumer applies events in order, so an applied unit in
+    // flight means all three events reached the live view.
+    world
+        .wait_until_applied(&tests_generated, |view| {
+            support::row_named(view, "game_logic.dll").is_some_and(|row| {
+                row["functions_in_progress"]
+                    .as_u64()
+                    .is_some_and(|n| n >= 1)
+            })
+        })
+        .await;
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The bar renders asynchronously once the pipeline fetch settles;
-    // poll until all 8 segments appear (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#pipeline-phase-bar .phase-segment').length",
-        ) == 8
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(rendered, "phase bar should render 8 segments in live mode");
+    // the bounded DOM wait returns once all 8 segments appear.
+    assert!(
+        tab.wait_for_bool(
+            "document.querySelectorAll('#pipeline-phase-bar .phase-segment').length === 8"
+        )
+        .await,
+        "phase bar should render 8 segments in live mode"
+    );
 
     // Segments appear in bar order, Phase 1 → 7 with 2.5 between 2 and 3.
-    let phases_json = tab
-        .evaluate(
-            "JSON.stringify([...document.querySelectorAll('#pipeline-phase-bar .phase-segment')]\
-                .map(s => s.dataset.phase))",
-            false,
-        )
-        .expect("evaluate phase segment list")
-        .value
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default();
+    let phases_json = tab.eval_text(
+        "JSON.stringify([...document.querySelectorAll('#pipeline-phase-bar .phase-segment')]\
+            .map(s => s.dataset.phase))",
+    );
     assert_eq!(
         phases_json,
         r#"["project_ingestion","disassembly_tagging","pal_design","test_generation","rust_code_generation","behavior_verification","restitching","documentation"]"#
@@ -911,8 +796,7 @@ async fn test_headless_pipeline_phase_bar_live() {
 
     // Phase 2.5 (PAL Design) is present as its own segment.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "!!document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"pal_design\"]')"
         ),
         "PAL Design must be its own segment"
@@ -921,8 +805,7 @@ async fn test_headless_pipeline_phase_bar_live() {
     // Restitching and Documentation honestly read as no data source.
     for phase in ["restitching", "documentation"] {
         assert!(
-            eval_bool(
-                &tab,
+            tab.eval_bool(
                 &format!(
                     "document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"{phase}\"]')\
                     ?.classList.contains('state-no_data_source') === true"
@@ -931,9 +814,6 @@ async fn test_headless_pipeline_phase_bar_live() {
             "{phase} segment must render as no-data-source, not zero progress"
         );
     }
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the per-binary progress panel (issue #63). In
@@ -949,14 +829,7 @@ async fn test_headless_pipeline_phase_bar_live() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_binary_rows() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // Four binaries, one per classification strategy plus an unclassified one:
     // d3d9.dll through PAL mapping (classified only), dinput8.dll through
@@ -964,7 +837,7 @@ async fn test_headless_pipeline_binary_rows() {
     // (classified only), and game_logic.dll discovered unclassified. Its batch
     // summary is the count source of record: 2 of 5 translated, 1 failed,
     // 5000 tokens → 2 queued, 67% success rate.
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
@@ -972,7 +845,7 @@ async fn test_headless_pipeline_binary_rows() {
         exported_symbols: 25,
         imported_symbols: 6,
     });
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "CrateReplacement".into(),
@@ -980,11 +853,11 @@ async fn test_headless_pipeline_binary_rows() {
         exported_symbols: 10,
         imported_symbols: 4,
     });
-    events.emit(ProgressEvent::TranslationStarted {
+    world.emitter().emit(ProgressEvent::TranslationStarted {
         binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
     });
-    events.emit(ProgressEvent::ClassificationComplete {
+    world.emitter().emit(ProgressEvent::ClassificationComplete {
         binary: "engine.dll".into(),
         category: "ProjectSpecific".into(),
         classification_strategy: "ReverseEngineer".into(),
@@ -994,61 +867,52 @@ async fn test_headless_pipeline_binary_rows() {
     });
     // engine.dll's batch pass is in flight: the row must show it working even
     // though no unit event exists yet.
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "engine.dll".into(),
     });
-    events.emit(ProgressEvent::BatchSummary {
+    let batch_summary = ProgressEvent::BatchSummary {
         binary: "game_logic.dll".into(),
         total_functions: 5,
         success_count: 2,
         failure_count: 1,
         total_attempts: 4,
         total_tokens: 5000,
-    });
+    };
+    world.emitter().emit(batch_summary.clone());
+    // The event consumer applies events in order, so the last event's row
+    // means all six reached the live view before the page opened.
+    world
+        .wait_until_applied(&batch_summary, |view| {
+            support::row_named(view, "game_logic.dll").is_some()
+        })
+        .await;
 
-    // Give the event-forwarding task time to drain the channel.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Rows render asynchronously once the pipeline fetch settles;
-    // poll until all four appear (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length",
-        ) == 4
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // the bounded DOM wait returns once all four appear.
     assert!(
-        rendered,
+        tab.wait_for_bool(
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length === 4"
+        )
+        .await,
         "pipeline panel should render one row per target binary"
     );
 
     // One row per discovered binary, keyed by name.
     for binary in ["d3d9.dll", "dinput8.dll", "engine.dll", "game_logic.dll"] {
         assert!(
-            eval_bool(
-                &tab,
-                &format!(
-                    "!!document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"]')"
-                )
-            ),
+            tab.eval_bool(&format!(
+                "!!document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"]')"
+            )),
             "row for {binary} should exist"
         );
     }
 
     let cell_text = |binary: &str, selector: &str| -> String {
-        eval_text(
-            &tab,
+        tab.eval_text(
             &format!(
                 "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
             ),
@@ -1089,8 +953,7 @@ async fn test_headless_pipeline_binary_rows() {
 
     // ── The status badge sits in the Success column, not beside the name ──
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelectorAll('#pipeline-binaries .pipeline-binary-head .pipeline-binary-status').length === 0"
         ),
         "no status badge next to the binary name"
@@ -1098,8 +961,7 @@ async fn test_headless_pipeline_binary_rows() {
     // d3d9.dll is PAL-mapped: its compact row (issue #244) leaves out the
     // tokens/success cell and the translation counts completely.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "!document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-metric=\"success-rate\"]') \
                  && !document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-count=\"total\"]')"
         ),
@@ -1151,30 +1013,22 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("game_logic.dll", ".pipeline-binary-state")
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-status')].every(e => !e.textContent.includes('Classified'))"
         ),
         "no Classified badge — the state column already carries the classification state"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelectorAll('#pipeline-binaries .pipeline-binary-strategy').length === 0"
         ),
         "the redundant strategy column is gone"
     );
     // Switch to the Pipeline view so the rows have real layout boxes: a
     // hidden element reports a zero rect and would pass without checking.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
-        false,
-    )
-    .expect("switch to pipeline view");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tab.click(r#".nav-tab[data-view="pipeline"]"#);
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool(
             r#"(() => {
                 const pairs = [
                     ['.pipeline-binary-counts', 2],
@@ -1197,7 +1051,8 @@ async fn test_headless_pipeline_binary_rows() {
                 }
                 return true;
             })()"#
-        ),
+        )
+        .await,
         "column headers line up with the data cells beneath them"
     );
 
@@ -1219,8 +1074,7 @@ async fn test_headless_pipeline_binary_rows() {
     // ── Quick-action buttons: one translation toggle plus Configure and
     // Classify (issue #285) — never two translation buttons on one row ──
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
         ),
         "each row should offer its translation toggle, Configure, and Classify"
@@ -1229,24 +1083,21 @@ async fn test_headless_pipeline_binary_rows() {
     // batch pass is in flight, so its button reads Pause; game_logic.dll's
     // pass has finished, so its button reads Start Translation.
     assert_eq!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"engine.dll\"] [data-action=\"pause\"]')?.textContent || ''"
         ),
         "Pause",
         "the working row's toggle reads Pause"
     );
     assert_eq!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]')?.textContent || ''"
         ),
         "Start Translation",
         "the finished row's toggle reads Start Translation"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#pipeline-binaries [data-binary=\"engine.dll\"] [data-action=\"start\"]') === null \
                  && document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]') === null \
                  && ![...document.querySelectorAll('#pipeline-binaries .pipeline-action-btn')].some(b => b.dataset.action === 'resume')"
@@ -1255,35 +1106,22 @@ async fn test_headless_pipeline_binary_rows() {
     );
 
     // Replace fetch so any request that changes state can be counted.
-    tab.evaluate(
+    tab.run(
         "window.__nonGetFetches = 0; const origFetch = window.fetch.bind(window); \
              window.fetch = (...args) => { \
                  const method = ((args[1] && args[1].method) || 'GET').toUpperCase(); \
                  if (method !== 'GET') window.__nonGetFetches++; \
                  return origFetch(...args); \
              }; true",
-        false,
-    )
-    .expect("instrument fetch");
+        "instrument fetch",
+    );
 
-    tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
-        false,
-    )
-    .expect("click the start-translation quick action");
+    tab.click(r#"#pipeline-binaries [data-binary="game_logic.dll"] [data-action="start"]"#);
 
     // The click is a real control: it sends a POST to the row's per-binary
     // start endpoint…
-    let mut fired = false;
-    for _ in 0..25 {
-        if eval_count(&tab, "window.__nonGetFetches") >= 1 {
-            fired = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        fired,
+        tab.wait_for_bool("window.__nonGetFetches >= 1").await,
         "the quick action must drive POST /api/pipeline/binaries/{{name}}/start, not just announce"
     );
 
@@ -1291,28 +1129,16 @@ async fn test_headless_pipeline_binary_rows() {
     // through that handle, so the server's own honest 503 reason shows up as
     // an error toast — not a silent no-op, and not a state change faked in
     // the page.
-    let mut surfaced = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no scope control'))",
-        ) {
-            surfaced = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        surfaced,
+        tab.wait_for_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no scope control'))"
+        )
+        .await,
         "the server's 503 reason must surface as an error toast, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the compact PAL row (issue #244, part of #223).
@@ -1334,54 +1160,42 @@ async fn test_headless_pipeline_pal_rows_compact() {
     // is ReverseEngineer: the full-row neighbour.
     write_pipeline_pal_readiness_fixtures(&fixture);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // A second PAL binary classified live with no analysis artifacts: the
     // poll has no summary for it, and the row must answer honestly.
-    events.emit(ProgressEvent::ClassificationComplete {
+    let audio = ProgressEvent::ClassificationComplete {
         binary: "audio.dll".into(),
         category: "WindowsOs".into(),
         classification_strategy: "PalMapping".into(),
         crate_replacement: None,
         exported_symbols: 3,
         imported_symbols: 2,
-    });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    world.emitter().emit(audio.clone());
+    world
+        .wait_until_applied(&audio, |view| {
+            support::row_named(view, "audio.dll").is_some()
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // game_logic.dll (full row) plus audio.dll and d3d9.dll (compact: PAL
-    // rows sort last, issue #242); poll until all three show up.
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length",
-        ) == 3
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // rows sort last, issue #242); the bounded DOM wait returns once all
+    // three show up.
     assert!(
-        rendered,
+        tab.wait_for_bool(
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length === 3"
+        )
+        .await,
         "one full row and two compact PAL rows should render"
     );
 
     let cell_text = |binary: &str, selector: &str| -> String {
-        eval_text(
-            &tab,
+        tab.eval_text(
             &format!(
                 "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
             ),
@@ -1397,8 +1211,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
         "the state cell lists the traits the poll's summary names, got: {state_cell}"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             r#"(() => {
                 const row = document.querySelector('#pipeline-binaries [data-binary="d3d9.dll"]');
                 const defined = row?.querySelector('.pal-trait[data-state="defined"]');
@@ -1434,8 +1247,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
     // ── Suppressed cells and controls on both compact rows ──────────────
     for binary in ["d3d9.dll", "audio.dll"] {
         assert!(
-            eval_bool(
-                &tab,
+            tab.eval_bool(
                 &format!(
                     r#"(() => {{
                         const row = document.querySelector('#pipeline-binaries [data-binary="{binary}"]');
@@ -1458,8 +1270,7 @@ async fn test_headless_pipeline_pal_rows_compact() {
 
     // ── The non-PAL neighbour keeps its full row ─────────────────────────
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             r#"(() => {
                 const row = document.querySelector('#pipeline-binaries [data-binary="game_logic.dll"]');
                 if (!row) return false;
@@ -1478,18 +1289,12 @@ async fn test_headless_pipeline_pal_rows_compact() {
 
     // Switch to the Pipeline view so the cells have real layout boxes: a
     // hidden element reports a zero rect and would pass without checking.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
-        false,
-    )
-    .expect("switch to pipeline view");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tab.click(r#".nav-tab[data-view="pipeline"]"#);
 
     // The empty cost placeholder keeps the compact row's grid aligned
     // with the header's cost column.
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool(
             r#"(() => {
                 const h = document.querySelector('#pipeline-binaries .pipeline-binary-header .pipeline-binary-cost');
                 const r = document.querySelector('#pipeline-binaries [data-binary="d3d9.dll"] .pipeline-binary-cost');
@@ -1498,7 +1303,8 @@ async fn test_headless_pipeline_pal_rows_compact() {
                 return hb.width >= 100 && rb.width >= 100
                     && Math.abs(hb.left - rb.left) <= 2 && Math.abs(hb.width - rb.width) <= 2;
             })()"#
-        ),
+        )
+        .await,
         "the compact row's placeholder cells keep the grid aligned with the header"
     );
 
@@ -1506,32 +1312,30 @@ async fn test_headless_pipeline_pal_rows_compact() {
     // The classification-override panel's live event is what redraws the
     // rows (app.js reloads the pipeline on classification_complete), so
     // sending that event here is the same path the panel takes on success.
-    events.emit(ProgressEvent::ClassificationComplete {
+    let reclassified = ProgressEvent::ClassificationComplete {
         binary: "d3d9.dll".into(),
         category: "ProjectSpecific".into(),
         classification_strategy: "ReverseEngineer".into(),
         crate_replacement: None,
         exported_symbols: 25,
         imported_symbols: 6,
-    });
-    let mut restored = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-action=\"start\"]')",
-        ) {
-            restored = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(reclassified.clone());
+    world
+        .wait_until_applied(&reclassified, |view| {
+            support::row_named(view, "d3d9.dll")
+                .is_some_and(|row| row["classification_strategy"] == "ReverseEngineer")
+        })
+        .await;
     assert!(
-        restored,
+        tab.wait_for_bool(
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"d3d9.dll\"] [data-action=\"start\"]')"
+        )
+        .await,
         "overriding a PAL-classified binary to a translation strategy restores its full row on the next refresh"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             r#"(() => {
                 const rows = [...document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]')];
                 const row = rows.find(r => r.dataset.binary === 'd3d9.dll');
@@ -1545,9 +1349,6 @@ async fn test_headless_pipeline_pal_rows_compact() {
         ),
         "the restored row has full counts and buttons, no readiness span, and has moved up out of the PAL tail"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the controls header (issue #94, W2.4). The
@@ -1559,50 +1360,32 @@ async fn test_headless_pipeline_pal_rows_compact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_controls_header_tracks_live_state() {
     let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
-    let run_requests = RunRequestSignal::new();
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_wired_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let header_state = || {
-        eval_text(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state || ''",
-        )
-    };
+    /// Bounded DOM wait for the header's state badge to read `want`.
+    async fn wait_for_state(tab: &support::DashboardTab, want: &str) -> bool {
+        tab.wait_for_bool(&format!(
+            "document.getElementById('pipeline-state')?.dataset.state === '{want}'"
+        ))
+        .await
+    }
+
+    let header_state =
+        || tab.eval_text("document.getElementById('pipeline-state')?.dataset.state || ''");
     let btn_disabled = |id: &str| {
-        eval_bool(
-            &tab,
-            &format!("document.getElementById('{id}')?.disabled === true"),
-        )
-    };
-    let wait_for_state = |want: &'static str| async move {
-        for _ in 0..25 {
-            if header_state() == want {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        false
+        tab.eval_bool(&format!(
+            "document.getElementById('{id}')?.disabled === true"
+        ))
     };
 
     // The first server-status snapshot puts the header on the machine's real
     // state: idle, with only Start (and Shut Down Server) available.
     assert!(
-        wait_for_state("idle").await,
+        wait_for_state(&tab, "idle").await,
         "the header must follow the server-status snapshot to idle, got: {}",
         header_state()
     );
@@ -1623,10 +1406,10 @@ async fn test_headless_controls_header_tracks_live_state() {
 
     // Another client (the reqwest "other tab") runs the lifecycle: the header
     // follows over the WebSocket, with no interaction in this tab.
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/start").await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/start").await;
     assert_eq!(status, 200, "start from idle should succeed");
     assert!(
-        wait_for_state("running").await,
+        wait_for_state(&tab, "running").await,
         "the header must follow the WS pipeline_state_changed event to running"
     );
     assert!(
@@ -1647,28 +1430,18 @@ async fn test_headless_controls_header_tracks_live_state() {
     // tab would have left it — then use it for an operation the machine
     // forbids: the server's own 409 reason shows up as an error toast, and the
     // header keeps telling the truth instead of corrupting its own state.
-    tab.evaluate(
+    tab.run(
         "document.getElementById('ctl-start').disabled = false; \
              document.getElementById('ctl-start').click() === undefined",
-        false,
-    )
-    .expect("force a stale start click");
-    let mut rejected = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('cannot start a pipeline that is running'))",
-        ) {
-            rejected = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        "force a stale start click",
+    );
     assert!(
-        rejected,
+        tab.wait_for_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('cannot start a pipeline that is running'))"
+        )
+        .await,
         "a stale click must surface the server's 409 reason, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
@@ -1678,10 +1451,10 @@ async fn test_headless_controls_header_tracks_live_state() {
         "the rejected click must not corrupt the header's state"
     );
 
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/pause").await;
     assert_eq!(status, 200);
     assert!(
-        wait_for_state("paused").await,
+        wait_for_state(&tab, "paused").await,
         "the header must follow the pause over the WebSocket"
     );
     assert!(btn_disabled("ctl-pause"), "a paused run cannot pause again");
@@ -1690,17 +1463,17 @@ async fn test_headless_controls_header_tracks_live_state() {
         "Resume is available while paused"
     );
 
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/resume").await;
     assert_eq!(status, 200);
     assert!(
-        wait_for_state("running").await,
+        wait_for_state(&tab, "running").await,
         "the header must follow the resume"
     );
 
-    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/stop").await;
+    let (status, _) = world.client().post_lifecycle("/api/pipeline/stop").await;
     assert_eq!(status, 200);
     assert!(
-        wait_for_state("stopping").await,
+        wait_for_state(&tab, "stopping").await,
         "the header must follow the stop over the WebSocket"
     );
     for id in [
@@ -1715,18 +1488,18 @@ async fn test_headless_controls_header_tracks_live_state() {
 
     // The run finishes, which the live loop would normally do: Restart is
     // now the only lifecycle operation available.
-    control.complete().expect("stopping -> complete");
+    world
+        .pipeline_control()
+        .complete()
+        .expect("stopping -> complete");
     assert!(
-        wait_for_state("complete").await,
+        wait_for_state(&tab, "complete").await,
         "the header must follow the completion over the WebSocket"
     );
     assert!(
         !btn_disabled("ctl-restart"),
         "Restart is available once the run is complete"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the restart dialog (issue #94, W2.4). From a
@@ -1738,91 +1511,58 @@ async fn test_headless_controls_header_tracks_live_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_restart_dialog_drives_endpoint() {
     let fixture = TestFixture::new();
-    let events = TranslationEvents::new(128);
-    let control = PipelineControl::new().with_events(events.clone());
+    let world = support::ReviewWorld::boot_ws_wired_on(&fixture).await;
+
     // A finished run — restart is only legal from Complete or Error.
+    let control = world.pipeline_control();
     control.start().expect("idle -> running");
     control.stop().expect("running -> stopping");
     control.complete().expect("stopping -> complete");
-    let run_requests = RunRequestSignal::new();
-    let mut run_rx = run_requests.subscribe();
-    let state = ServerState::new(fixture.repo_path())
-        .with_pipeline_control(control.clone())
-        .with_run_requests(run_requests.clone());
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let mut run_rx = world.run_requests().subscribe();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The header settles on complete, which makes Restart available.
-    let mut settled = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state === 'complete' \
-                 && document.getElementById('ctl-restart')?.disabled === false",
-        ) {
-            settled = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        settled,
-        "the header must show complete and enable Restart, got: {}",
-        eval_text(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state || ''"
+        tab.wait_for_bool(
+            "document.getElementById('pipeline-state')?.dataset.state === 'complete' \
+                 && document.getElementById('ctl-restart')?.disabled === false"
         )
+        .await,
+        "the header must show complete and enable Restart, got: {}",
+        tab.eval_text("document.getElementById('pipeline-state')?.dataset.state || ''")
     );
 
-    tab.evaluate(
-        "document.getElementById('ctl-restart').click() === undefined",
-        false,
-    )
-    .expect("click Restart");
+    tab.click("#ctl-restart");
 
     // The dialog opens with the three selectors and the safety explanation.
-    let mut opened = false;
-    for _ in 0..25 {
-        if eval_bool(&tab, "!!document.getElementById('restart-dialog')") {
-            opened = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(opened, "Restart must open the options dialog");
     assert!(
-        eval_bool(
-            &tab,
+        tab.wait_for_bool("!!document.getElementById('restart-dialog')")
+            .await,
+        "Restart must open the options dialog"
+    );
+    assert!(
+        tab.eval_bool(
             "[...document.querySelectorAll('#restart-phase option')].map(o => o.value).join(',') === 'translate,classify'"
         ),
         "phase selector offers translate and classify"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "[...document.querySelectorAll('#restart-target option')].some(o => o.value === 'all')"
         ),
         "target selector offers all binaries"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "[...document.querySelectorAll('#restart-scope option')].map(o => o.value).join(',') === 'all_functions,only_queued,only_failed'"
         ),
         "scope selector offers all_functions, only_queued, and only_failed"
     );
     assert!(
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#restart-dialog .dialog-safety')?.textContent || ''"
         )
         .contains("nothing in flight is discarded"),
@@ -1830,32 +1570,17 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     );
 
     // Pick fresh classification of only the failed functions, then confirm.
-    tab.evaluate(
+    tab.run(
         "document.getElementById('restart-phase').value = 'classify'; \
              document.getElementById('restart-scope').value = 'only_failed'; true",
-        false,
-    )
-    .expect("choose restart selectors");
-    tab.evaluate(
-        "document.getElementById('restart-confirm').click() === undefined",
-        false,
-    )
-    .expect("confirm restart");
+        "choose restart selectors",
+    );
+    tab.click("#restart-confirm");
 
     // The header follows the machine back to running…
-    let mut restarted = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('pipeline-state')?.dataset.state === 'running'",
-        ) {
-            restarted = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        restarted,
+        tab.wait_for_bool("document.getElementById('pipeline-state')?.dataset.state === 'running'")
+            .await,
         "confirming the dialog must drive POST /api/pipeline/restart and move the header to running"
     );
 
@@ -1884,17 +1609,12 @@ async fn test_headless_restart_dialog_drives_endpoint() {
 
     // The success toast lists the selectors that were sent.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('phase classify') && t.textContent.includes('only failed functions'))"
         ),
         "the toast must report the restart the server actually queued, got: {}",
-        eval_text(
-            &tab,
+        tab.eval_text(
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
