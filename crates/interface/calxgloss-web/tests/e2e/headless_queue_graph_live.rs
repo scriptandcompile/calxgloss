@@ -1,75 +1,74 @@
 //! Scenario tests split from `tests/e2e.rs`.
+//!
+//! Every test here boots one world through the review-world adapter (issue
+//! #476). A test files its record fixtures through the record writers,
+//! emits progress events through the typed emitter and waits for the
+//! server to apply them, and reads the browser's DOM through the world's
+//! bounded waits. The queue, graph, and live-view pins wait on the
+//! seam's applied waits before reading the DOM — a live reading is
+//! never slept through.
 
 use super::*;
 
 /// Headless-browser test for issue #64: with measured attempt durations in
 /// the token-usage log, the pipeline panel must show a time estimate and the
 /// review queue must render a per-unit effort column.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_pipeline_estimate_and_queue_effort() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, true);
 
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    emit_canned_batch_summary(&events);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The minimal live events that give one binary a known function total
+    // with work remaining (5 total, 2 translated, 1 failed → 2 remain).
+    let summary = ProgressEvent::BatchSummary {
+        binary: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    };
+    world.emitter().emit(summary.clone());
+    world
+        .wait_until_applied(&summary, |body| {
+            body["binaries"].as_array().is_some_and(|binaries| {
+                binaries
+                    .iter()
+                    .any(|b| b["binary"] == "game_logic.dll" && b["functions_total"] == 5)
+            })
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    // The pipeline panel renders asynchronously; poll until the time
-    // estimate is visible (up to ~5 seconds).
-    let mut estimate_visible = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('pipeline-time-estimate')?.style.display !== 'none' \
-                && document.getElementById('pipeline-time-estimate')?.textContent.includes('remaining')",
-        ) {
-            estimate_visible = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // The pipeline panel renders asynchronously; wait until the time
+    // estimate is visible.
     assert!(
-        estimate_visible,
+        tab.wait_for_bool(
+            "document.getElementById('pipeline-time-estimate')?.style.display !== 'none' \
+                && document.getElementById('pipeline-time-estimate')?.textContent.includes('remaining')"
+        )
+        .await,
         "pipeline time estimate should be visible when durations exist"
     );
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     // The DrawPrimitive unit has its own measured attempts → its effort
     // column shows a real duration, not the em-dash placeholder.
-    let mut effort_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    let effort_rendered = tab
+        .wait_for_bool(
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort'); \
                 return !!el && el.textContent !== '—'; })()",
-        ) {
-            effort_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    let effort_text = eval_text(
-        &tab,
+        )
+        .await;
+    let effort_text = tab.eval_text(
         "document.querySelector('#full-queue-list \
             [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort')?.textContent || ''",
     );
@@ -77,64 +76,43 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
         effort_rendered,
         "queue effort column should show an estimate for the unit, got: {effort_text:?}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for issue #74: the queue view renders a priority
 /// column (default NORMAL), a synthetic drag through the real drag handlers
 /// reorders and persists the manual order, and clicking the chip cycles and
 /// persists the priority — both landing in `re/review/queue_overlay.json`.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_queue_priority_and_reorder() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     let draw = "game_logic.dll/DrawPrimitive/v2";
     let hud = "game_logic.dll/RenderHUD/v1";
 
     // The priority column renders with the default NORMAL for both units.
-    let mut priority_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
-                return !!el && el.textContent === 'NORMAL'; })()",
-        ) {
-            priority_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        priority_rendered,
+                return !!el && el.textContent === 'NORMAL'; })()"
+        )
+        .await,
         "queue priority column should render NORMAL for the unit"
     );
 
     // Drag reordering through the real handlers: a synthetic drag of
     // RenderHUD onto the top half of DrawPrimitive's row drops it above.
-    tab.evaluate(
+    tab.run(
         &format!(
             "(() => {{ \
                 const list = document.querySelector('#full-queue-list'); \
@@ -148,170 +126,88 @@ async fn test_headless_queue_priority_and_reorder() {
                 return true; \
             }})()"
         ),
-        false,
-    )
-    .expect("synthetic drag reorder");
+        "synthetic drag reorder",
+    );
 
-    let mut reorder_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "(() => { const first = document.querySelector('#full-queue-list .queue-item-full'); \
-                return !!first && first.dataset.unitId === 'game_logic.dll/RenderHUD/v1'; })()",
-        ) {
-            reorder_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        reorder_rendered,
+        tab.wait_for_bool(
+            "(() => { const first = document.querySelector('#full-queue-list .queue-item-full'); \
+                return !!first && first.dataset.unitId === 'game_logic.dll/RenderHUD/v1'; })()"
+        )
+        .await,
         "manual reorder should put RenderHUD first in the rendered queue"
     );
 
-    // The drop fires the PUT without awaiting it, so poll the persisted
-    // overlay file until the new order lands (up to ~5 seconds).
-    let overlay_file = fixture
-        .repo_path()
-        .join("re")
-        .join("review")
-        .join("queue_overlay.json");
+    // The drop fires the PUT without awaiting it, so the applied wait
+    // reads the persisted overlay file until the new order lands.
+    let overlay_file = calxgloss_types::queue_overlay_path(world.repo_path());
     let wanted = serde_json::json!([hud, draw]);
-    let mut persisted = serde_json::Value::Null;
-    for _ in 0..25 {
-        if let Ok(raw) = std::fs::read_to_string(&overlay_file) {
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            if value["order"] == wanted {
-                persisted = value;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let persisted = wait_for_persisted(&overlay_file, |value| value["order"] == wanted).await;
     assert_eq!(
         persisted["order"], wanted,
         "reorder persists to the overlay file"
     );
 
     // Clicking the chip cycles NORMAL → HIGH and persists it.
-    tab.evaluate(
-        "document.querySelector('#full-queue-list \
-            [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority')?.click() === undefined",
-        false,
-    )
-    .expect("click priority chip");
+    tab.click(r#"#full-queue-list [data-unit-id="game_logic.dll/DrawPrimitive/v2"] .qi-priority"#);
 
-    let mut priority_updated = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
-                return !!el && el.textContent === 'HIGH'; })()",
-        ) {
-            priority_updated = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(priority_updated, "clicking the chip should cycle to HIGH");
+                return !!el && el.textContent === 'HIGH'; })()"
+        )
+        .await,
+        "clicking the chip should cycle to HIGH"
+    );
 
-    let mut persisted = serde_json::Value::Null;
-    for _ in 0..25 {
-        if let Ok(raw) = std::fs::read_to_string(&overlay_file) {
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            if value["priorities"][draw].as_str() == Some("high") {
-                persisted = value;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let persisted = wait_for_persisted(&overlay_file, |value| {
+        value["priorities"][draw].as_str() == Some("high")
+    })
+    .await;
     assert_eq!(
         persisted["priorities"][draw].as_str(),
         Some("high"),
         "priority click persists to the overlay file"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for issue #75: the queue view renders a skip
 /// checkbox per unit, clicking it marks the unit `Skipped` — the row
 /// re-renders checked with a Skipped badge — and the skip persists to
 /// `re/review/skips.json`; unchecking restores the unit.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_queue_skip_checkbox() {
-    let fixture = TestFixture::new();
+    let world = support::ReviewWorld::boot_plain().await;
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     let draw = "game_logic.dll/DrawPrimitive/v2";
     let row_sel = format!("#full-queue-list [data-unit-id=\"{draw}\"]");
 
     // The skip checkbox column renders, unchecked for an active unit.
-    let mut checkbox_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
-                    return !!el && el.checked === false; }})()"
-            ),
-        ) {
-            checkbox_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        checkbox_rendered,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+                return !!el && el.checked === false; }})()"
+        ))
+        .await,
         "queue skip checkbox should render unchecked for the unit"
     );
 
     // Clicking the checkbox skips the unit.
-    tab.evaluate(
-        &format!("document.querySelector('{row_sel} .qi-skip-check')?.click() === undefined"),
-        false,
-    )
-    .expect("click skip checkbox");
+    tab.click(&format!("{row_sel} .qi-skip-check"));
 
-    // The skip lands in the repo's skip set (poll — the POST is not awaited).
-    let skips_file = fixture
-        .repo_path()
-        .join("re")
-        .join("review")
-        .join("skips.json");
+    // The skip lands in the repo's skip set — the applied wait on the
+    // persisted file, since the POST is not awaited.
+    let skips_file = calxgloss_types::ReviewSkips::path_in(world.repo_path().as_path());
     let wanted = serde_json::json!([draw]);
-    let mut persisted = serde_json::Value::Null;
-    for _ in 0..25 {
-        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            if value["skipped"] == wanted {
-                persisted = value;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let persisted = wait_for_persisted(&skips_file, |value| value["skipped"] == wanted).await;
     assert_eq!(
         persisted["skipped"], wanted,
         "skip click persists to re/review/skips.json"
@@ -319,69 +215,40 @@ async fn test_headless_queue_skip_checkbox() {
 
     // After the dashboard reload the row renders checked with a Skipped
     // badge — the checkbox reflects persisted state, not just the click.
-    let mut skipped_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const row = document.querySelector('{row_sel}'); \
-                    const cb = row?.querySelector('.qi-skip-check'); \
-                    const st = row?.querySelector('.qi-status'); \
-                    return !!cb && cb.checked === true \
-                        && !!st && st.textContent.includes('Skipped'); }})()"
-            ),
-        ) {
-            skipped_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        skipped_rendered,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const row = document.querySelector('{row_sel}'); \
+                const cb = row?.querySelector('.qi-skip-check'); \
+                const st = row?.querySelector('.qi-status'); \
+                return !!cb && cb.checked === true \
+                    && !!st && st.textContent.includes('Skipped'); }})()"
+        ))
+        .await,
         "skipped unit should re-render checked with a Skipped badge"
     );
 
     // Unchecking unskips: the skip set empties and the row comes back.
-    tab.evaluate(
-        &format!("document.querySelector('{row_sel} .qi-skip-check')?.click() === undefined"),
-        false,
-    )
-    .expect("click skip checkbox again");
+    tab.click(&format!("{row_sel} .qi-skip-check"));
 
-    let mut unskipped = false;
-    for _ in 0..25 {
-        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            if value["skipped"].as_array().is_some_and(|a| a.is_empty()) {
-                unskipped = true;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(unskipped, "unchecking empties the persisted skip set");
-
-    let mut restored_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
-                    return !!el && el.checked === false; }})()"
-            ),
-        ) {
-            restored_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let persisted = wait_for_persisted(&skips_file, |value| {
+        value["skipped"].as_array().is_some_and(|a| a.is_empty())
+    })
+    .await;
     assert!(
-        restored_rendered,
-        "unskipped unit should re-render unchecked"
+        persisted["skipped"]
+            .as_array()
+            .is_some_and(|a| a.is_empty()),
+        "unchecking empties the persisted skip set"
     );
 
-    tab.close_target().ok();
-    drop(browser);
+    assert!(
+        tab.wait_for_bool(&format!(
+            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+                return !!el && el.checked === false; }})()"
+        ))
+        .await,
+        "unskipped unit should re-render unchecked"
+    );
 }
 
 /// Headless-browser test for issue #78: queue rows have a multi-select
@@ -389,29 +256,19 @@ async fn test_headless_queue_skip_checkbox() {
 /// and the batch dropdown applies the chosen action (Skip All here) to all
 /// selected units — persisted through the per-unit skip logic, after which
 /// the selection clears.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_queue_multiselect_batch_actions() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the queue view so the full queue list renders.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     let draw = "game_logic.dll/DrawPrimitive/v2";
     let hud = "game_logic.dll/RenderHUD/v1";
@@ -419,30 +276,19 @@ async fn test_headless_queue_multiselect_batch_actions() {
     let hud_sel = format!("#full-queue-list [data-unit-id=\"{hud}\"]");
 
     // Each row renders an (unchecked) select checkbox beside the skip one.
-    let mut selects_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
-                    const b = document.querySelector('{hud_sel} .qi-select'); \
-                    return !!a && !a.checked && !!b && !b.checked; }})()"
-            ),
-        ) {
-            selects_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        selects_rendered,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+                const b = document.querySelector('{hud_sel} .qi-select'); \
+                return !!a && !a.checked && !!b && !b.checked; }})()"
+        ))
+        .await,
         "queue rows should render unchecked select checkboxes"
     );
 
     // The batch dropdown offers the three batch actions.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "(() => {{ const sel = document.getElementById('batch-action'); \
                     const values = [...sel.options].map(o => o.value); \
                     return values.includes('accept') && values.includes('skip') \
@@ -452,50 +298,31 @@ async fn test_headless_queue_multiselect_batch_actions() {
     );
 
     // Select-all marks every visible row.
-    tab.evaluate(
-        "document.getElementById('queue-select-all')?.click() === undefined",
-        false,
-    )
-    .expect("click select-all");
+    tab.click("#queue-select-all");
     assert!(
-        eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+        tab.eval_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
                     const b = document.querySelector('{hud_sel} .qi-select'); \
                     return !!a && a.checked && !!b && b.checked; }})()"
-            )
-        ),
+        )),
         "select-all should check every visible row"
     );
 
     // Choose Skip All from the dropdown: both units land in the persisted
     // skip set through the per-unit skip logic.
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('batch-action'); \
                 sel.value = 'skip'; \
                 sel.dispatchEvent(new Event('change')); })() === undefined",
-        false,
-    )
-    .expect("trigger batch skip");
+        "trigger batch skip",
+    );
 
-    let skips_file = fixture
-        .repo_path()
-        .join("re")
-        .join("review")
-        .join("skips.json");
-    let mut persisted = serde_json::Value::Null;
-    for _ in 0..25 {
-        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            let skipped = value["skipped"].as_array().cloned().unwrap_or_default();
-            if skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud) {
-                persisted = value;
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let skips_file = calxgloss_types::ReviewSkips::path_in(world.repo_path().as_path());
+    let persisted = wait_for_persisted(&skips_file, |value| {
+        let skipped = value["skipped"].as_array().cloned().unwrap_or_default();
+        skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud)
+    })
+    .await;
     let skipped = persisted["skipped"].as_array().cloned().unwrap_or_default();
     assert!(
         skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud),
@@ -504,240 +331,140 @@ async fn test_headless_queue_multiselect_batch_actions() {
 
     // After the dashboard reload the selection is cleared — rows come back
     // with unchecked select checkboxes (and checked skip checkboxes).
-    let mut selection_cleared = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+    assert!(
+        tab.wait_for_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
                     const b = document.querySelector('{hud_sel} .qi-select'); \
                     const sa = document.querySelector('{draw_sel} .qi-skip-check'); \
                     const sb = document.querySelector('{hud_sel} .qi-skip-check'); \
                     return !!a && !a.checked && !!b && !b.checked \
                         && !!sa && sa.checked && !!sb && sb.checked; }})()"
-            ),
-        ) {
-            selection_cleared = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        selection_cleared,
+        ))
+        .await,
         "selection should clear after the batch lands, with skips rendered"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for issue #76: the graph view loads enriched nodes
 /// into the canvas renderer, node height encodes token usage, confidence
 /// maps to a red→green hue (null stays neutral), and the kind/status/binary
 /// selects combine with AND — the summary reports how many nodes survive.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_graph_filters_and_encoding() {
     let fixture = TestFixture::new();
 
-    // Canned usage so DrawPrimitive renders taller than units with none.
-    let analysis_dir = fixture.repo_path().join("re").join("analysis");
-    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
-    std::fs::write(
-        analysis_dir.join("token_usage.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "entries": [
-                {
-                    "timestamp": 1767225600,
-                    "binary": "game_logic.dll",
-                    "function": "DrawPrimitive",
-                    "attempt": 1,
-                    "strategy": "initial",
-                    "context_tier": "disassembly",
-                    "tokens_used": 4096,
-                    "success": false
-                },
-                {
-                    "timestamp": 1767225900,
-                    "binary": "game_logic.dll",
-                    "function": "DrawPrimitive",
-                    "attempt": 2,
-                    "strategy": "compile_fix",
-                    "context_tier": "with_tests",
-                    "tokens_used": 3072,
-                    "success": true
-                }
-            ]
-        }))
-        .expect("serialize token log"),
-    )
-    .expect("write token_usage.json");
+    // Canned usage through the record writer so DrawPrimitive renders
+    // taller than units with none.
+    write_token_usage_log(&fixture, false);
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
-    };
-    let tab = open_dashboard_tab(&browser, fixture.port());
-
-    let eval_str = |expr: &str| -> Option<String> {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
     };
 
     // Switch to the graph view.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"graph\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click graph tab");
+    tab.click(r#".nav-tab[data-view="graph"]"#);
 
     // The renderer loads the fixture's five units.
-    let mut loaded = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5",
-        ) {
-            loaded = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(loaded, "graph renderer should load the fixture nodes");
+    assert!(
+        tab.wait_for_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5")
+            .await,
+        "graph renderer should load the fixture nodes"
+    );
 
     // Size encoding: DrawPrimitive (7168 tokens) is taller than UpdateScene
     // (no recorded usage — base size, never zero).
-    let mut size_encoded = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const g = window.calxglossGraph; if (!g) return false; \
                 const draw = g._allNodes.find(n => n.id === 'game_logic.dll/DrawPrimitive/v2'); \
                 const update = g._allNodes.find(n => n.id === 'game_logic.dll/UpdateScene/v1'); \
                 return !!draw && draw.token_usage === 7168 && !!update \
-                    && update.token_usage == null && draw._h > update._h; })()",
-        ) {
-            size_encoded = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        size_encoded,
+                    && update.token_usage == null && draw._h > update._h; })()"
+        )
+        .await,
         "node height should encode token usage (DrawPrimitive taller, UpdateScene base)"
     );
 
     // Color encoding: real nodes stay honest (null confidence → neutral),
     // and the 0.0→1.0 range maps to hues 0→140 (red→green).
-    let confidence_encoded = eval_bool(
-        &tab,
-        "(() => { const g = window.calxglossGraph; if (!g) return false; \
-            const honest = g._allNodes.every(n => n._confidenceHue === null \
-                || (n._confidenceHue >= 0 && n._confidenceHue <= 140)); \
-            const all = g._allNodes, edges = g._allEdges; \
-            g.setData([ \
-                { id: 'lo', name: 'Low', kind: 'function_translation', status: 'queued', confidence: 0.0 }, \
-                { id: 'hi', name: 'High', kind: 'function_translation', status: 'queued', confidence: 1.0 } \
-            ], []); \
-            const lo = g.nodes.find(n => n.id === 'lo'); \
-            const hi = g.nodes.find(n => n.id === 'hi'); \
-            const mapped = !!lo && lo._confidenceHue === 0 \
-                && !!hi && hi._confidenceHue === 140; \
-            g.setData(all, edges); \
-            return honest && mapped; })()",
-    );
     assert!(
-        confidence_encoded,
+        tab.eval_bool(
+            "(() => { const g = window.calxglossGraph; if (!g) return false; \
+                const honest = g._allNodes.every(n => n._confidenceHue === null \
+                    || (n._confidenceHue >= 0 && n._confidenceHue <= 140)); \
+                const all = g._allNodes, edges = g._allEdges; \
+                g.setData([ \
+                    { id: 'lo', name: 'Low', kind: 'function_translation', status: 'queued', confidence: 0.0 }, \
+                    { id: 'hi', name: 'High', kind: 'function_translation', status: 'queued', confidence: 1.0 } \
+                ], []); \
+                const lo = g.nodes.find(n => n.id === 'lo'); \
+                const hi = g.nodes.find(n => n.id === 'hi'); \
+                const mapped = !!lo && lo._confidenceHue === 0 \
+                    && !!hi && hi._confidenceHue === 140; \
+                g.setData(all, edges); \
+                return honest && mapped; })()"
+        ),
         "confidence should map to hues 0..140 with null staying neutral"
     );
 
     // Filters combine with AND: binary=d3d9.dll leaves the shim node…
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('graph-filter-binary'); \
             sel.value = 'd3d9.dll'; \
             sel.dispatchEvent(new Event('change')); })()",
-        false,
-    )
-    .expect("set binary filter");
+        "set binary filter",
+    );
 
-    let mut binary_filtered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const g = window.calxglossGraph; \
                 const sum = document.getElementById('graph-filter-summary'); \
                 return !!g && g.visibleNodeCount === 2 && g.totalNodeCount >= 7 \
-                    && sum.textContent.includes('2 of'); })()",
-        ) {
-            binary_filtered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        binary_filtered,
+                    && sum.textContent.includes('2 of'); })()"
+        )
+        .await,
         "binary filter should leave only the d3d9.dll nodes"
     );
 
     // …and adding kind=shim_layer empties the view (AND, not OR — the two
     // d3d9.dll nodes are a classification and a function translation).
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('graph-filter-kind'); \
             sel.value = 'shim_layer'; \
             sel.dispatchEvent(new Event('change')); })()",
-        false,
-    )
-    .expect("set kind filter");
+        "set kind filter",
+    );
 
-    let mut combined_filtered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "(() => { const g = window.calxglossGraph; \
-                return !!g && g.visibleNodeCount === 0; })()",
-        ) {
-            combined_filtered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        combined_filtered,
+        tab.wait_for_bool(
+            "(() => { const g = window.calxglossGraph; \
+                return !!g && g.visibleNodeCount === 0; })()"
+        )
+        .await,
         "kind × binary filters must combine with AND"
     );
 
     // Resetting both selects restores every node, and the summary follows.
-    tab.evaluate(
+    tab.run(
         "(() => { for (const id of ['graph-filter-binary', 'graph-filter-kind']) { \
                 const sel = document.getElementById(id); \
                 sel.value = 'all'; \
                 sel.dispatchEvent(new Event('change')); } })()",
-        false,
-    )
-    .expect("reset filters");
+        "reset filters",
+    );
 
-    let summary = eval_str(
+    let summary = tab.eval_text(
         "(() => { const g = window.calxglossGraph; \
             const sum = document.getElementById('graph-filter-summary'); \
             return (g && g.visibleNodeCount === g.totalNodeCount) ? sum.textContent : ''; })()",
     );
-    let restored = summary
-        .as_deref()
-        .is_some_and(|s| s.contains("nodes") && !s.contains(" of "));
+    let restored = !summary.is_empty() && summary.contains("nodes") && !summary.contains(" of ");
     assert!(
         restored,
         "reset filters should restore all nodes, summary reads 'N nodes': {summary:?}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for graph export + shareable URLs (issue #79):
@@ -745,71 +472,41 @@ async fn test_headless_graph_filters_and_encoding() {
 /// its unit id), the PNG export runs the same SVG through rasterization, the
 /// share URL encodes the active filters and the zoom/pan camera, and opening
 /// that URL in a fresh tab restores the same filters and viewport.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_graph_export_and_share_url() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
-    };
-    let tab = open_dashboard_tab(&browser, fixture.port());
-
-    let eval_str = |expr: &str| -> Option<String> {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
     };
 
     // Wait for the graph renderer to load the fixture's units.
-    let mut loaded = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5",
-        ) {
-            loaded = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(loaded, "graph renderer should load the fixture nodes");
+    assert!(
+        tab.wait_for_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5")
+            .await,
+        "graph renderer should load the fixture nodes"
+    );
 
     // Narrow to one binary — export and share must both follow the
     // filtered view, not the full graph.
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('graph-filter-binary'); \
             sel.value = 'd3d9.dll'; \
             sel.dispatchEvent(new Event('change')); })()",
-        false,
-    )
-    .expect("set binary filter");
+        "set binary filter",
+    );
 
-    let mut filtered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "!!window.calxglossGraph && window.calxglossGraph.visibleNodeCount === 2",
-        ) {
-            filtered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        filtered,
+        tab.wait_for_bool(
+            "!!window.calxglossGraph && window.calxglossGraph.visibleNodeCount === 2"
+        )
+        .await,
         "binary filter should leave the two d3d9.dll nodes"
     );
 
     // SVG export matches the filtered view: the d3d9 nodes are in (their
     // unit ids appear as data-id attributes), game_logic nodes are out.
-    let svg = eval_str("window.calxglossGraph.toSVG()").unwrap_or_default();
+    let svg = tab.eval_text("window.calxglossGraph.toSVG()");
     assert!(
         svg.contains("<svg"),
         "toSVG should produce an SVG document, got: {svg}"
@@ -824,12 +521,7 @@ async fn test_headless_graph_export_and_share_url() {
     );
 
     // PNG export runs the same SVG through rasterization and reports success.
-    let png_ok = tab
-        .evaluate("window.calxglossExportPNG()", true)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let png_ok = tab.eval_promise_bool("window.calxglossExportPNG()");
     assert!(
         png_ok,
         "PNG export should rasterize the SVG and produce a blob"
@@ -837,14 +529,13 @@ async fn test_headless_graph_export_and_share_url() {
 
     // Move the camera, then build the share URL — it must encode the
     // active filter and the viewport state.
-    tab.evaluate(
+    tab.run(
         "(() => { const g = window.calxglossGraph; \
             g.scale = 1.5; g.offsetX = 120; g.offsetY = -40; g.draw(); })()",
-        false,
-    )
-    .expect("move camera");
+        "move camera",
+    );
 
-    let share_url = eval_str("window.calxglossShareUrl()").unwrap_or_default();
+    let share_url = tab.eval_text("window.calxglossShareUrl()");
     for fragment in ["view=graph", "gb=d3d9.dll", "gz=1.5", "gx=120", "gy=-40"] {
         assert!(
             share_url.contains(fragment),
@@ -854,45 +545,23 @@ async fn test_headless_graph_export_and_share_url() {
 
     // Opening the shared URL in a fresh tab restores the filter (select and
     // visible node count) and the exact camera.
-    let shared_tab = browser.new_tab().expect("open new tab for share URL");
-    shared_tab
-        .navigate_to(&share_url)
-        .expect("navigate to share URL");
-    shared_tab
-        .wait_until_navigated()
-        .expect("wait for share URL navigation");
-    shared_tab.enable_runtime().expect("enable runtime");
+    let shared_tab = tab.open_tab_at(&share_url);
 
-    let mut restored = false;
-    for _ in 0..25 {
-        if shared_tab
-            .evaluate(
-                "(() => { const g = window.calxglossGraph; if (!g) return false; \
+    assert!(
+        support::wait_for_bool_on(
+            &shared_tab,
+            "(() => { const g = window.calxglossGraph; if (!g) return false; \
                     const sel = document.getElementById('graph-filter-binary'); \
                     return sel.value === 'd3d9.dll' && g.visibleNodeCount === 2 \
                         && Math.abs(g.scale - 1.5) < 0.001 \
                         && Math.abs(g.offsetX - 120) < 0.001 \
-                        && Math.abs(g.offsetY + 40) < 0.001; })()",
-                false,
-            )
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            restored = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        restored,
+                        && Math.abs(g.offsetY + 40) < 0.001; })()"
+        )
+        .await,
         "opening the shared URL should restore the encoded filters and viewport"
     );
 
     shared_tab.close_target().ok();
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the LLM I/O log browser (issue #80): the view
@@ -902,21 +571,13 @@ async fn test_headless_graph_export_and_share_url() {
 /// through the binary filter and full-text search, and still appends live
 /// WebSocket entries on top of the history — without duplicating them when
 /// the history reloads on the next view entry.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_llm_log_browser() {
     let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // History from a "previous run": persisted before the page opens, so
-    // the view must load it from the server rather than a memory buffer.
+    // History from a "previous run": filed through the log writer before
+    // the world boots, so the view must load it from the server rather
+    // than a memory buffer.
     let log = LlmIoLog::new(fixture.repo_path());
     log.record(&ProgressEvent::LlmRequest {
         binary: "game_logic.dll".into(),
@@ -941,48 +602,37 @@ async fn test_headless_llm_log_browser() {
         prompt: "fix the compile errors in UpdateScene".into(),
     });
 
-    let Some(browser) = launch_headless_browser() else {
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
+
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let visible_count = || {
-        eval_count(
-            &tab,
-            "document.querySelectorAll('#llm-log-entries .llm-log-entry').length",
-        )
-    };
+    let visible_count =
+        || tab.eval_count("document.querySelectorAll('#llm-log-entries .llm-log-entry').length");
 
     // Switch to the LLM I/O tab.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"llm-log\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click llm-log tab");
+    tab.click(r#".nav-tab[data-view="llm-log"]"#);
 
     // The persisted history renders — loaded over HTTP, not from a buffer.
-    let mut loaded = false;
-    for _ in 0..25 {
-        if visible_count() == 3 {
-            loaded = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(loaded, "log view should load the persisted history");
+    assert!(
+        tab.wait_for_bool(
+            "document.querySelectorAll('#llm-log-entries .llm-log-entry').length === 3"
+        )
+        .await,
+        "log view should load the persisted history"
+    );
 
     // Token count per entry: the response reports its count, the request
     // shows an honest em dash rather than a fabricated zero.
-    let response_meta = eval_text(
-        &tab,
+    let response_meta = tab.eval_text(
         "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(2) .meta').textContent",
     );
     assert!(
         response_meta.contains("4321 tokens"),
         "response entry should show its token count, got: {response_meta}"
     );
-    let request_meta = eval_text(
-        &tab,
+    let request_meta = tab.eval_text(
         "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(1) .meta').textContent",
     );
     assert!(
@@ -992,20 +642,14 @@ async fn test_headless_llm_log_browser() {
 
     // Entries start collapsed: the body is hidden until the header is clicked.
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight === 0"
         ),
         "entries should start collapsed"
     );
-    tab.evaluate(
-        "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-header').click() === undefined",
-        false,
-    )
-    .expect("click entry header");
+    tab.click("#llm-log-entries .llm-log-entry .llm-log-entry-header");
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight > 0"
         ),
         "header click should expand the entry"
@@ -1013,58 +657,50 @@ async fn test_headless_llm_log_browser() {
 
     // One-click copy: every entry has a copy button.
     assert!(
-        eval_bool(
-            &tab,
-            "document.querySelectorAll('#llm-log-entries .llm-log-copy').length === 3"
-        ),
+        tab.eval_bool("document.querySelectorAll('#llm-log-entries .llm-log-copy').length === 3"),
         "every entry should have a copy button"
     );
 
     // Binary filter narrows to one binary.
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('llm-log-filter-binary'); \
             sel.value = 'd3d9.dll'; \
             sel.dispatchEvent(new Event('change')); })()",
-        false,
-    )
-    .expect("set binary filter");
+        "set binary filter",
+    );
     assert!(
         visible_count() == 1,
         "binary filter should leave only the d3d9.dll entry"
     );
 
     // Full-text search through prompt content (filter reset first).
-    tab.evaluate(
+    tab.run(
         "(() => { const sel = document.getElementById('llm-log-filter-binary'); \
             sel.value = ''; \
             sel.dispatchEvent(new Event('change')); \
             const inp = document.getElementById('llm-log-search'); \
             inp.value = 'compile errors'; \
             inp.dispatchEvent(new Event('input')); })()",
-        false,
-    )
-    .expect("set search");
+        "set search",
+    );
     assert!(
         visible_count() == 1,
         "search should match exactly the entry whose content mentions it"
     );
-    let searched_meta = eval_text(
-        &tab,
-        "document.querySelector('#llm-log-entries .llm-log-entry .meta').textContent",
-    );
+    let searched_meta = tab
+        .eval_text("document.querySelector('#llm-log-entries .llm-log-entry .meta').textContent");
     assert!(
         searched_meta.contains("UpdateScene"),
         "the searched entry should be the UpdateScene prompt, got: {searched_meta}"
     );
 
     // Reset the search — back to the full history.
-    tab.evaluate(
+    tab.run(
         "(() => { const inp = document.getElementById('llm-log-search'); \
             inp.value = ''; \
             inp.dispatchEvent(new Event('input')); })()",
-        false,
-    )
-    .expect("clear search");
+        "clear search",
+    );
     assert!(
         visible_count() == 3,
         "clearing the search should show all history"
@@ -1072,51 +708,63 @@ async fn test_headless_llm_log_browser() {
 
     // Live WebSocket entries still append on top of the history — including
     // a failed call, whose content must match the server log's raw error.
-    events.emit(ProgressEvent::LlmRequest {
+    world.emitter().emit(ProgressEvent::LlmRequest {
         binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 3,
         retry_strategy: "direct".into(),
         prompt: "translate UpdateScene".into(),
     });
-    events.emit(ProgressEvent::LlmCallFailed {
+    let failed_call = ProgressEvent::LlmCallFailed {
         binary: "d3d9.dll".into(),
         function: "UpdateScene".into(),
         attempt: 4,
         retry_strategy: "retry".into(),
         error: "connection reset".into(),
-    });
-    let mut appended = false;
-    for _ in 0..25 {
-        if visible_count() == 5 {
-            appended = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(failed_call.clone());
+
+    // The consumer appends each log entry before applying the event to the
+    // store, so the failure's unit record standing in the store proves
+    // both live entries are already persisted server-side.
+    world
+        .wait_until_unit_applied(&failed_call, "d3d9.dll", "UpdateScene", |_| true)
+        .await;
+
     assert!(
-        appended,
+        tab.wait_for_bool(
+            "document.querySelectorAll('#llm-log-entries .llm-log-entry').length === 5"
+        )
+        .await,
         "live WS entries should append on top of the history"
     );
 
     // Re-entering the view reloads the history — the live entries were also
     // persisted server-side, and dedup must keep them from showing twice
-    // (the error entry's content is the raw error on both sides).
-    tab.evaluate(
+    // (the error entry's content is the raw error on both sides). Arm the
+    // page's own re-render sentinel first. The page rewrites the entries
+    // container only after its fresh history load lands, so waiting on that
+    // rewrite proves the reload re-rendered — no fixed sleep.
+    tab.run(
+        "(() => { window.__llmLogRerender = false; \
+            new MutationObserver(() => { window.__llmLogRerender = true; }) \
+                .observe(document.getElementById('llm-log-entries'), { childList: true }); })()",
+        "arm the re-render sentinel",
+    );
+    tab.run(
         "document.querySelector('.nav-tab[data-view=\"dashboard\"]').click(); \
          document.querySelector('.nav-tab[data-view=\"llm-log\"]').click();",
-        false,
-    )
-    .expect("re-enter llm-log view");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+        "re-enter llm-log view",
+    );
+    assert!(
+        tab.wait_for_bool("window.__llmLogRerender === true").await,
+        "the re-entered view never re-rendered from a fresh history load"
+    );
     let reloaded = visible_count();
     assert!(
         reloaded == 5,
         "history reload must not duplicate the live entries — got {reloaded} entries"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for the live translation view (issue #65): in live
@@ -1124,18 +772,9 @@ async fn test_headless_llm_log_browser() {
 /// with its current phase and the evidence the live stream reported — tier,
 /// strategy, attempt, baseline/verification status, confidence — and must
 /// update the row when a later event lands over the WebSocket.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_live_view_renders_and_updates() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot().await;
 
     // One unit mid-flight with tier, strategy, and pending baseline evidence.
     for event in [
@@ -1156,59 +795,44 @@ async fn test_headless_live_view_renders_and_updates() {
             complexity: "Medium".into(),
             api_call_count: 3,
         },
-        ProgressEvent::LlmCallStart {
-            binary: "game_logic.dll".into(),
-            function: "DrawPrimitive".into(),
-            attempt: 2,
-            retry_strategy: "decompose".into(),
-        },
     ] {
-        events.emit(event);
+        world.emitter().emit(event);
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let in_flight = ProgressEvent::LlmCallStart {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 2,
+        retry_strategy: "decompose".into(),
+    };
+    world.emitter().emit(in_flight.clone());
+    world
+        .wait_until_unit_applied(&in_flight, "game_logic.dll", "DrawPrimitive", |record| {
+            record.phase == calxgloss_types::TranslationPhase::LlmCall && record.attempt == 2
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the Live tab.
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click live tab");
+    tab.click(r#".nav-tab[data-view="live"]"#);
 
     // The row renders asynchronously once the enhanced-progress fetch settles;
-    // poll until the unit appears (up to ~5 seconds).
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#live-units .live-unit[data-function=\"DrawPrimitive\"]').length",
-        ) == 1
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // wait until the unit appears.
     assert!(
-        rendered,
-        "live view should render one row for the in-flight unit, rows: {}",
-        eval_count(
-            &tab,
-            "document.querySelectorAll('#live-units .live-unit').length"
+        tab.wait_for_bool(
+            "document.querySelectorAll('#live-units .live-unit[data-function=\"DrawPrimitive\"]').length === 1"
         )
+        .await,
+        "live view should render one row for the in-flight unit, rows: {}",
+        tab.eval_count("document.querySelectorAll('#live-units .live-unit').length")
     );
 
     // The row shows the phase label and the evidence the stream reported.
     let row = "#live-units .live-unit[data-function=\"DrawPrimitive\"]";
     let row_text = |suffix: &str| -> String {
-        eval_text(
-            &tab,
-            &format!("document.querySelector('{row}')?{suffix} || ''"),
-        )
+        tab.eval_text(&format!("document.querySelector('{row}')?{suffix} || ''"))
     };
     assert_eq!(
         row_text(".querySelector('.live-phase')?.textContent"),
@@ -1240,42 +864,43 @@ async fn test_headless_live_view_renders_and_updates() {
 
     // A later event over the WebSocket must update the same row: the attempt
     // verifies (confidence 100%) and the unit completes (phase Review).
-    events.emit(ProgressEvent::TranslationAttemptCompleted {
-        binary: "game_logic.dll".into(),
-        function: "DrawPrimitive".into(),
-        attempt: 2,
-        success: true,
-        compiled: true,
-        tests_passed: 3,
-        tests_total: 3,
-        compilation_errors: vec![],
-        failed_tests: vec![],
-        retry_strategy: "decompose".into(),
-        tokens_used: None,
-    });
-    events.emit(ProgressEvent::TranslationCompleted {
+    world
+        .emitter()
+        .emit(ProgressEvent::TranslationAttemptCompleted {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            success: true,
+            compiled: true,
+            tests_passed: 3,
+            tests_total: 3,
+            compilation_errors: vec![],
+            failed_tests: vec![],
+            retry_strategy: "decompose".into(),
+            tokens_used: None,
+        });
+    let completed = ProgressEvent::TranslationCompleted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 2,
         success_strategy: Some("decompose".into()),
-    });
+    };
+    world.emitter().emit(completed.clone());
+    world
+        .wait_until_unit_applied(&completed, "game_logic.dll", "DrawPrimitive", |record| {
+            record.finished
+        })
+        .await;
 
-    let mut updated = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const r = document.querySelector('{row}'); \
-                return !!r && r.classList.contains('finished-ok') && \
-                    r.querySelector('.live-phase')?.textContent === 'Review'; }})()"
-            ),
-        ) {
-            updated = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(updated, "row should update to Review/finished over the WS");
+    assert!(
+        tab.wait_for_bool(&format!(
+            "(() => {{ const r = document.querySelector('{row}'); \
+            return !!r && r.classList.contains('finished-ok') && \
+                r.querySelector('.live-phase')?.textContent === 'Review'; }})()"
+        ))
+        .await,
+        "row should update to Review/finished over the WS"
+    );
     let meta = row_text(".querySelector('.live-unit-meta')?.textContent");
     assert!(
         meta.contains("baseline: 3/3 ✓"),
@@ -1297,9 +922,6 @@ async fn test_headless_live_view_renders_and_updates() {
             && history.contains("Review"),
         "phase history visible on the phase chip, got: {history}"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for issue #431 (P53.4): the queue row marks the unit
@@ -1314,238 +936,167 @@ async fn test_headless_queue_row_shows_live_reading_and_updates_in_place() {
     let fixture = TestFixture::new();
     add_pending_translation(&fixture, "RenderHUD");
     add_pending_translation(&fixture, "PauseGame");
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let world = support::ReviewWorld::boot_ws_on(&fixture).await;
 
     // One unit in flight at the LLM call before the browser even opens.
-    for event in [
-        ProgressEvent::TranslationStarted {
-            binary: "game_logic.dll".into(),
-            function: "DrawPrimitive".into(),
-        },
-        ProgressEvent::LlmCallStart {
-            binary: "game_logic.dll".into(),
-            function: "DrawPrimitive".into(),
-            attempt: 1,
-            retry_strategy: "direct".into(),
-        },
-    ] {
-        events.emit(event);
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    world.emitter().emit(ProgressEvent::TranslationStarted {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+    });
+    let in_flight = ProgressEvent::LlmCallStart {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        retry_strategy: "direct".into(),
+    };
+    world.emitter().emit(in_flight.clone());
+    world
+        .wait_until_unit_applied(&in_flight, "game_logic.dll", "DrawPrimitive", |record| {
+            record.phase == calxgloss_types::TranslationPhase::LlmCall
+        })
+        .await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click queue tab");
+    tab.click(r#".nav-tab[data-view="queue"]"#);
 
     let draw_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/DrawPrimitive/v2\\\"]";
     let hud_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/RenderHUD/v1\\\"]";
 
     // The in-flight unit's row carries a live marker naming its phase.
-    let mut marker_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
-                return !!el && el.textContent === 'LLM Call'; }})()"
-            ),
-        ) {
-            marker_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        marker_rendered,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
+                return !!el && el.textContent === 'LLM Call'; }})()"
+        ))
+        .await,
         "queue row should carry a live marker naming the unit's phase"
     );
 
     // The marker rides beside the persisted status chip as its own element —
     // two fields, never one.
     assert!(
-        eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const row = document.querySelector('{draw_row}'); \
-                return !!row && row.querySelector('.qi-live') !== null \
-                    && row.querySelector('.qi-status') !== null; }})()"
-            ),
-        ),
+        tab.eval_bool(&format!(
+            "(() => {{ const row = document.querySelector('{draw_row}'); \
+            return !!row && row.querySelector('.qi-live') !== null \
+                && row.querySelector('.qi-status') !== null; }})()"
+        )),
         "the live marker and the persisted status chip are separate elements"
     );
 
     // A unit the run never touched carries no live marker at all.
     assert!(
-        eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const row = document.querySelector('{hud_row}'); \
-                return !!row && row.querySelector('.qi-live') === null; }})()"
-            ),
-        ),
+        tab.eval_bool(&format!(
+            "(() => {{ const row = document.querySelector('{hud_row}'); \
+            return !!row && row.querySelector('.qi-live') === null; }})()"
+        )),
         "an untouched unit's row carries no live marker — a blank never reads as a state"
     );
 
     // The run completes the unit. The existing unit_phase push must switch
     // the marker to awaiting-review in place — the test never navigates or
     // reloads the page.
-    events.emit(ProgressEvent::TranslationCompleted {
+    let completed = ProgressEvent::TranslationCompleted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
-    });
+    };
+    world.emitter().emit(completed.clone());
+    world
+        .wait_until_unit_applied(&completed, "game_logic.dll", "DrawPrimitive", |record| {
+            record.finished
+        })
+        .await;
 
-    let mut marker_updated = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
-                return !!el && el.textContent === 'Awaiting Review'; }})()"
-            ),
-        ) {
-            marker_updated = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        marker_updated,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const el = document.querySelector('{draw_row} .qi-live'); \
+                return !!el && el.textContent === 'Awaiting Review'; }})()"
+        ))
+        .await,
         "the queue row's live marker should update in place off the WS push, no reload"
     );
 
     // The run then fails another unit. That unit's row must read Failed,
     // never Awaiting Review — a failed unit moved no closer to review. The
     // same push path updates this row in place too.
-    events.emit(ProgressEvent::TranslationStarted {
+    world.emitter().emit(ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "PauseGame".into(),
     });
-    events.emit(ProgressEvent::TranslationFailed {
+    let failed = ProgressEvent::TranslationFailed {
         binary: "game_logic.dll".into(),
         function: "PauseGame".into(),
         total_attempts: 1,
-    });
+    };
+    world.emitter().emit(failed.clone());
+    world
+        .wait_until_unit_applied(&failed, "game_logic.dll", "PauseGame", |record| {
+            record.finished && record.succeeded == Some(false)
+        })
+        .await;
     let pause_row = "#full-queue-list [data-unit-id=\\\"game_logic.dll/PauseGame/v1\\\"]";
-    let mut failed_marker = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            &format!(
-                "(() => {{ const el = document.querySelector('{pause_row} .qi-live'); \
-                return !!el && el.textContent === 'Failed'; }})()"
-            ),
-        ) {
-            failed_marker = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        failed_marker,
+        tab.wait_for_bool(&format!(
+            "(() => {{ const el = document.querySelector('{pause_row} .qi-live'); \
+                return !!el && el.textContent === 'Failed'; }})()"
+        ))
+        .await,
         "a failed unit's row reads Failed — never Awaiting Review"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser honesty test for the live translation view (issue #65):
 /// outside `calxgloss live` the enhanced endpoint is not routed, so the Live
 /// tab must say the live view needs a running pipeline — never render an
 /// empty list that masquerades as an idle run.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_live_view_honest_without_live_mode() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click live tab");
+    tab.click(r#".nav-tab[data-view="live"]"#);
 
-    // The honest empty state must appear (poll up to ~5 seconds).
-    let mut announced = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    // The honest empty state must appear.
+    assert!(
+        tab.wait_for_bool(
             "(() => { const e = document.getElementById('live-empty'); \
                 return !!e && e.style.display !== 'none' && \
-                    e.textContent.includes('calxgloss live'); })()",
-        ) {
-            announced = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        announced,
+                    e.textContent.includes('calxgloss live'); })()"
+        )
+        .await,
         "plain serve must announce that the live view needs calxgloss live"
     );
     assert!(
-        !eval_bool(
-            &tab,
-            "document.querySelector('#live-units .live-unit') !== null"
-        ),
+        !tab.eval_bool("document.querySelector('#live-units .live-unit') !== null"),
         "no fabricated unit rows outside live mode"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test for issue #66: the dashboard must render category
 /// cards sourced from the classification data, a quality summary computed
 /// from the dashboard units, and a token budget visual driven by the
 /// token-usage log and a user-set budget.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_dashboard_summary_sections() {
     let fixture = TestFixture::new();
     write_token_usage_log(&fixture, false);
 
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain_on(&fixture).await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Category cards: one per DllCategory, with the fixture's counts.
-    let mut cards_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const cards = document.querySelectorAll('#category-cards .category-card'); \
                 if (cards.length !== 7) return false; \
                 const ps = document.querySelector('#category-cards [data-category=\"ProjectSpecific\"]'); \
@@ -1554,146 +1105,79 @@ async fn test_headless_dashboard_summary_sections() {
                 return !!ps && !!sdk && ps.textContent.includes('1') && sdk.textContent.includes('1') && \
                     !!dotnet && \
                     dotnet.querySelector('.category-card-label')?.textContent === '.NET Managed' && \
-                    dotnet.querySelector('.category-card-value')?.textContent === '0'; })()",
-        ) {
-            cards_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        cards_rendered,
+                    dotnet.querySelector('.category-card-value')?.textContent === '0'; })()"
+        )
+        .await,
         "category cards should render 7 categories with fixture counts, with the DotNetManaged card present at an honest zero"
     );
 
     // Quality summary: avg confidence 73% (0.725 rounded), and honest
     // em-dashes for the baseline/verification rates with no data behind them.
-    let mut quality_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const el = document.getElementById('quality-summary'); \
                 if (!el) return false; const t = el.textContent; \
-                return t.includes('73%') && t.includes('—'); })()",
-        ) {
-            quality_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        quality_rendered,
-        "quality summary should show the 73% average confidence and em-dashes for the rates with no data behind them, got: {:?}",
-        eval_text(
-            &tab,
-            "document.getElementById('quality-summary')?.textContent || ''"
+                return t.includes('73%') && t.includes('—'); })()"
         )
+        .await,
+        "quality summary should show the 73% average confidence and em-dashes for the rates with no data behind them, got: {:?}",
+        tab.eval_text("document.getElementById('quality-summary')?.textContent || ''")
     );
 
     // Token budget: consumed tokens come from the log; the budget itself is
     // a user preference in localStorage. Set it, reload, and check the bar.
-    tab.evaluate(
+    tab.run(
         "localStorage.setItem('calxgloss_token_budget', '10000') === undefined",
-        false,
-    )
-    .expect("set token budget");
-    tab.reload(false, None).expect("reload");
-    tab.wait_until_navigated().expect("wait for reload");
+        "set token budget",
+    );
+    tab.reload();
 
-    let mut budget_rendered = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
+    assert!(
+        tab.wait_for_bool(
             "(() => { const el = document.getElementById('token-budget'); \
                 if (!el) return false; \
                 const tokens = el.querySelector('[data-total-tokens]'); \
                 if (!tokens || tokens.getAttribute('data-total-tokens') !== '7168') return false; \
                 const fill = el.querySelector('.token-budget-fill'); \
-                return !!fill && fill.style.width === '71.68%'; })()",
-        ) {
-            budget_rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(
-        budget_rendered,
-        "token budget bar should show 7,168 consumed against the 10,000 budget (71.68%), got: {:?}",
-        eval_text(
-            &tab,
-            "document.getElementById('token-budget')?.textContent || ''"
+                return !!fill && fill.style.width === '71.68%'; })()"
         )
+        .await,
+        "token budget bar should show 7,168 consumed against the 10,000 budget (71.68%), got: {:?}",
+        tab.eval_text("document.getElementById('token-budget')?.textContent || ''")
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser test: a browser reload keeps the tab the operator was
 /// on — clicking the pipeline tab and reloading must land back on the
 /// pipeline view, not the dashboard.
-///
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_reload_keeps_current_tab() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let router = build_router(state);
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot_plain().await;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Switch to the pipeline tab.
-    tab.evaluate(
+    tab.run(
         "(() => { document.querySelector('.nav-tab[data-view=\"pipeline\"]').click(); })()",
-        false,
-    )
-    .expect("click pipeline tab");
+        "click pipeline tab",
+    );
 
-    let mut pipeline_active = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
-                && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
-        ) {
-            pipeline_active = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let pipeline_active = "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
+        && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true";
     assert!(
-        pipeline_active,
+        tab.wait_for_bool(pipeline_active).await,
         "pipeline view should be active after the tab click"
     );
 
     // Reload: the pipeline view must still be the active one.
-    tab.reload(false, None).expect("reload");
-    tab.wait_until_navigated().expect("wait for reload");
+    tab.reload();
 
-    pipeline_active = false;
-    for _ in 0..25 {
-        if eval_bool(
-            &tab,
-            "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
-                && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
-        ) {
-            pipeline_active = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        pipeline_active,
+        tab.wait_for_bool(pipeline_active).await,
         "reload should stay on the pipeline tab, not fall back to the dashboard"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
 
 /// Headless-browser pin for the live view's evidence-scan panel (issue #428):
@@ -1706,39 +1190,22 @@ async fn test_headless_reload_keeps_current_tab() {
 /// rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_live_view_shows_scan_rows() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         eprintln!("skipping scan-panel test: no headless browser found");
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click live tab");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tab.click(r#".nav-tab[data-view="live"]"#);
 
     // Before the first started event the panel says the scan phase has not
     // started — it must not imply that a count of scans ran.
     assert!(
-        eval_bool(
-            &tab,
-            "document.getElementById('live-scans-empty').style.display === ''"
-        ),
+        tab.wait_for_bool("document.getElementById('live-scans-empty').style.display === ''")
+            .await,
         "the not-started message should show before the first scan event"
     );
-    let before = eval_text(
-        &tab,
-        "document.getElementById('live-scans')?.textContent || ''",
-    );
+    let before = tab.eval_text("document.getElementById('live-scans')?.textContent || ''");
     assert!(
         !before.contains("0 scan") && !before.contains("scan"),
         "no scan rows and no implied scan count before the first event, got {before:?}"
@@ -1748,10 +1215,10 @@ async fn test_headless_live_view_shows_scan_rows() {
     // running, one finished whose evidence engine files no single
     // count, one finished failed with its error and no count, and one
     // failed whose error words are blank (issue #429).
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "scan_hd.dll".into(),
     });
-    for event in [
+    let scan_events = [
         ProgressEvent::EvidenceScanStarted {
             binary: "scan_hd.dll".into(),
             scan: "control-flow".into(),
@@ -1800,39 +1267,39 @@ async fn test_headless_live_view_shows_scan_rows() {
             findings: None,
             error: Some(String::new()),
         },
-    ] {
-        events.emit(event);
+    ];
+    let last_scan = scan_events
+        .last()
+        .cloned()
+        .expect("the pass ends with a completed scan");
+    for event in scan_events {
+        world.emitter().emit(event);
     }
+
+    // The applied wait first: the live view serves all five scan records.
+    world
+        .wait_until_enhanced_progress_applied(&last_scan, |body| {
+            body["scans"].as_array().is_some_and(|scans| {
+                scans.len() == 5
+                    && scans
+                        .iter()
+                        .any(|s| s["scan"] == "blank-error" && s["finished"] == true)
+            })
+        })
+        .await;
 
     // The pushed events re-render the panel on their own: five named
     // rows, no reload.
-    let mut rendered = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#live-scans .live-scan').length",
-        ) == 5
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        rendered,
+        tab.wait_for_bool("document.querySelectorAll('#live-scans .live-scan').length === 5")
+            .await,
         "the pushed scan events should produce five rows without a reload, rows: {}",
-        eval_count(
-            &tab,
-            "document.querySelectorAll('#live-scans .live-scan').length"
-        )
+        tab.eval_count("document.querySelectorAll('#live-scans .live-scan').length")
     );
     let row_text = |name: &str| -> String {
-        eval_text(
-            &tab,
-            &format!(
-                "document.querySelector('#live-scans [data-scan=\"{name}\"]')?.textContent || ''"
-            ),
-        )
+        tab.eval_text(&format!(
+            "document.querySelector('#live-scans [data-scan=\"{name}\"]')?.textContent || ''"
+        ))
     };
 
     // Finished rows: elapsed seconds with the finding count where the
@@ -1865,15 +1332,13 @@ async fn test_headless_live_view_shows_scan_rows() {
         "a failed scan must not show a zero count, got {failed:?}"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#live-scans [data-scan=\"sync\"]')?.classList.contains('scan-failed') === true"
         ),
         "the failed row should carry the scan-failed class, distinct from the finished rows"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#live-scans [data-scan=\"control-flow\"]')?.classList.contains('scan-failed') === false"
         ),
         "a completed row should not carry the failed class"
@@ -1888,8 +1353,7 @@ async fn test_headless_live_view_shows_scan_rows() {
         "a failed scan with blank error words must still render as failed, got {blank_failure:?}"
     );
     assert!(
-        eval_bool(
-            &tab,
+        tab.eval_bool(
             "document.querySelector('#live-scans [data-scan=\"blank-error\"]')?.classList.contains('scan-failed') === true"
         ),
         "the blank-error row should carry the scan-failed class, not read as completed"
@@ -1903,8 +1367,7 @@ async fn test_headless_live_view_shows_scan_rows() {
         "the in-flight scan should render as running, got {running:?}"
     );
     let clock = || -> String {
-        eval_text(
-            &tab,
+        tab.eval_text(
             "document.querySelector('#live-scans [data-scan=\"callback-detection\"] .live-elapsed')?.textContent || ''",
         )
     };
@@ -1913,6 +1376,8 @@ async fn test_headless_live_view_shows_scan_rows() {
         first.ends_with('s') && first != "s",
         "the running row should show a seconds clock, got {first:?}"
     );
+    // This delay is the subject under test, not a settle: the clock must
+    // advance because real time passed while the completed event stayed out.
     tokio::time::sleep(Duration::from_millis(1200)).await;
     let second = clock();
     assert_ne!(
@@ -1922,36 +1387,28 @@ async fn test_headless_live_view_shows_scan_rows() {
 
     // A batch for the next binary clears this pass's scan rows, and the panel
     // falls back to the not-started message.
-    events.emit(ProgressEvent::BatchStarted {
+    let next_pass = ProgressEvent::BatchStarted {
         binary: "next_scan_hd.dll".into(),
-    });
-    let mut cleared = false;
-    for _ in 0..25 {
-        if eval_count(
-            &tab,
-            "document.querySelectorAll('#live-scans .live-scan').length",
-        ) == 0
-        {
-            cleared = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(next_pass.clone());
+    world
+        .wait_until_enhanced_progress_applied(&next_pass, |body| {
+            body["scans"]
+                .as_array()
+                .is_some_and(|scans| scans.is_empty())
+        })
+        .await;
     assert!(
-        cleared,
+        tab.wait_for_bool("document.querySelectorAll('#live-scans .live-scan').length === 0")
+            .await,
         "a batch for the next binary should clear the previous pass's scan rows"
     );
     assert!(
-        eval_bool(
-            &tab,
-            "document.getElementById('live-scans-empty').style.display === ''"
-        ),
+        tab.eval_bool("document.getElementById('live-scans-empty').style.display === ''"),
         "the cleared panel should say the scan phase has not started"
     );
-
-    tab.close_target().ok();
-    drop(browser);
 }
+
 /// Headless-browser pin for the worklist tick line in the live view's scan
 /// panel (issue #430): the pipeline's existing `BatchProgress` heartbeat
 /// renders beside the scan rows as pass name · function · position. The
@@ -1961,31 +1418,16 @@ async fn test_headless_live_view_shows_scan_rows() {
 /// its name alone, never a fabricated position.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_headless_live_view_shows_worklist_tick_line() {
-    let fixture = TestFixture::new();
-    let state = ServerState::new(fixture.repo_path());
-    let events = TranslationEvents::new(128);
-    let manager = SessionManager::new_with_broadcast(events.subscribe());
-    let progress = ProgressState::new();
-    let router = build_router_with_ws(state, manager, progress, ws_actions(&fixture));
-    let _server = spawn_server(router, fixture.port()).await;
+    let world = support::ReviewWorld::boot().await;
 
-    let Some(browser) = launch_headless_browser() else {
+    let Some(tab) = world.open_dashboard_tab() else {
         eprintln!("skipping worklist-tick test: no headless browser found");
         return;
     };
-    let tab = open_dashboard_tab(&browser, fixture.port());
-    tab.evaluate(
-        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
-        false,
-    )
-    .expect("click live tab");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tab.click(r#".nav-tab[data-view="live"]"#);
 
     let tick_text = || -> String {
-        eval_text(
-            &tab,
-            "document.getElementById('live-worklist-tick')?.textContent || ''",
-        )
+        tab.eval_text("document.getElementById('live-worklist-tick')?.textContent || ''")
     };
 
     // Before the pass's first heartbeat there is no tick line to show.
@@ -1997,120 +1439,123 @@ async fn test_headless_live_view_shows_worklist_tick_line() {
 
     // A scan running with the pass's heartbeat beside it: the line names
     // the pass, the function Kuna is on, and the position in the work list.
-    events.emit(ProgressEvent::BatchStarted {
+    world.emitter().emit(ProgressEvent::BatchStarted {
         binary: "tick_hd.dll".into(),
     });
-    events.emit(ProgressEvent::EvidenceScanStarted {
+    world.emitter().emit(ProgressEvent::EvidenceScanStarted {
         binary: "tick_hd.dll".into(),
         scan: "sync".into(),
     });
-    events.emit(ProgressEvent::BatchProgress {
+    let beat = ProgressEvent::BatchProgress {
         binary: "tick_hd.dll".into(),
         pass: "evidence scans".into(),
         function: "FUN_1800412a0".into(),
         index: 1200,
         total: 7267,
-    });
+    };
+    world.emitter().emit(beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&beat, |body| {
+            body["activity"]["function"] == "FUN_1800412a0"
+        })
+        .await;
 
     // The heartbeat re-renders the panel on its own — the tick line shows
     // while the scan row is still running, no reload.
-    let mut rendered = false;
-    for _ in 0..25 {
-        let text = tick_text();
-        if text.contains("evidence scans")
-            && text.contains("FUN_1800412a0")
-            && text.contains("1,200/7,267")
-        {
-            rendered = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     assert!(
-        rendered,
+        tab.wait_for_text(
+            "document.getElementById('live-worklist-tick')?.textContent || ''",
+            |text| {
+                text.contains("evidence scans")
+                    && text.contains("FUN_1800412a0")
+                    && text.contains("1,200/7,267")
+            }
+        )
+        .await,
         "the heartbeat should render pass · function · position without a reload, got {:?}",
         tick_text()
     );
     assert_eq!(
-        eval_count(
-            &tab,
-            "document.querySelectorAll('#live-scans .live-scan').length"
-        ),
+        tab.eval_count("document.querySelectorAll('#live-scans .live-scan').length"),
         1,
         "the running scan row stands beside the tick line"
     );
 
     // The next unique function sends its heartbeat and moves the counter
     // forward. Same line, position moved, still no reload.
-    events.emit(ProgressEvent::BatchProgress {
+    let next_beat = ProgressEvent::BatchProgress {
         binary: "tick_hd.dll".into(),
         pass: "evidence scans".into(),
         function: "FUN_180057900".into(),
         index: 1201,
         total: 7267,
-    });
-    let mut advanced = false;
-    for _ in 0..25 {
-        let text = tick_text();
-        if text.contains("FUN_180057900") && text.contains("1,201/7,267") {
-            advanced = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(next_beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&next_beat, |body| {
+            body["activity"]["function"] == "FUN_180057900"
+        })
+        .await;
     assert!(
-        advanced,
+        tab.wait_for_text(
+            "document.getElementById('live-worklist-tick')?.textContent || ''",
+            |text| text.contains("FUN_180057900") && text.contains("1,201/7,267")
+        )
+        .await,
         "the tick line's position should advance as heartbeats arrive, got {:?}",
         tick_text()
     );
 
     // The cold call-graph build sends its heartbeat under its own pass
     // name. The same line; no new event variant.
-    events.emit(ProgressEvent::BatchProgress {
+    let graph_beat = ProgressEvent::BatchProgress {
         binary: "tick_hd.dll".into(),
         pass: "call graph".into(),
         function: "FUN_180060000".into(),
         index: 41,
         total: 7267,
-    });
-    let mut call_graph = false;
-    for _ in 0..25 {
-        let text = tick_text();
-        if text.contains("call graph")
-            && text.contains("FUN_180060000")
-            && text.contains("41/7,267")
-        {
-            call_graph = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(graph_beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&graph_beat, |body| {
+            body["activity"]["function"] == "FUN_180060000"
+        })
+        .await;
     assert!(
-        call_graph,
+        tab.wait_for_text(
+            "document.getElementById('live-worklist-tick')?.textContent || ''",
+            |text| {
+                text.contains("call graph")
+                    && text.contains("FUN_180060000")
+                    && text.contains("41/7,267")
+            }
+        )
+        .await,
         "the call-graph heartbeat should render the same line under its own pass name, got {:?}",
         tick_text()
     );
 
     // A pass with no per-item granularity shows its name alone — never a
     // fabricated position or a zero.
-    events.emit(ProgressEvent::BatchProgress {
+    let name_only_beat = ProgressEvent::BatchProgress {
         binary: "tick_hd.dll".into(),
         pass: "xref index".into(),
         function: String::new(),
         index: 0,
         total: 0,
-    });
-    let mut name_only = false;
-    for _ in 0..25 {
-        let text = tick_text();
-        if text.contains("xref index") && !text.contains('/') && !text.contains('0') {
-            name_only = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(name_only_beat.clone());
+    world
+        .wait_until_enhanced_progress_applied(&name_only_beat, |body| {
+            body["activity"]["pass"] == "xref index"
+        })
+        .await;
     assert!(
-        name_only,
+        tab.wait_for_text(
+            "document.getElementById('live-worklist-tick')?.textContent || ''",
+            |text| text.contains("xref index") && !text.contains('/') && !text.contains('0')
+        )
+        .await,
         "a pass without per-item granularity should show its name alone, got {:?}",
         tick_text()
     );
@@ -2118,23 +1563,45 @@ async fn test_headless_live_view_shows_worklist_tick_line() {
     // A batch for the next binary clears the heartbeat record with the
     // scan rows. The line empties rather than outliving the pass it
     // showed.
-    events.emit(ProgressEvent::BatchStarted {
+    let next_pass = ProgressEvent::BatchStarted {
         binary: "next_tick_hd.dll".into(),
-    });
-    let mut cleared = false;
-    for _ in 0..25 {
-        if tick_text().is_empty() {
-            cleared = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    };
+    world.emitter().emit(next_pass.clone());
+    world
+        .wait_until_enhanced_progress_applied(&next_pass, |body| {
+            body.get("activity").is_none()
+                && body
+                    .get("scans")
+                    .is_some_and(|scans| scans.as_array().is_some_and(|s| s.is_empty()))
+        })
+        .await;
     assert!(
-        cleared,
+        tab.wait_for_bool("document.getElementById('live-worklist-tick')?.textContent === ''")
+            .await,
         "the next binary's pass should clear the previous pass's tick line, got {:?}",
         tick_text()
     );
+}
 
-    tab.close_target().ok();
-    drop(browser);
+/// Poll a persisted record file until `settled` accepts its JSON — the
+/// applied wait for the queue panel's endpoint calls, which the page fires
+/// without awaiting. It returns the record that satisfied the predicate,
+/// or the last one seen when the deadline passes, so the caller's own
+/// assertion names the change that never landed. Shares the adapter's
+/// wait bounds (issue #476).
+async fn wait_for_persisted(
+    path: &std::path::Path,
+    settled: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + support::APPLIED_WAIT_DEADLINE;
+    loop {
+        let value = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        if settled(&value) || tokio::time::Instant::now() >= deadline {
+            return value;
+        }
+        tokio::time::sleep(support::APPLIED_WAIT_POLL).await;
+    }
 }

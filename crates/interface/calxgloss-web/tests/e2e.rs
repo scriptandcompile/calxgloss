@@ -675,19 +675,6 @@ fn write_token_usage_log(fixture: &TestFixture, with_durations: bool) {
     write_token_usage_fixture(fixture.repo_path().as_path(), &entries);
 }
 
-/// Emits the minimal live events that give one binary a known function
-/// total with work remaining (5 total, 2 translated, 1 failed → 2 remain).
-fn emit_canned_batch_summary(events: &TranslationEvents) {
-    events.emit(ProgressEvent::BatchSummary {
-        binary: "game_logic.dll".into(),
-        total_functions: 5,
-        success_count: 2,
-        failure_count: 1,
-        total_attempts: 4,
-        total_tokens: 5000,
-    });
-}
-
 /// Like `write_canned_run_telemetry` but the token-usage entries include
 /// durations (100s and 200s for DrawPrimitive's two attempts).
 fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {

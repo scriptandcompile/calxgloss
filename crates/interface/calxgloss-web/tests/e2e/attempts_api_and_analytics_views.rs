@@ -1098,7 +1098,7 @@ async fn test_headless_binaries_detail_shim_tracker_honest_states() {
     // A fourth binary: a crate replacement with no shim artifacts at all —
     // the honest "shim not generated" empty state.
     calxgloss_types::save_classification_record(
-        &fixture.repo_path(),
+        fixture.repo_path(),
         &ClassificationRecord {
             binary: "ogg.dll".to_string(),
             category: Some(DllCategory::KnownThirdParty),

@@ -756,6 +756,21 @@ pub fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
         .unwrap_or(-1)
 }
 
+/// [`DashboardTab::wait_for_bool`]'s bounded DOM wait over a bare tab —
+/// the fresh tab a shared URL opens (issue #476). Same bounds.
+pub async fn wait_for_bool_on(tab: &headless_chrome::Tab, expr: &str) -> bool {
+    let deadline = tokio::time::Instant::now() + DOM_WAIT_DEADLINE;
+    loop {
+        if eval_bool(tab, expr) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(DOM_WAIT_POLL).await;
+    }
+}
+
 /// A dashboard tab riding a booted world (issue #471). It opens on the
 /// world's own port with Chrome's runtime enabled, and it holds the
 /// browser for the tab's lifetime. The evaluate helpers and the bounded
@@ -796,6 +811,30 @@ impl DashboardTab {
             .unwrap_or_else(|e| panic!("run `{label}`: {e}"));
     }
 
+    /// Open a second tab on this tab's browser, navigated to `url` and
+    /// settled, for a pin whose page opens a URL another tab produced —
+    /// the graph's shareable URL (issue #476). The caller closes it. The
+    /// browser dies with this tab.
+    pub fn open_tab_at(&self, url: &str) -> std::sync::Arc<headless_chrome::Tab> {
+        let tab = self.browser.new_tab().expect("open new tab");
+        tab.navigate_to(url).expect("navigate to shared URL");
+        tab.wait_until_navigated().expect("wait for navigation");
+        tab.enable_runtime().expect("enable runtime");
+        tab
+    }
+
+    /// Evaluate `expr` with `awaitPromise` and read the resolved value as a
+    /// boolean. An evaluation error or non-boolean result reads as `false`
+    /// (issue #476 — the PNG export's rasterize step).
+    pub fn eval_promise_bool(&self, expr: &str) -> bool {
+        self.tab
+            .evaluate(expr, true)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Evaluate `expr` and read the result as a boolean; an evaluation
     /// error or non-boolean result reads as `false`.
     pub fn eval_bool(&self, expr: &str) -> bool {
@@ -818,16 +857,7 @@ impl DashboardTab {
     /// [`DOM_WAIT_DEADLINE`]. Reads `false` at the deadline — the
     /// caller's own assertion then names what the page never showed.
     pub async fn wait_for_bool(&self, expr: &str) -> bool {
-        let deadline = tokio::time::Instant::now() + DOM_WAIT_DEADLINE;
-        loop {
-            if self.eval_bool(expr) {
-                return true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(DOM_WAIT_POLL).await;
-        }
+        wait_for_bool_on(&self.tab, expr).await
     }
 
     /// Poll `expr` as text until `seen` accepts what it reads, bounded
