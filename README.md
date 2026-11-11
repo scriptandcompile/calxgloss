@@ -25,9 +25,11 @@ Calxgloss reverse engineers a project's executables and DLLs. It turns disassemb
   │                   calxgloss-cli                    │     │         calxgloss-web          │
   │ init · doctor · classify · translate · auto · live │     │ review: accept · send back ·   │
   │ batch-translate · serve · dashboard · verify · gc  │     │ patch · skip · override        │
-  │ typesdb · typeinfer · algorithm · memory · sync    │     │ pipeline: pause · resume ·     │
-  │ consts · callback · controlflow · stringctx        │     │ stop · start · cancel-current  │
-  │ apidetect · serialize · config · auto-shim         │     │ Axum + React SPA               │
+  │ auto-shim · config · capture · minidump · scenario │     │ pipeline: pause · resume ·     │
+  │ typesdb · typeinfer · algorithm · memory · sync    │     │ stop · start · cancel-current  │
+  │ globalstate · consts · callback · controlflow      │     │ Axum + static HTML/JS SPA      │
+  │ stringctx · apidetect · serialize · libmatch       │     │                                │
+  │ errhandling · floatsimd · bdiff                    │     │                                │
   └────────────────────────────────────────────────────┘     └────────────────────────────────┘
                              ▲                                               ▲
                              │                                               │
@@ -45,10 +47,12 @@ Calxgloss reverse engineers a project's executables and DLLs. It turns disassemb
   │calxgloss-decomp│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
   │ engine seam:   │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
   │ ScanSource ·   │   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
-  │ TypeWriteSource│   │ algorithm · memory         │  │                  │  │ infinite loop, │
+  │ TypeWriteSource│   │ algorithm · memory · bdiff │  │                  │  │ infinite loop, │
   │ + read cache   │   │ sync · consts · callback   │  │                  │  │ divergence,    │
   │calxgloss-kuna  │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
   │ the engine     │   │ apidetect · serialize      │  │                  │  │                │
+  │                │   │ libmatch · errhandling     │  │                  │  │                │
+  │                │   │ floatsimd · globalstate    │  │                  │  │                │
   └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
             │                          │                                         │
             │       loads the target PE in-process (ADR-0041)                    │
@@ -170,6 +174,7 @@ to fix this:
 | `calxgloss-llm` | Local LLM client (Ollama/vLLM) |
 | `calxgloss-prompts` | Prompt templates |
 | `calxgloss-pal` | Windows API → Rust mappings |
+| `calxgloss-testfixtures` | Checked-in fixture DLL (compiled at build time) and canned scan fixtures shared by the test harnesses |
 | `calxgloss-analysis` | DLL classification, call graphs, API tagging |
 | `calxgloss-callgraph` | Root/leaf detection, translation ordering, context enrichment |
 | `calxgloss-typesdb` | Type Manager scanning, vtable detection, struct inference |
@@ -184,6 +189,10 @@ to fix this:
 | `calxgloss-apidetect` | Import-table extraction, library-to-Rust-crate mapping, per-function API summaries |
 | `calxgloss-serialize` | Byte-swap call matching, bit-packing pattern recognition, magic-byte format sniffing |
 | `calxgloss-libmatch` | Known-library function identification: body-signature matching of statically linked CRT/STL code |
+| `calxgloss-errhandling` | Error-handling idioms: try/catch frames, named handler registrations, failure codes a body returns or guards against |
+| `calxgloss-globalstate` | Global-state reference sets: which globals each function reads and writes |
+| `calxgloss-floatsimd` | Float/SIMD usage flags: which functions do float math, and what shape |
+| `calxgloss-bdiff` | Binary-version pairing: which function in a new binary version is the one from the old |
 | `calxgloss-testgen` | FFI bindings, test inputs, baseline execution |
 | `calxgloss-translator` | Evidence engine scans → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |
