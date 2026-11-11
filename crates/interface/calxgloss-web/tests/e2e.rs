@@ -32,6 +32,8 @@ mod dashboard_api;
 mod headless_binary_and_unit_views;
 #[path = "e2e/headless_queue_graph_live.rs"]
 mod headless_queue_graph_live;
+#[path = "e2e/honest_degradation.rs"]
+mod honest_degradation;
 #[path = "e2e/pipeline_progress_and_llm_log.rs"]
 mod pipeline_progress_and_llm_log;
 #[path = "e2e/scenario_status.rs"]

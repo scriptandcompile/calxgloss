@@ -1265,6 +1265,17 @@ pub fn row_named<'a>(view: &'a serde_json::Value, binary: &str) -> Option<&'a se
         .find(|b| b["binary"] == binary)
 }
 
+/// The conformance row for `binary` in a `/api/dashboard` payload.
+pub fn conformance_row(body: &serde_json::Value, binary: &str) -> serde_json::Value {
+    body["dashboard"]["conformance"]
+        .as_array()
+        .expect("conformance is an array")
+        .iter()
+        .find(|row| row["binary"] == binary)
+        .unwrap_or_else(|| panic!("the conformance row for {binary} rides the model"))
+        .clone()
+}
+
 // ─────────────────────────────────────────────────────────────
 // Test fixture setup
 // ─────────────────────────────────────────────────────────────

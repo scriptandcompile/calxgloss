@@ -46,17 +46,6 @@ pub(super) fn stage_obligation_ledger(
     .expect("file the obligation ledger");
 }
 
-/// The conformance row for `binary` in the dashboard payload.
-fn conformance_row(body: &serde_json::Value, binary: &str) -> serde_json::Value {
-    body["dashboard"]["conformance"]
-        .as_array()
-        .expect("conformance is an array")
-        .iter()
-        .find(|row| row["binary"] == binary)
-        .cloned()
-        .expect("the conformance row for {binary} rides the model")
-}
-
 #[tokio::test]
 async fn the_unit_detail_payload_carries_the_filed_obligation_entry_whole() {
     // AC 2: the unit detail names the attempt the entry speaks for, its
@@ -171,7 +160,7 @@ async fn the_dashboard_payload_carries_the_per_binary_conformance_verdict_and_ta
     // its named cause — never a clean verdict, never an absent row.
     let body = dashboard_body(&world).await;
     assert_eq!(
-        conformance_row(&body, "game_logic.dll"),
+        support::conformance_row(&body, "game_logic.dll"),
         serde_json::json!({
             "binary": "game_logic.dll",
             "verdict": "unknown",
@@ -206,7 +195,7 @@ async fn the_dashboard_payload_carries_the_per_binary_conformance_verdict_and_ta
         )],
     );
     let body = dashboard_body(&world).await;
-    let row = conformance_row(&body, "game_logic.dll");
+    let row = support::conformance_row(&body, "game_logic.dll");
     assert_eq!(
         row["verdict"], "incomplete",
         "a filed ledger with an obligation that never closed reads incomplete"
@@ -247,7 +236,7 @@ async fn one_build_answers_the_unit_and_the_row_from_the_same_ledger_read() {
         stage_obligation_ledger(world.repo_path().as_path(), "game_logic.dll", vec![entry]);
     }
     let body = dashboard_body(&world).await;
-    let row = conformance_row(&body, "game_logic.dll");
+    let row = support::conformance_row(&body, "game_logic.dll");
     assert_ne!(
         row["verdict"], "complete",
         "the broken chain keeps the row short of complete: {row}"
@@ -334,11 +323,11 @@ async fn conformance_evidence_triggers_no_per_unit_review_action() {
     // The row went from unknown to incomplete — real movement at the
     // per-binary seam, so the statuses pin below is not vacuous.
     assert_eq!(
-        conformance_row(&after, "game_logic.dll")["verdict"],
+        support::conformance_row(&after, "game_logic.dll")["verdict"],
         "incomplete"
     );
     assert_eq!(
-        conformance_row(&before, "game_logic.dll")["verdict"],
+        support::conformance_row(&before, "game_logic.dll")["verdict"],
         "unknown"
     );
     assert_eq!(
