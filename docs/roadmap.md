@@ -32,7 +32,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | P58 | One live-view store at a real seam — extract the store out of `server/mod.rs` into its own module: `apply(event)` in, the shared `LiveTranslationState` out; `ProgressInfo` and `ScanRecord` deleted, the route table to its own file, store rules unit-testable | interface (`calxgloss-web`) + shared (`calxgloss-types`) | — | ✅ done | Spec #449; tickets #450–#455, closed 2026-11-09 | [#449](https://github.com/scriptandcompile/calxgloss/issues/449) |
 | P59 | One review-surface reader over the record tree — shared record modules gain `path` + `read` with named faults (missing · corrupt · tampered); one web-side reader owns the record-tree reads and the live-merge fold; the 8 hardcoded `unknown()` surfaces collapse into one honest read | shared (`calxgloss-types`) + interface (`calxgloss-web`, `calxgloss-reports`, `calxgloss-cli`) | — | ✅ done | Spec #456; tickets #457–#464, closed 2026-11-10 | [#456](https://github.com/scriptandcompile/calxgloss/issues/456) |
 | P60 | A deep test adapter for the review surfaces — a test-support module at the seam production uses: one world boot, a typed client and event emitter, fixtures written by the record writers, 354 fixed sleeps replaced by event-applied waits | interface (`calxgloss-web`) | — | ✅ done | Spec #465; tickets #466–#479, closed 2026-11-11 | [#465](https://github.com/scriptandcompile/calxgloss/issues/465) |
-| P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and retarget the 3,097 lines of terminal-agreement tests at the model | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07, not filed, not specced | — |
+| P56 | The web view as the only report surface — split the dashboard/conformance/run-close derivation out of `calxgloss-reports` (the web server already builds its payload from it), delete the terminal renderers, `dashboard` command, and interactive accept prompt, and re-pin the terminal-agreement tests at the model and the web payload seam (758 lines of CLI-stdout wording pins remain at ticketing) | interface (`calxgloss-reports`, `calxgloss-web`, `calxgloss-cli`) | — | ⬜ not started | review done 2026-11-07; Spec #480; tickets #481–#485, filed 2026-11-11 | [#480](https://github.com/scriptandcompile/calxgloss/issues/480) |
 | P61 | One batch protocol, the queue source as adapter — one `run_batch(binary, plan)` owns the prologue, the four-arm unit gate, the ledger folding and the unknown-residue reset today duplicated in `batch_run.rs` and `callgraph_plan.rs` (~300 lines absorbed) | pipeline (`calxgloss-translator`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P62 | One constructor settles what the retry loop consumes — `RetryRun::settle(unit, scope, seam)` returns posture + hints + residue as one value instead of `RetryLoopCtx`'s ten pub fields with the ordering carried by comments; the document reads ride the projector seam | pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`, `calxgloss-web`) | — | ⬜ not started | review done 2026-11-08, not filed, not specced | — |
 | P27 | Hypothesis ledger for the retry loop — unknowns that cannot be closed are recorded as declared static↔runtime mappings with expected patterns; recorded contradictions decide `escalate` vs `edge_case_fix` and remain as reviewable evidence | pipeline (`calxgloss-translator`, `calxgloss-llm`) + interface (`calxgloss-web`) | — | ⬜ not started | not ticketed | [#394](https://github.com/scriptandcompile/calxgloss/issues/394) |
@@ -530,12 +530,20 @@ renderers and accept prompt get deleted, and the 3,097 lines of tests get
 retargeted from rendered strings to model data — they encode what
 conformance rows must mean, so convert rather than delete. Ballpark from
 the 2026-11-07 review: 4–6 focused days, risk concentrated in the tests.
+By ticketing (2026-11-11) the test picture had partly moved:
+`tests/conformance_dashboard.rs` now asserts model fields, not printed
+lines, and the web e2e family (`conformance_web.rs`, `scenario_status.rs`,
+`honest_degradation.rs`) already pins conformance rows, scenario statuses,
+and honest degradation at the payload seam — the remaining terminal-wording
+pins are the ~758 lines of the three CLI-stdout suites in
+`calxgloss-cli/tests/`.
 Deleting the run-close prints and the y/n prompt makes web acceptance the
 only review flow, so this track lands behind P53, which shipped and made
 the web view trustworthy during a run (ADR-0061). One conflict to settle at spec time: P31
 deepens `doctor`, whose report half (`doctor.rs`) lives in this same
 crate — doing P56 first avoids growing terminal report code P56 would
-then delete. Review done 2026-11-07; not yet filed as an issue. Blocks
+then delete. Review done 2026-11-07; filed as spec #480, sliced into
+tickets #481–#485 (2026-11-11). Blocks
 (as rework cost, not design): P30, P31, P50, P52 — each touches
 `calxgloss-reports`, and doing P56 first shrinks the surface they
 touch. Blocked by: P53 (shipped, ADR-0061, tickets #428–#431); and, as
