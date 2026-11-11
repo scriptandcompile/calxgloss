@@ -8,6 +8,11 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_git::GitManager;
+use calxgloss_types::{ClassificationRecord, DllCategory, ProgressEvent};
+use calxgloss_web::{LlmIoLog, build_dashboard};
+
 /// File a classification record through the record module's writer, the
 /// same writer the `classify` command uses. Tests call it to stand in for
 /// what a prior run recorded, without hand-writing the JSON themselves.

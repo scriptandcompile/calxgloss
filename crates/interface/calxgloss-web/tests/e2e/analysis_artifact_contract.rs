@@ -2,6 +2,10 @@
 
 use super::*;
 
+use calxgloss_git::GitManager;
+use calxgloss_translator::assembly::PipelineSpec;
+use calxgloss_types::GitBranch;
+
 /// Issue #380: the per-function analysis artifact the translate path files
 /// (issue #379) reaches the Windows API mappings panel intact. A pass
 /// assembled from the fixture target's description runs a real `translate`

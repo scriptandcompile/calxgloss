@@ -13,6 +13,12 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_types::{
+    DllCategory, PipelineRunRequest, PipelineState, ProgressEvent, RunPhase, RunScope, RunTarget,
+};
+use std::time::Duration;
+
 /// Read `/api/pipeline` and collect the served binary row names in order.
 async fn row_names(client: &support::Client) -> Vec<String> {
     let (status, body) = client.get_json("/api/pipeline").await;

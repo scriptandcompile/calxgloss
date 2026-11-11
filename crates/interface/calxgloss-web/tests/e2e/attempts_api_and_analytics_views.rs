@@ -2,6 +2,12 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_git::{FailureRecord, GitManager};
+use calxgloss_translator::assembly::PipelineSpec;
+use calxgloss_types::{ClassificationRecord, DllCategory, GitBranch};
+use calxgloss_web::ActionsState;
+
 /// A unit with one attempt honestly answers with that one attempt and
 /// `comparable: false` — the detail panel's "nothing to compare" state. An
 /// unknown unit id gets a 404, the same contract the other

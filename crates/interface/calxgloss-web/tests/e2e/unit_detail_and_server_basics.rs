@@ -2,6 +2,12 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_git::GitManager;
+use calxgloss_translator::assembly::PipelineSpec;
+use calxgloss_types::{ProgressEvent, RunPhase, RunScope, RunTarget};
+use calxgloss_web::{ActionsState, build_dashboard};
+
 /// Issue #327 AC6: a server started with no LLM settings gets an actions
 /// backend whose description has no LLM selection. So a patch request fails
 /// at request time with the assembly seam's clear error — not a canned

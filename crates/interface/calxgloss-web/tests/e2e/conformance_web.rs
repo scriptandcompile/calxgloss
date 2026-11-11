@@ -11,6 +11,8 @@
 
 use super::*;
 
+use calxgloss_git::GitManager;
+
 /// GET `/api/dashboard` and return the parsed body.
 async fn dashboard_body(world: &support::ReviewWorld) -> serde_json::Value {
     let (status, body) = world.client().get_json("/api/dashboard").await;

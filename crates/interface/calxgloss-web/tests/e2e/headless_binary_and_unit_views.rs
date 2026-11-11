@@ -8,6 +8,9 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_types::{DllCategory, PipelineState, ProgressEvent};
+
 /// Headless-browser test for a pipeline row's single translation toggle
 /// (issue #285). While the pipeline works a binary, that row's one button
 /// reads Pause. Clicking it calls the per-binary pause endpoint, not the

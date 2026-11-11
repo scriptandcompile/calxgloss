@@ -8,6 +8,11 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_git::GitManager;
+use calxgloss_types::ProgressEvent;
+use std::time::Duration;
+
 /// WS phase events (issue #55, W0 Phase 2 tail): after applying each
 /// unit-scoped progress event, the live router pushes a `unit_phase` record —
 /// the unit's full live state including phase history — over the WebSocket,

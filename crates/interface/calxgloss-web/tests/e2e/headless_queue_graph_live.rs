@@ -10,6 +10,11 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_types::ProgressEvent;
+use calxgloss_web::LlmIoLog;
+use std::time::Duration;
+
 /// Headless-browser test for issue #64: with measured attempt durations in
 /// the token-usage log, the pipeline panel must show a time estimate and the
 /// review queue must render a per-unit effort column.

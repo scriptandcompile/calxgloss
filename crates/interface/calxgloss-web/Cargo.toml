@@ -81,9 +81,11 @@ tokio-tungstenite = "0.29"
 # so the tests need no `#[ignore]` gate and CI runs them wherever a browser exists.
 headless_chrome = "1.0.18"
 
-# These two test targets build against the axum server stack, which only
-# exists under the `server` feature. `required-features` makes a feature-less
-# `cargo test` skip them cleanly instead of failing to compile them.
+# These three test targets build against the axum server stack, which only
+# exists under the `server` feature — they all wire the e2e support module,
+# which boots that stack (issue #478). `required-features` makes a
+# feature-less `cargo test` skip them cleanly instead of failing to compile
+# them.
 [[test]]
 name = "e2e"
 path = "tests/e2e.rs"
@@ -92,6 +94,11 @@ required-features = ["server"]
 [[test]]
 name = "accept_conflict"
 path = "tests/accept_conflict.rs"
+required-features = ["server"]
+
+[[test]]
+name = "kuna_scan_e2e"
+path = "tests/kuna_scan_e2e.rs"
 required-features = ["server"]
 
 [lints.cargo]

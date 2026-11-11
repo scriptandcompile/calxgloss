@@ -188,10 +188,15 @@ sentence, and propose the split or rewrite.
   sibling submodule: `#[cfg(test)] mod tests;` in the file, the tests in
   `src/<file-stem>/tests.rs` (the crate root's go in `src/tests.rs`).
 - Cross-module / end-to-end flows go in `tests/integration_tests.rs`. A test
-  binary that outgrows one file keeps its fixture helpers in its root and
-  splits its scenarios into modules under a directory named for it
-  (`tests/e2e.rs` plus `tests/e2e/<scenario>.rs`, wired with `#[path]`),
-  which reach the helpers through `use super::*;`.
+  binary that outgrows one file splits its scenarios into modules under a
+  directory named for it (`tests/e2e.rs` plus `tests/e2e/<scenario>.rs`,
+  wired with `#[path]`).
+- When several test targets in one crate ride the same fixtures and boots,
+  the helpers live in a support module inside that directory
+  (`tests/e2e/support.rs`). Each target wires it with `#[path]`, and
+  scenario modules reach the helpers through `use super::support::*;`.
+  The target's root file then holds only its doc header and submodule
+  wiring (the web crate's three targets do this, issue #478).
 - Tests that need a live external service (an LLM endpoint) are kept in
   separate files (e.g. `tests/live.rs`) so they can be run independently of
   the offline suite. The analysis engine needs no external service: Kuna

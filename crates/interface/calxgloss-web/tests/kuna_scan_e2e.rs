@@ -10,12 +10,25 @@
 //! the seam, one saved record, and the record naming the Kuna engine, the
 //! release it is pinned to, and the pinned source fingerprint (issue #208's
 //! provenance) — written to disk and read back.
+//!
+//! The target wires the shared support module (issue #478), the same one
+//! the e2e family and the accept-conflict test ride. The scan writes its
+//! record into a `TestFixture` repository, so it lands in the
+//! `re/analysis/` layout a real review server would serve — the same
+//! repository rule the other web test targets follow.
 
 use calxgloss_decomp::PipelineSource;
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::TARGET_FILE_NAME;
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+
+// This target rides part of the shared support module: the fixture
+// repository behind its scan workspace. The other web test targets
+// exercise the rest of the adapter (issue #478).
+#[allow(dead_code)]
+#[path = "e2e/support.rs"]
+mod support;
 
 /// The analysis engine an `analysis.engine = kuna` run selects: the seam's
 /// Kuna arm over the fixture target, loaded in this process — no server, no
@@ -31,7 +44,7 @@ fn kuna_pipeline_source() -> PipelineSource {
 #[tokio::test]
 async fn a_kuna_scan_run_persists_a_record_naming_its_engine_provenance() {
     let source = kuna_pipeline_source();
-    let workspace = tempfile::tempdir().expect("web workspace");
+    let fixture = support::TestFixture::new();
 
     // One scan run through the seam: the same type-database recovery the
     // live pipeline runs before its first batch. The Kuna arm refuses the
@@ -54,8 +67,9 @@ async fn a_kuna_scan_run_persists_a_record_naming_its_engine_provenance() {
     );
 
     // Persist the way the pipeline does: the record-of-effort layout the
-    // web server serves, `re/analysis/typesdb/{binary}.json`.
-    let persistor = TypeDatabasePersistor::new(workspace.path());
+    // web server serves, `re/analysis/typesdb/{binary}.json`, filed
+    // through the production persistor over the fixture repository.
+    let persistor = TypeDatabasePersistor::new(fixture.repo_path());
     persistor.save(&db).expect("the scan record persists");
 
     // The acceptance check, read off disk as raw JSON: the saved scan

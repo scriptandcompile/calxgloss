@@ -2,6 +2,13 @@
 
 use super::*;
 
+use super::support::*;
+use calxgloss_git::GitManager;
+use calxgloss_types::{
+    ApiCategory, ClassificationRecord, DllCategory, FaultCategory, FaultSeverity,
+    SHIM_MAPPINGS_FILE, SHIM_VERIFICATION_FILE, shim_artifacts_dir,
+};
+
 /// Issue #125 filter contract: category, binary, and the inclusive
 /// `from`/`to` UTC date range narrow every endpoint — the cards, bars,
 /// trend, and table always describe the same filtered set — while
