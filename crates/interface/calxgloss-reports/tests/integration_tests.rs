@@ -19,9 +19,7 @@
 //! translating on top of it reports `Blocked`.
 
 use calxgloss_git::{GitManager, InitConfig};
-use calxgloss_reports::dashboard::{
-    DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork, UnitViewData, ViewTarget,
-};
+use calxgloss_reports::dashboard::{DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork};
 use calxgloss_types::GitBranch;
 
 /// A temp workspace with an initialized git repo (README on `main`).
@@ -324,14 +322,6 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
         queued.contains(&"foo.dll/DrawSprite/v1") && queued.contains(&"foo.exe/DrawSprite/v1"),
         "both units sit in the review queue: {queued:?}"
     );
-
-    // The unit-detail seam parses both identities verbatim.
-    for binary in ["foo.dll", "foo.exe"] {
-        let target = ViewTarget::parse(&format!("{binary}/DrawSprite/v1"))
-            .expect("unit id parses as a view target");
-        assert_eq!(target.binary, binary);
-        assert_eq!(target.function, "DrawSprite");
-    }
 }
 
 #[test]
@@ -377,104 +367,6 @@ fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
         classify.updated_at,
         chrono::DateTime::<chrono::Utc>::from(mtime),
         "the classify unit's updated_at is the record file's mtime"
-    );
-}
-
-/// The `classify` command serializes `Strategy` as an enum: its unit
-/// variants as bare strings, crate replacement as a tagged object. The
-/// dashboard must read the variant name from either form. A record whose
-/// strategy is an object must still parse and keep its category.
-#[test]
-fn tagged_object_strategy_hydrates_category_and_strategy() {
-    let dir = temp_workspace();
-    let git = GitManager::open(dir.path()).expect("open repo");
-    write_classification_record(
-        &git,
-        "steam_api64.dll",
-        "KnownThirdParty",
-        Some("steamworks"),
-    );
-    commit_on_branch(&git, "steam_api64.dll", "SteamAPI_Init", 1);
-
-    let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "steam_api64.dll/SteamAPI_Init/v1");
-    assert_eq!(
-        unit.binary, "steam_api64.dll",
-        "the unit exists to be viewed"
-    );
-
-    let target = ViewTarget {
-        binary: "steam_api64.dll".into(),
-        function: "SteamAPI_Init".into(),
-        specific_attempt: None,
-    };
-    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
-    assert_eq!(
-        view.dll_category.as_deref(),
-        Some("KnownThirdParty"),
-        "the tagged-object strategy must not sink the whole record"
-    );
-    assert_eq!(
-        view.dll_strategy.as_deref(),
-        Some("CrateReplacement"),
-        "the strategy's variant name is the strategy"
-    );
-}
-
-/// Issue #458: the unit view consults `read_classification_record`. An
-/// unparseable record reaches the view carrying its fault. The view then
-/// says the record cannot be read, instead of showing the binary as
-/// unclassified.
-#[test]
-fn a_corrupt_classification_record_reaches_the_unit_view_as_a_named_fault() {
-    let dir = temp_workspace();
-    let git = GitManager::open(dir.path()).expect("open repo");
-    let classify = git.repo_path().join("re").join("classify");
-    std::fs::create_dir_all(&classify).expect("create classify dir");
-    std::fs::write(classify.join("broken.dll.json"), "{ not json")
-        .expect("file an unparseable record");
-
-    let target = ViewTarget {
-        binary: "broken.dll".into(),
-        function: "BrokenFunction".into(),
-        specific_attempt: None,
-    };
-    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
-
-    assert!(
-        view.dll_category.is_none() && view.dll_strategy.is_none(),
-        "an unreadable record invents no category or strategy"
-    );
-    let fault = view
-        .classification_fault
-        .expect("the corrupt record reaches the view carrying its fault");
-    assert!(
-        fault.contains("invalid JSON"),
-        "the fault names why the record cannot be read, got: {fault}"
-    );
-}
-
-/// The other side of the #458 split: with no record filed, the view shows
-/// no classification and no fault. The binary really is unclassified.
-#[test]
-fn a_missing_classification_record_reads_as_no_classification_at_the_unit_view() {
-    let dir = temp_workspace();
-    let git = GitManager::open(dir.path()).expect("open repo");
-
-    let target = ViewTarget {
-        binary: "never_classified.dll".into(),
-        function: "SomeFunction".into(),
-        specific_attempt: None,
-    };
-    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
-
-    assert!(
-        view.dll_category.is_none() && view.dll_strategy.is_none(),
-        "no record means no category or strategy"
-    );
-    assert!(
-        view.classification_fault.is_none(),
-        "a missing record is not reported as a fault"
     );
 }
 

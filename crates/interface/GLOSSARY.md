@@ -26,10 +26,6 @@ One of the fifteen manual entry points, one per evidence engine. Each uses the p
 The request to re-read from the engine regardless of what the scan read cache holds.
 _Avoid_: force-rescan — the ADR's older spelling of the same act
 
-**Dashboard (command)**:
-The terminal review surface — the same dashboard the web renders.
-_Avoid_: as a verb for reviewing work
-
 **BDiff (command)**:
 The reviewer's view of a binary version change: which functions paired, which changed, which are new — stale documents reported as stale, never as empty success.
 
@@ -49,7 +45,7 @@ The reviewer's act on a unit — *accept*, *send back*, *request patch* — each
 _Avoid_: reject — the CLI subcommand that carried the old word; retire it from every surface
 
 **Unknown record**:
-The open question a unit carries for the reviewer to see: listed on the web unit detail and queue tallies and on the terminal dashboard, each with its severity, its question, and the evidence that would close it. Settled records are counted apart from open ones.
+The open question a unit carries for the reviewer to see: listed on the web unit detail and queue tallies, each with its severity, its question, and the evidence that would close it. Settled records are counted apart from open ones.
 
 **Reviewer resolution**:
 The reviewer's act on one open unknown record.
@@ -111,14 +107,13 @@ The start/restart form's choices: which phase runs, against which targets, over 
 
 ### Reporting
 
-**Terminal dashboard**:
-The text review board built from branch state and the persisted records. The web renders the same model.
+**Terminal dashboard**: retired with P56 (issue #485) — the web review surfaces are the only report surface.
 
 **Unknown ledger**:
-The per-target-binary statement the run close and the dashboard print: what was never established, at what severity, with the evidence that would have closed it — and what review already settled and what it deliberately dismissed, counted apart.
+The per-target-binary statement the review surfaces render: what was never established, at what severity, with the evidence that would have closed it — and what review already settled and what it deliberately dismissed, counted apart.
 
 **Scenario status**:
-The per-target-binary reading the review surfaces print beside the queue.
+The per-target-binary reading the review surfaces render beside the queue.
 *Rules:*
 - Every scenario a filed scenario document names appears: declared or not declared, captured or not captured, and what its verdict says — assessed pass, assessed fail naming each failed dimension, or unassessed.
 - Every missing record renders as its honest negative, never as empty success.

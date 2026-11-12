@@ -34,9 +34,9 @@ pub struct ReviewDashboard {
     /// reviewer's resolutions — open records with severity counts, and
     /// settled counts that never fold into the open ones. The builder
     /// fills this from the ledger documents and the resolutions document;
-    /// the terminal dashboard renders the audit-ledger section from it,
-    /// and the run close prints the same section from the same derivation
-    /// over the same documents. An empty list means the model knows no
+    /// the review surfaces render from this field, and the run-close
+    /// derivation walks the same documents to the same shape. An empty
+    /// list means the model knows no
     /// binaries at all — a binary the model knows but whose ledger was
     /// never filed rides here with an *unknown* reading, never as a
     /// clean run.

@@ -2,10 +2,9 @@
 //! #411).
 //!
 //! The receipt Markdown renderer lives with the record in
-//! `calxgloss-types` — the document owns its own human twin, and the
-//! verify crate cannot call into reports (reports depend on the
-//! translator, which depends on verify) — but the spec names reports as
-//! the review surface, so the rendering is re-exported here. This pin
+//! `calxgloss-types` — the document owns its own human twin — but the
+//! spec names reports as the review surface, so the rendering is
+//! re-exported here. This pin
 //! holds that contract: the report surface exposes the same renderer,
 //! and it renders from the JSON authority's own facts alone.
 

@@ -6,9 +6,9 @@
 //! scenario documents — the contract set at `re/scenarios/<binary>.json`,
 //! the filed captures under `re/scenarios/captures/`, and the filed
 //! verdicts under `re/scenarios/verdicts/` — join at read time into a
-//! [`ScenarioStatus`] per scenario name per target binary. The terminal
-//! dashboard renders the section from these lines, and the web review API
-//! serves the same model through `ReviewDashboard`.
+//! [`ScenarioStatus`] per scenario name per target binary. The web review
+//! API serves the section through the `ReviewDashboard` model, and the web
+//! queue renders it from the payload's rows (issue #485).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -51,47 +51,6 @@ fn verdict_reading(document: &ScenarioVerdictDocument) -> ScenarioVerdictReading
     } else {
         ScenarioVerdictReading::Unassessed
     }
-}
-
-/// The header the review surfaces print above the per-binary scenario
-/// status lines (issue #409).
-pub fn scenario_status_header() -> String {
-    "  Scenario status — EXE targets".to_string()
-}
-
-/// One binary's scenario-status lines, shared byte-for-byte by every
-/// reader of the section (issue #409). Every scenario named by the filed
-/// documents gets its own line with its three slot readings spelled out
-/// — declared or not-declared, captured or not-captured, assessed pass,
-/// assessed fail naming each failed dimension, or unassessed. No reading
-/// is ever folded into a per-binary aggregate, and no line ever renders a
-/// missing record as a success.
-pub fn scenario_status_lines(status: &BinaryScenarioStatus) -> Vec<String> {
-    let mut lines = vec![format!("  {}", status.binary)];
-    for scenario in &status.scenarios {
-        let verdict = match &scenario.verdict {
-            ScenarioVerdictReading::AssessedPass => "assessed pass".to_string(),
-            ScenarioVerdictReading::AssessedFail { failed_dimensions } => {
-                format!("assessed fail ({})", failed_dimensions.join(", "))
-            }
-            ScenarioVerdictReading::Unassessed => "unassessed".to_string(),
-        };
-        let declared = if scenario.declared {
-            "declared"
-        } else {
-            "not declared"
-        };
-        let captured = if scenario.captured {
-            "captured"
-        } else {
-            "not captured"
-        };
-        lines.push(format!(
-            "    • {} — {declared}, {captured}, {verdict}",
-            scenario.scenario
-        ));
-    }
-    lines
 }
 
 /// Every `*.json` document filed in one scenario directory, parsed where it
@@ -338,47 +297,6 @@ mod tests {
             .flat_map(|status| &status.scenarios)
             .find(|status| status.scenario == scenario)
             .unwrap_or_else(|| panic!("scenario {scenario} renders"))
-    }
-
-    #[test]
-    fn scenario_status_lines_spell_out_each_slot_and_name_the_failed_dimensions() {
-        let status = BinaryScenarioStatus {
-            binary: "eqgame.exe".to_string(),
-            scenarios: vec![
-                ScenarioStatus {
-                    scenario: "boot".to_string(),
-                    declared: true,
-                    captured: true,
-                    verdict: ScenarioVerdictReading::AssessedFail {
-                        failed_dimensions: vec!["terminal".to_string(), "exit".to_string()],
-                    },
-                },
-                ScenarioStatus {
-                    scenario: "print-config".to_string(),
-                    declared: true,
-                    captured: false,
-                    verdict: ScenarioVerdictReading::Unassessed,
-                },
-                ScenarioStatus {
-                    scenario: "orphan".to_string(),
-                    declared: false,
-                    captured: true,
-                    verdict: ScenarioVerdictReading::AssessedPass,
-                },
-            ],
-        };
-
-        assert_eq!(
-            scenario_status_lines(&status),
-            vec![
-                "  eqgame.exe",
-                "    • boot — declared, captured, assessed fail (terminal, exit)",
-                "    • print-config — declared, not captured, unassessed",
-                "    • orphan — not declared, captured, assessed pass",
-            ],
-            "every scenario stands on its own line with all three slots \
-             spelled out — no aggregate, no laundered readings"
-        );
     }
 
     #[test]

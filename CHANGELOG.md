@@ -278,6 +278,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The fifteen command-module skeletons and the fifteen duplicated `main.rs` scan arms (#339–#341, track P39)** — each scan command module's hand-written load/scan/persist/save/print body comes out: every module now holds only its contribution entry — the document loader and report printer the generic command calls, its flag derivation, and at most a post-scan step — plus its report printer. The fifteen duplicated `main.rs` scan match arms collapse into one arm that routes each command onto its entry; the clap variant blocks and help text stay exactly as they were, and `bdiff` keeps its dedicated arm — it has no scan row to ride and never loads the analysis engine. A standing check pairs the command list with the scan-schedule roster one-for-one, so a command or scan row added or dropped without its counterpart fails loudly.
 
+#### Reports crate (P56)
+
+- **The reports crate stripped to its model (P56, issue #485)** — the whole print half of `calxgloss-reports` comes out: the render and view modules, every print function and ANSI helper, the y/n acceptance prompt, the never-called translation summary printer, the unit-view loader with its view-target parsing, and the branch-matching helper. The crate keeps the dashboard model the web payload serialises and the derivations the review surfaces read: the `DashboardBuilder`, the per-binary unknown-ledger and conformance derivations, and the scenario-status derivation. Two agreement pins that compared printed dashboard lines against run-close lines now compare the two models directly, and one run-close test that parsed printed lines now reads the derivation's fields.
+
 ## [0.4.0] — 2026-10-24
 
 ### Added

@@ -24,7 +24,7 @@ Calxgloss reverse engineers a project's executables and DLLs. It turns disassemb
   ┌────────────────────────────────────────────────────┐     ┌────────────────────────────────┐
   │                   calxgloss-cli                    │     │         calxgloss-web          │
   │ init · doctor · classify · translate · auto · live │     │ review: accept · send back ·   │
-  │ batch-translate · serve · dashboard · verify · gc  │     │ patch · skip · override        │
+  │ batch-translate · serve · verify · gc              │     │ patch · skip · override        │
   │ auto-shim · config · capture · minidump · scenario │     │ pipeline: pause · resume ·     │
   │ typesdb · typeinfer · algorithm · memory · sync    │     │ stop · start · cancel-current  │
   │ globalstate · consts · callback · controlflow      │     │ Axum + static HTML/JS SPA      │

@@ -1,36 +1,26 @@
-//! Dashboard data construction and terminal rendering for the review dashboard.
+//! Dashboard data construction for the review report surfaces.
 //!
 //! This module builds [`ReviewDashboard`] instances from a Git repository's
-//! branches, patch records, and baseline files — then renders them as an
-//! ANSI-colored text table suitable for terminal output.
+//! branches, patch records, and baseline files, and derives the per-binary
+//! readings the model carries. The web review payload serialises the model.
+//! Nothing here renders to a terminal (issue #485).
 //!
 //! # Architecture
 //!
-//! - [`view`] — [`ViewTarget`], [`UnitViewData`], [`DiffSummary`], [`AttemptInfo`]
-//! - [`builder`] — [`DashboardBuilder`], [`parse_branch_name`], [`branch_matches`]
-//! - [`render`] — [`render_dashboard`], [`render_dashboard_follow`], [`render_unit_view`]
-//! - [`audit`] — [`derive_binary_unknown_ledgers`], [`binary_unknown_ledger`], [`audit_ledger_lines`]
-//! - [`conformance`] — [`derive_binary_conformance`], [`conformance_binaries`], [`print_run_conformance_audit`]
-//! - [`scenarios`] — [`derive_scenario_statuses`], [`scenario_status_header`], [`scenario_status_lines`]
+//! - [`builder`] — [`DashboardBuilder`], [`parse_branch_name`]
+//! - [`audit`] — [`derive_binary_unknown_ledgers`], [`binary_unknown_ledger`]
+//! - [`conformance`] — [`derive_binary_conformance`], [`conformance_binaries`]
+//! - [`scenarios`] — [`derive_scenario_statuses`]
 
 pub mod audit;
 pub mod builder;
 pub mod conformance;
-pub mod render;
 pub mod scenarios;
-pub mod view;
 
-pub use audit::{
-    AUDIT_LEDGER_BOUND, audit_ledger_header, audit_ledger_lines, binary_unknown_ledger,
-    derive_binary_unknown_ledgers, print_run_audit_ledger,
-};
-pub use builder::{DashboardBuilder, branch_matches, parse_branch_name};
-pub use conformance::{
-    conformance_binaries, derive_binary_conformance, print_run_conformance_audit,
-};
-pub use render::{render_dashboard, render_dashboard_follow, render_unit_view};
-pub use scenarios::{derive_scenario_statuses, scenario_status_header, scenario_status_lines};
-pub use view::{AttemptInfo, DiffSummary, UnitViewData, ViewTarget};
+pub use audit::{binary_unknown_ledger, derive_binary_unknown_ledgers};
+pub use builder::{DashboardBuilder, parse_branch_name};
+pub use conformance::{conformance_binaries, derive_binary_conformance};
+pub use scenarios::derive_scenario_statuses;
 
 // Re-export types used in public API
 pub use calxgloss_types::dashboard::{

@@ -8,14 +8,12 @@
 //! — which keeps a never-filed document apart from a tampered one — and
 //! joins at read time with branch state, the attempt branch's committed
 //! *verification receipt* pair, the Accept records, and the unknown
-//! ledgers. The terminal dashboard and the model's JSON render from these
-//! rows, and the live/auto run close prints the same section through
-//! [`print_run_conformance_audit`], which derives its own rows from the
-//! same documents (issue #423). The two readers print identical lines
-//! because they run the same functions on the same shape, reading the
-//! reviewer's live records through the same reader functions. Nothing
-//! here stores a verdict, so no second copy of the truth can drift from
-//! the first. The layer reads only: it never accepts a unit, touches a
+//! ledgers. The review payload serialises these rows, and the run-close
+//! derivation [`derive_run_conformance`] walks the same documents to its
+//! own rows (issue #423). The two derivations agree by construction: they
+//! read the reviewer's live records through the same reader functions.
+//! Nothing here stores a verdict, so no second copy of the truth can drift
+//! from the first. The layer reads only: it never accepts a unit, touches a
 //! branch, or changes a review status.
 //!
 //! The join also carries the reviewer's live records beside the ledger
@@ -36,8 +34,6 @@ use calxgloss_types::{
     dashboard::ReviewSkips, obligation_ledger_dir, override_records_path, read_obligation_ledger,
     scenario_file_key, scenario_verdicts_dir, verification_receipt_path,
 };
-
-use super::render::{green_bold, println_content, yellow_bold};
 
 /// Every binary the conformance rows must name: the binaries of the
 /// model's translated units (supporting shim and classification work is
@@ -158,13 +154,14 @@ pub fn derive_binary_conformance(
 }
 
 /// Derive the conformance rows for the named binaries straight from the
-/// documents — the run close's entry point (issue #423). The close carries
-/// no dashboard model, so it opens its own read-only git handle over the
-/// workspace. Where no repository stands (a run with git skipped), green
-/// claims resolve to their honest citation fault and the close still never
-/// fails. Binaries are printed in the order named, deduplicated through
-/// the same verbatim-unique walk as [`derive_binary_unknown_ledgers`], so
-/// the two run-close sections key the same binaries by the same words.
+/// documents — the run-close derivation's entry point (issue #423). The
+/// close carries no dashboard model, so it opens its own read-only git
+/// handle over the workspace. Where no repository stands (a run with git
+/// skipped), green claims resolve to their honest citation fault and the
+/// close still never fails. Binaries are named in the order handed,
+/// deduplicated through the same verbatim-unique walk as
+/// [`derive_binary_unknown_ledgers`], so the two run-close derivations
+/// key the same binaries by the same words.
 pub fn derive_run_conformance(
     workspace: &Path,
     binaries: &[String],
@@ -210,34 +207,6 @@ pub fn derive_run_conformance(
         ));
     }
     Ok(rows)
-}
-
-/// The run-close conformance section as lines — the header, then every
-/// named binary's row, derived from the same reading the dashboard builder
-/// carries (issue #423). A run close with no target binaries produces no
-/// lines at all — the same shape the audit-ledger section keeps.
-pub fn run_conformance_lines(workspace: &Path, binaries: &[String]) -> anyhow::Result<Vec<String>> {
-    if binaries.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows = derive_run_conformance(workspace, binaries)?;
-    let mut lines = vec![conformance_header(), String::new()];
-    for row in &rows {
-        lines.extend(conformance_lines(row));
-        lines.push(String::new());
-    }
-    Ok(lines)
-}
-
-/// Print the run-close conformance section: the same lines
-/// [`run_conformance_lines`] derives, content-padded like every other
-/// dashboard surface (issue #423). A review record that cannot be read
-/// stops the section naming the fault (issue #459).
-pub fn print_run_conformance_audit(workspace: &Path, binaries: &[String]) -> anyhow::Result<()> {
-    for line in run_conformance_lines(workspace, binaries)? {
-        println_content(line);
-    }
-    Ok(())
 }
 
 /// How one green claim (a *claimed-verified* entry) reads when its
@@ -904,366 +873,32 @@ fn accept_record_stands(
         .is_some_and(|result| result.starts_with("merged:") || result == "already_up_to_date")
 }
 
-/// The header the review surfaces print above the per-binary conformance
-/// rows (issue #419).
-pub fn conformance_header() -> String {
-    "  Conformance — restitch closure per binary".to_string()
-}
-
-/// One binary's conformance lines, shared byte-for-byte by every reader
-/// of the section (issue #419). An *unknown* verdict names its causes,
-/// and a row broken mid-read shows the tallies it counted before the
-/// fault. A *complete* verdict says what sealed it; an *incomplete*
-/// verdict shows the verified count beside the honest dispositions held
-/// apart from it, and names the first broken link and any blocking
-/// unknown below the counts.
-pub fn conformance_lines(row: &BinaryConformance) -> Vec<String> {
-    match row.verdict {
-        ConformanceVerdict::Complete => {
-            let seal = row
-                .closure_digest
-                .as_deref()
-                .map(|digest| {
-                    digest
-                        .trim_start_matches("sha256:")
-                        .chars()
-                        .take(8)
-                        .collect::<String>()
-                })
-                .unwrap_or_else(|| "?".to_string());
-            vec![green_bold(&format!(
-                "  {} — complete ({} verified, sealed {seal})",
-                row.binary, row.tally.verified
-            ))]
-        }
-        ConformanceVerdict::Incomplete => {
-            let mut lines = styled_wrapped(&format!(
-                "  {} — incomplete ({})",
-                row.binary,
-                tally_words(row).join(", ")
-            ));
-            if let Some(open) = &row.first_open {
-                lines.extend(wrapped(&format!(
-                    "    ↳ first open: {} attempt {} — {}",
-                    open.function, open.attempt, open.link
-                )));
-            }
-            for reason in &row.blocking_unknowns {
-                lines.extend(wrapped(&format!("    ↳ unknown gate: {reason}")));
-            }
-            lines
-        }
-        ConformanceVerdict::Unknown => {
-            let causes: Vec<String> = row
-                .causes
-                .iter()
-                .map(|cause| format!("{cause}").replace('_', " "))
-                .collect();
-            // The tallies of a row broken mid-read still ride the JSON,
-            // so the terminal shows them too — the two surfaces state
-            // the same facts (issue #419, AC 4).
-            let tally = if row.tally == ConformanceTally::default() {
-                String::new()
-            } else {
-                format!(" ({})", tally_words(row).join(", "))
-            };
-            styled_wrapped(&format!(
-                "  {} — unknown: {} — never a clean run{tally}",
-                row.binary,
-                if causes.is_empty() {
-                    "unnamed cause".to_string()
-                } else {
-                    causes.join(", ")
-                }
-            ))
-        }
-    }
-}
-
-/// The nonzero counts behind a verdict — verified first, each honest
-/// disposition held apart from it — in the same words the JSON carries
-/// (issue #419, AC 4).
-fn tally_words(row: &BinaryConformance) -> Vec<String> {
-    let mut counts = vec![format!("{} verified", row.tally.verified)];
-    for (count, label) in [
-        (row.tally.skipped, "skipped"),
-        (row.tally.parked, "parked"),
-        (row.tally.overridden, "overridden"),
-        (row.tally.un_reviewed, "un-reviewed"),
-        (row.tally.no_baseline, "no-baseline"),
-    ] {
-        if count > 0 {
-            counts.push(format!("{count} {label}"));
-        }
-    }
-    counts
-}
-
-/// The frame's visible width. The frame clips at this width, so a long
-/// row wraps and no count hides (the rule, not a guess).
-const VISIBLE_WIDTH: usize = super::render::SEP_WIDTH;
-
-/// One logical line, wrapped to the frame width with continuation lines
-/// indented two columns past the line's own indent — so a long cause
-/// list or broken-link sentence never hides behind the clip.
-fn wrapped(text: &str) -> Vec<String> {
-    wrapped_within(text, VISIBLE_WIDTH)
-}
-
-fn wrapped_within(text: &str, limit: usize) -> Vec<String> {
-    // The line's own leading indent rides the first physical line — the
-    // word split would otherwise drop it and the key would not line up
-    // with the other run-close sections (issue #423).
-    let indent = text.len() - text.trim_start().len();
-    let lead = &text[..indent];
-    let cont = " ".repeat(indent + 2);
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.trim_start().split(' ').filter(|word| !word.is_empty()) {
-        let candidate = if current.is_empty() {
-            format!("{lead}{word}")
-        } else if current == cont {
-            format!("{current}{word}")
-        } else {
-            format!("{current} {word}")
-        };
-        if current.is_empty() || candidate.chars().count() <= limit {
-            current = candidate;
-        } else {
-            lines.push(current);
-            current = format!("{cont}{word}");
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
-/// The first line bold-colored, the continuations plain — same palette
-/// decision the scenario and unknown sections keep. The frame counts the
-/// escape's bracket bytes toward the line's width (only ESC itself is
-/// free), so the colored line wraps ten characters early to never clip.
-fn styled_wrapped(text: &str) -> Vec<String> {
-    const ANSI_OVERHEAD: usize = 10; // "[1m" + "[33m" + "[0m"
-    let mut lines = wrapped_within(text, VISIBLE_WIDTH - ANSI_OVERHEAD);
-    if !lines.is_empty() {
-        lines[0] = yellow_bold(&lines[0]);
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use calxgloss_types::ObligationLedger;
 
-    /// Drop the color escapes (ESC through `m`) so an assertion can read a
-    /// wrapped, colored sentence as one line again.
-    fn strip_ansi(text: &str) -> String {
-        let mut out = String::new();
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                for next in chars.by_ref() {
-                    if next == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
-
-    fn row(
-        verdict: ConformanceVerdict,
-        causes: Vec<ConformanceUnknownCause>,
-        tally: ConformanceTally,
-        closure_digest: Option<&str>,
-    ) -> BinaryConformance {
-        BinaryConformance {
-            binary: "game_logic.dll".to_string(),
-            verdict,
-            causes,
-            closure_digest: closure_digest.map(str::to_string),
-            tally,
-            first_open: None,
-            blocking_unknowns: Vec::new(),
-        }
-    }
-
     #[test]
-    fn complete_line_names_the_verified_count_and_the_seal() {
-        let lines = conformance_lines(&row(
-            ConformanceVerdict::Complete,
-            Vec::new(),
-            ConformanceTally {
-                verified: 11,
-                ..Default::default()
-            },
-            Some("sha256:deadbeeffeedface"),
-        ));
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("game_logic.dll — complete (11 verified, sealed deadbeef)"));
-    }
-
-    #[test]
-    fn incomplete_line_shows_each_nonzero_disposition_apart_from_verified() {
-        let joined: String = conformance_lines(&row(
-            ConformanceVerdict::Incomplete,
-            Vec::new(),
-            ConformanceTally {
-                verified: 2,
-                skipped: 3,
-                parked: 1,
-                overridden: 0,
-                un_reviewed: 4,
-                no_baseline: 0,
-            },
-            Some("sha256:seal"),
-        ))
-        .iter()
-        .map(|line| strip_ansi(line).trim().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-        assert!(joined.contains("incomplete (2 verified, 3 skipped, 1 parked, 4 un-reviewed)"));
-        assert!(
-            !joined.contains("overridden") && !joined.contains("no-baseline"),
-            "zero counts never clutter the line: {joined}"
-        );
-    }
-
-    #[test]
-    fn unknown_line_names_its_causes_in_words_never_zeros() {
-        let lines = conformance_lines(&row(
-            ConformanceVerdict::Unknown,
-            vec![
-                ConformanceUnknownCause::NoLedgerFiled,
-                ConformanceUnknownCause::UnresolvableReceiptCitation,
-            ],
-            ConformanceTally::default(),
-            None,
-        ));
-        let joined: String = lines
-            .iter()
-            .map(|line| strip_ansi(line).trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(joined.contains(
-            "unknown: no ledger filed, unresolvable receipt citation — never a clean run"
-        ));
-        assert!(
-            !joined.contains("0 verified"),
-            "absent tallies never render as zeros"
-        );
-    }
-
-    #[test]
-    fn unknown_line_shows_the_tally_counted_before_the_read_broke() {
-        // The JSON carries the tallies of a row broken mid-read, so the
-        // terminal states them too — the surfaces never disagree (AC 4).
-        let joined: String = conformance_lines(&row(
-            ConformanceVerdict::Unknown,
-            vec![ConformanceUnknownCause::UnresolvableReceiptCitation],
-            ConformanceTally {
-                verified: 3,
-                skipped: 2,
-                ..Default::default()
-            },
-            Some("sha256:seal"),
-        ))
-        .iter()
-        .map(|line| strip_ansi(line).trim().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-        assert!(joined.contains(&format!(
-            "unknown: unresolvable receipt citation — never a clean run ({} verified, {} skipped)",
-            3, 2
-        )));
-    }
-
-    #[test]
-    fn incomplete_line_names_the_unknown_gate_blocker_below_the_counts() {
-        // A closed evidence chain held shut by a blocking unknown still
-        // says what holds it (issue #419): the record is named, not the
-        // counts alone.
-        let mut row = row(
-            ConformanceVerdict::Incomplete,
-            Vec::new(),
-            ConformanceTally {
-                verified: 4,
-                ..Default::default()
-            },
-            Some("sha256:seal"),
-        );
-        row.blocking_unknowns = vec![
-            "an open `export_uncovered` unknown record `unknown-export-uncovered` stands at blocking severity"
-                .to_string(),
-        ];
-        let joined: String = conformance_lines(&row)
-            .iter()
-            .map(|line| strip_ansi(line).trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(joined.contains("incomplete (4 verified)"));
-        assert!(joined.contains(
-            "↳ unknown gate: an open `export_uncovered` unknown record `unknown-export-uncovered` stands at blocking severity"
-        ));
-    }
-
-    #[test]
-    fn incomplete_line_names_the_first_broken_link_below_the_counts() {
-        let mut row = row(
-            ConformanceVerdict::Incomplete,
-            Vec::new(),
-            ConformanceTally {
-                verified: 10,
-                ..Default::default()
-            },
-            Some("sha256:seal"),
-        );
-        row.first_open = Some(calxgloss_types::ConformanceOpenObligation {
-            function: "claim v2".to_string(),
-            attempt: 2,
-            link: "no Accept review action stands for this attempt".to_string(),
-        });
-        let lines = conformance_lines(&row);
-        assert!(lines[0].contains("incomplete (10 verified)"));
-        let joined: String = lines
-            .iter()
-            .map(|line| strip_ansi(line).trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(joined.contains(
-            "↳ first open: claim v2 attempt 2 — no Accept review action stands for this attempt"
-        ));
-    }
-
-    #[test]
-    fn the_run_close_section_prints_an_unfiled_ledger_as_unknown_never_a_clean_run() {
+    fn the_run_close_derivation_reads_an_unfiled_ledger_as_unknown_never_a_clean_run() {
         // Issue #423, AC 3: the close derives its own rows from the filed
         // documents. A target with no filed obligation ledger degrades to
-        // *unknown* in the section, and the close does not fail. This
-        // workspace is not even a git repository, so the degradation is
-        // total and quiet.
+        // *unknown* in the derivation, and the derivation does not fail.
+        // This workspace is not even a git repository, so the degradation
+        // is total and quiet.
         let dir = tempfile::tempdir().expect("temp dir");
-        let lines = run_conformance_lines(dir.path(), &["game_logic.dll".to_string()])
-            .expect("the close section derives its lines");
-        assert_eq!(lines[0], conformance_header());
-        let joined = lines
-            .iter()
-            .map(|line| strip_ansi(line).trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            joined.contains("game_logic.dll — unknown: no ledger filed — never a clean run"),
-            "{joined}"
+        let rows = derive_run_conformance(dir.path(), &["game_logic.dll".to_string()])
+            .expect("the close derives its row");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].verdict, ConformanceVerdict::Unknown);
+        assert_eq!(
+            rows[0].causes,
+            vec![ConformanceUnknownCause::NoLedgerFiled],
+            "the missing ledger is named as the cause"
         );
-        assert!(
-            !joined.contains("complete"),
-            "absence never reads as closure: {joined}"
+        assert_ne!(
+            rows[0].verdict,
+            ConformanceVerdict::Complete,
+            "absence never reads as closure"
         );
     }
 
@@ -1304,8 +939,8 @@ mod tests {
     }
 
     #[test]
-    fn the_run_close_conformance_section_keys_targets_verbatim_like_the_unknown_section() {
-        // Issue #423, AC 4: the two run-close sections key the same
+    fn the_run_close_conformance_derivation_keys_targets_verbatim_like_the_unknown_derivation() {
+        // Issue #423, AC 4: the two run-close derivations key the same
         // binaries the same way. Each key is spelled exactly as handed, in
         // the named order, and a target named twice is named once.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1314,80 +949,32 @@ mod tests {
             "game_logic.dll".to_string(),
             "keyless_engine.dll".to_string(),
         ];
-        let names = ["game_logic.dll", "keyless_engine.dll"];
-        let keys_in = |lines: &[String]| -> Vec<String> {
-            lines
-                .iter()
-                .map(|line| strip_ansi(line))
-                .filter_map(|line| {
-                    names
-                        .iter()
-                        .find(|name| line.starts_with(&format!("  {name} —")))
-                        .map(|name| name.to_string())
-                })
-                .collect()
-        };
-        let unknown = super::super::audit::run_audit_ledger_lines(dir.path(), &targets);
-        let conformance = run_conformance_lines(dir.path(), &targets)
-            .expect("the close section derives its lines");
+        let unknown = super::super::audit::derive_binary_unknown_ledgers(dir.path(), &targets);
+        let conformance = derive_run_conformance(dir.path(), &targets)
+            .expect("the close derives its rows");
         assert_eq!(
-            keys_in(&conformance),
-            keys_in(&unknown),
-            "the two run-close sections must name the same binaries the same way"
+            conformance
+                .iter()
+                .map(|row| row.binary.as_str())
+                .collect::<Vec<_>>(),
+            unknown
+                .iter()
+                .map(|ledger| ledger.binary.as_str())
+                .collect::<Vec<_>>(),
+            "the two run-close derivations must name the same binaries the same way"
         );
         assert_eq!(
-            keys_in(&conformance),
+            conformance
+                .iter()
+                .map(|row| row.binary.as_str())
+                .collect::<Vec<_>>(),
             vec!["keyless_engine.dll", "game_logic.dll"],
             "named order, duplicate once"
         );
         assert!(
-            run_conformance_lines(dir.path(), &[])
-                .expect("no named binaries is no lines")
+            derive_run_conformance(dir.path(), &[])
+                .expect("no named binaries is no rows")
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn a_long_incomplete_line_wraps_within_the_frame_and_hides_no_count() {
-        let lines = conformance_lines(&row(
-            ConformanceVerdict::Incomplete,
-            Vec::new(),
-            ConformanceTally {
-                verified: 1,
-                skipped: 1,
-                parked: 1,
-                overridden: 1,
-                un_reviewed: 1,
-                no_baseline: 1,
-            },
-            Some("sha256:seal"),
-        ));
-        assert!(lines.len() > 1, "a wide tally continues, never clips");
-        for line in &lines {
-            let visible: String = line.chars().filter(|c| !c.is_control()).collect();
-            assert!(
-                visible.chars().count() <= VISIBLE_WIDTH,
-                "line out of the frame ({})",
-                visible.chars().count()
-            );
-        }
-        let joined: String = lines
-            .iter()
-            .map(|line| strip_ansi(line).trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        for label in [
-            "1 verified",
-            "1 skipped",
-            "1 parked",
-            "1 overridden",
-            "1 un-reviewed",
-            "1 no-baseline",
-        ] {
-            assert!(
-                joined.contains(label),
-                "{label} hidden by wrapping: {joined}"
-            );
-        }
     }
 }

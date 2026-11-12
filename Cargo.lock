@@ -700,10 +700,7 @@ name = "calxgloss-reports"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "calxgloss-analysis",
- "calxgloss-decomp",
  "calxgloss-git",
- "calxgloss-translator",
  "calxgloss-types",
  "chrono",
  "git2",

@@ -51,28 +51,6 @@ pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
     })
 }
 
-/// Returns true if a git branch name matches the given DLL, function,
-/// and optional attempt number. The DLL is compared verbatim — branch
-/// names spell the filename out exactly, as the binary's identity
-/// (issue #68).
-pub fn branch_matches(branch: &str, binary: &str, function: &str, attempt: Option<u32>) -> bool {
-    let Some(parts) = parse_branch_name(branch) else {
-        return false;
-    };
-
-    let branch_func = parts.function.as_deref().unwrap_or("");
-
-    if parts.binary != binary || branch_func != function {
-        return false;
-    }
-
-    if let Some(req) = attempt {
-        req == parts.attempt
-    } else {
-        true
-    }
-}
-
 #[derive(Debug)]
 pub struct BranchParts {
     kind: WorkKind,
@@ -1126,31 +1104,6 @@ mod tests {
     }
 
     #[test]
-    fn branch_matches_compares_dll_verbatim() {
-        // Binary identity is the filename verbatim, extension included:
-        // `foo.dll` and `foo.exe` are different units, never normalized
-        // onto each other (issue #68).
-        assert!(branch_matches(
-            "re/game_logic.dll/DrawSpritev1",
-            "game_logic.dll",
-            "DrawSprite",
-            Some(1)
-        ));
-        assert!(!branch_matches(
-            "re/game_logic.dll/DrawSpritev1",
-            "game_logic",
-            "DrawSprite",
-            Some(1)
-        ));
-        assert!(!branch_matches(
-            "re/foo.exe/DrawSpritev1",
-            "foo.dll",
-            "DrawSprite",
-            Some(1)
-        ));
-    }
-
-    #[test]
     fn strip_attempt_suffix_keys_record_and_branch_id_shapes() {
         // Record-derived ids have no attempt, branch-derived ids do;
         // both must key to the same verbatim binary filename.
@@ -2029,15 +1982,9 @@ mod tests {
             .expect("dashboard builds");
         let ledger = find_ledger(&dashboard, "game_logic.dll");
 
-        assert!(ledger.unknowns.open.is_none(), "absent ledger is unknown");
-        let text = audit::audit_ledger_lines(ledger).join("\n");
         assert!(
-            text.contains("unknown"),
-            "the section reads unknown: {text}"
-        );
-        assert!(
-            !text.contains("none open"),
-            "unknown never launders to clean: {text}"
+            ledger.unknowns.open.is_none(),
+            "absent ledger is unknown, and unknown never launders to clean"
         );
     }
 
@@ -2073,11 +2020,12 @@ mod tests {
     }
 
     #[test]
-    fn the_model_ledgers_and_the_run_close_derivation_print_identically() {
-        // The agreement pin: the terminal renders the model's ledgers with
-        // `audit_ledger_lines`; the run close derives its own from the same
-        // documents and prints with the same function. Same documents in,
-        // byte-identical lines out — the two readers cannot disagree.
+    fn the_model_ledgers_and_the_run_close_derivation_agree() {
+        // The agreement pin (retargeted from the terminal's printed lines
+        // at issue #485): the builder's model ledgers and the run-close
+        // derivation read the same documents through the same join. Same
+        // documents in, identical readings out — the two derivations
+        // cannot disagree.
         let dir = tempfile::tempdir().expect("temp dir");
         let git = one_unit_repo(dir.path());
         write_ledger(
@@ -2112,23 +2060,23 @@ mod tests {
         for (model, close) in dashboard.unknown_ledgers.iter().zip(&run_close) {
             assert_eq!(model.binary, close.binary);
             assert_eq!(
-                audit::audit_ledger_lines(model),
-                audit::audit_ledger_lines(close),
-                "{}: the close and the terminal must print the same lines",
-                model.binary
+                model.unknowns, close.unknowns,
+                "{}: the model build and the run-close derivation must read the same ledger",
+                model.binary,
             );
         }
     }
 
     #[test]
-    fn the_model_conformance_rows_and_the_run_close_derivation_print_identically() {
-        // The conformance agreement pin (issue #423). The terminal prints
-        // the model's conformance rows with `conformance_lines`. The run
-        // close derives its own rows straight from the filed documents and
-        // prints with that same function, so the two readers must print the
-        // same lines byte for byte. The fixture reaches every join path: a
-        // reviewer skip, a reviewer unit override, a parked classification,
-        // a filed disposition, and a ledger document with only an envelope.
+    fn the_model_conformance_rows_and_the_run_close_derivation_agree() {
+        // The conformance agreement pin (issue #423, retargeted from the
+        // terminal's printed lines at issue #485). The builder derives the
+        // model's conformance rows; the run close derives its own rows
+        // straight from the filed documents through the same read seam, so
+        // the two derivations must land on identical rows. The fixture
+        // reaches every join path: a reviewer skip, a reviewer unit
+        // override, a parked classification, a filed disposition, and a
+        // ledger document with only an envelope.
         let dir = tempfile::tempdir().expect("temp dir");
         let git = one_unit_repo(dir.path());
         write_ledger(
@@ -2190,9 +2138,8 @@ mod tests {
         for (model, close) in dashboard.conformance.iter().zip(&run_close) {
             assert_eq!(model.binary, close.binary);
             assert_eq!(
-                conformance::conformance_lines(model),
-                conformance::conformance_lines(close),
-                "{}: the close and the terminal must print the same conformance lines",
+                model, close,
+                "{}: the model build and the run-close derivation must read the same conformance row",
                 model.binary,
             );
         }
@@ -2280,8 +2227,8 @@ mod tests {
 
     #[test]
     fn the_run_close_conformance_read_reports_a_corrupt_record_as_a_fault() {
-        // The run close's conformance lines read the same records: a corrupt one
-        // is a fault, matching the model's refusal.
+        // The run close's conformance derivation reads the same records: a
+        // corrupt one is a fault, matching the model's refusal.
         let dir = tempfile::tempdir().expect("temp dir");
         let workspace = dir.path().join("repo");
         std::fs::create_dir_all(workspace.join("re").join("analysis")).expect("analysis dir");
