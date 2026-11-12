@@ -341,6 +341,25 @@ fn queue_graph() -> calxgloss_callgraph::CallGraph {
     }
 }
 
+/// A call graph carrying the named nodes as ordinary Middle units,
+/// with rising addresses so the orderer's plan keeps the given order.
+fn middle_graph(binary: &str, names: &[&str]) -> calxgloss_callgraph::CallGraph {
+    calxgloss_callgraph::CallGraph {
+        binary: binary.to_string(),
+        functions: names
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| calxgloss_callgraph::FunctionCallGraph {
+                name: name.to_string(),
+                address: 0x1_000 * (idx as u64 + 1),
+                callers: vec![],
+                callees: vec![],
+                node_category: calxgloss_callgraph::NodeCategory::Middle,
+            })
+            .collect(),
+    }
+}
+
 /// The call-graph plan path queues both veneers as units, and the
 /// body-shape guard refuses each one in the unit loop. The plan path
 /// must record them skipped rather than failed — the way the
@@ -705,6 +724,297 @@ async fn callgraph_batch_attempts_no_units_when_its_binary_is_paused_before_star
     assert!(
         result.results.is_empty(),
         "a binary paused before its batch starts attempts zero units"
+    );
+}
+
+/// Cancel-current on a call-graph batch's in-flight unit aborts it at
+/// the earliest safe point and the batch carries on (issue #490) —
+/// the call-graph mirror of the explicit-list cancellation test. The
+/// unit the fixture resolves stays in flight at the LLM server that
+/// never answers; the cancellation ends it. The aborted unit is
+/// recorded failed, with no completed attempt behind it. Its record
+/// still reaches the caller's callback, so the caller can archive the
+/// unit's branch, and the next queued unit is attempted as usual.
+#[tokio::test]
+async fn callgraph_batch_cancel_current_aborts_in_flight_unit_and_continues() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    // The same fixture shape as the explicit-list twin, in graph form:
+    // the tick entry point resolves and stays in flight at the hanging
+    // LLM, and a name the fixture lacks fails fast at the fetch.
+    let kuna = fixture_kuna();
+    let listed = calxgloss_decomp::ScanSource::functions(&kuna)
+        .await
+        .expect("fixture function listing");
+    let tick = listed
+        .iter()
+        .find(|f| f.name.trim_start_matches('_') == "fixture_tick")
+        .expect("the fixture lists its tick entry point")
+        .name
+        .clone();
+    let graph = middle_graph("game_logic.dll", &[tick.as_str(), "UpdateScene"]);
+    let llm = LlmClient::from_url(&hanging_llm().await, "qwen3").expect("llm config");
+    let cancellation = UnitCancellation::new();
+    let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default())
+        .with_workspace(dir.path().to_path_buf())
+        .with_unit_cancellation(cancellation.clone());
+
+    // The "operator" side: as soon as a unit is registered in flight,
+    // cancel it — what the cancel-current endpoint does.
+    let watched = cancellation.clone();
+    let cancel_task = tokio::spawn(async move {
+        while watched.current_unit().is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        watched
+            .cancel_current()
+            .expect("the in-flight unit can be cancelled")
+    });
+
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>> = std::sync::Arc::default();
+    let seen_cb = seen.clone();
+    let result = pipeline
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, function, func_result| {
+                seen_cb
+                    .lock()
+                    .expect("callback lock is never poisoned")
+                    .push((function.to_string(), func_result.success));
+                true
+            }),
+        )
+        .await
+        .expect("a cancelled unit never fails the batch itself");
+    let cancelled_unit = cancel_task.await.expect("the cancel task ran");
+
+    assert_eq!(
+        cancelled_unit.function(),
+        tick,
+        "the cancellation lands on the unit that was in flight"
+    );
+    assert_eq!(
+        result.results.len(),
+        2,
+        "the cancelled unit is recorded and the run continued to the next unit"
+    );
+    let cancelled = &result.results[0];
+    assert_eq!(cancelled.function, tick);
+    assert!(
+        !cancelled.success,
+        "the cancelled attempt is recorded as failed"
+    );
+    assert!(
+        cancelled.retry_result.attempts.is_empty(),
+        "the aborted attempt left no completed attempt behind — nothing half-written"
+    );
+    assert_eq!(
+        *seen.lock().expect("callback lock is never poisoned"),
+        vec![(tick.clone(), false), ("UpdateScene".to_string(), false),],
+        "the caller's callback ran for the cancelled unit (nothing is \
+             discarded) and the next unit was attempted"
+    );
+}
+
+/// A failure whose retries ran out on a call-graph batch keeps its
+/// real attempt history in the record (issue #490): the batch files
+/// the ladder's own attempts, never an empty attempt list.
+#[tokio::test]
+async fn callgraph_batch_keeps_the_real_attempts_when_retries_run_out() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    // The canned LLM answers every attempt with code that never
+    // compiles, and the flat ladder repeats its fix strategy: the unit
+    // runs its three attempts out without a passing translation.
+    let llm = LlmClient::from_url(&broken_alternating_llm().await, "qwen3").expect("llm config");
+    let pipeline = TranslationPipeline::new(fixture_kuna(), llm, ApiMappings::default())
+        .with_workspace(dir.path().to_path_buf());
+    let listed = calxgloss_decomp::ScanSource::functions(&fixture_kuna())
+        .await
+        .expect("fixture function listing");
+    let unit = listed
+        .iter()
+        .find(|f| f.name.trim_start_matches('_') == "fixture_status")
+        .expect("the fixture lists fixture_status")
+        .name
+        .clone();
+    let graph = middle_graph("game_logic.dll", &[unit.as_str()]);
+
+    let flat = retry::RetryConfig {
+        max_attempts: 3,
+        retry_strategy: retry::RetryStrategy::CompileFix,
+        escalate_on_failure: false,
+        max_context_tier: None,
+    };
+    let result = pipeline
+        .batch_translate_from_callgraph(&graph, &flat, &verifier, None)
+        .await
+        .expect("an exhausted unit is recorded, never a batch failure");
+
+    assert_eq!(result.failure_count(), 1, "the exhausted unit is failed");
+    let failed = &result.results[0];
+    assert_eq!(failed.function, unit);
+    assert!(!failed.success);
+    assert_eq!(
+        failed.retry_result.attempts.len(),
+        3,
+        "the record carries the ladder's three real attempts — nothing was blanked"
+    );
+}
+
+/// The unknown and obligation ledgers' boundary and closing filings
+/// ride the one protocol for a call-graph batch too (issue #490).
+/// After a batch whose units fail by name, the export-coverage
+/// residue admitted ahead of the queue stands in the binary's unknown
+/// ledger. The export listing stands verbatim as the obligation
+/// roster — the same filings the explicit-list tests pin, pinned
+/// through the shared pass.
+#[tokio::test]
+async fn callgraph_batch_files_both_ledgers_at_its_unit_boundaries() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let graph = queue_graph();
+    pipeline_over(Some(dir.path()))
+        .batch_translate_from_callgraph(&graph, &retry::RetryConfig::default(), &verifier, None)
+        .await
+        .expect("a batch over functions the fixture lacks still files its ledgers");
+
+    let exports = calxgloss_decomp::ScanSource::exports(&fixture_kuna())
+        .await
+        .expect("fixture export listing");
+    assert!(!exports.is_empty(), "the fixture serves its named exports");
+    let identity = calxgloss_types::BinaryIdentity::new("game_logic.dll");
+
+    // The unknown ledger (issue #369's boundary filing): the export
+    // residue admitted by the batch's opening coverage check stands on
+    // disk.
+    let ledger_path = calxgloss_types::unknown_ledger_path(dir.path(), &identity);
+    let ledger: calxgloss_types::UnknownLedger = calxgloss_types::load_json(&ledger_path)
+        .expect("a call-graph batch files its unknown ledger at the unit boundary");
+    let records = ledger
+        .records
+        .expect("the batch filed a current set, never an absent key");
+    let mut uncovered: Vec<String> = records
+        .iter()
+        .filter(|record| record.kind == calxgloss_types::UnknownKind::ExportUncovered)
+        .map(|record| match &record.origin {
+            calxgloss_types::UnknownOrigin::CaseSet { case_set } => case_set.clone(),
+            other => panic!("an export residue record names its case set: {other:?}"),
+        })
+        .collect();
+    let mut expected: Vec<String> = exports
+        .iter()
+        .filter(|export| !export.name.is_empty())
+        .map(|export| format!("export-{}", export.name))
+        .collect();
+    uncovered.sort();
+    expected.sort();
+    assert_eq!(
+        uncovered, expected,
+        "one export_uncovered record per named export of the batch's own run"
+    );
+
+    // The obligation ledger (issue #422's boundary and closing
+    // filings): the roster is the export listing itself.
+    let roster = calxgloss_types::read_obligation_ledger(dir.path(), &identity)
+        .expect("a call-graph batch closes by filing its obligation ledger, digest re-derivable");
+    assert_eq!(
+        roster
+            .entries
+            .iter()
+            .map(|entry| entry.function.clone())
+            .collect::<Vec<String>>(),
+        exports
+            .iter()
+            .filter(|export| !export.name.is_empty())
+            .map(|export| export.name.clone())
+            .collect::<Vec<String>>(),
+        "the roster is the export listing, verbatim and in the listing's own order"
+    );
+}
+
+/// A call graph holding one entry-point root and one runtime-library
+/// function — the units the call-graph adapter plans as Stub and skip
+/// (issue #488).
+fn stub_and_skip_graph() -> calxgloss_callgraph::CallGraph {
+    calxgloss_callgraph::CallGraph {
+        binary: "game_logic.dll".to_string(),
+        functions: [
+            ("Start", calxgloss_callgraph::NodeCategory::Root),
+            ("memcpy", calxgloss_callgraph::NodeCategory::Skip),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(
+            |(idx, (name, category))| calxgloss_callgraph::FunctionCallGraph {
+                name: name.to_string(),
+                address: 0x1_000 * (idx as u64 + 1),
+                callers: vec![],
+                callees: vec![],
+                node_category: category,
+            },
+        )
+        .collect(),
+    }
+}
+
+/// Stub and skip units are planned dispositions the protocol honors
+/// for a call-graph batch (issue #490): the root gets a Stub whose
+/// record reaches the caller's callback, and the runtime-library
+/// function is recorded skipped without ever reaching it. Neither
+/// unit spends an attempt.
+#[tokio::test]
+async fn callgraph_batch_honors_planned_stub_and_skip_dispositions() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let graph = stub_and_skip_graph();
+    let mut seen: Vec<String> = Vec::new();
+    let result = pipeline_over(Some(dir.path()))
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, function, _func_result| {
+                seen.push(function.to_string());
+                true
+            }),
+        )
+        .await
+        .expect("a batch of Stub and skip units never starts an attempt");
+
+    assert_eq!(result.total_count(), 2, "both planned units are recorded");
+    let stubbed = result
+        .results
+        .iter()
+        .find(|record| record.function == "Start")
+        .expect("the entry-point root is in the results");
+    assert!(
+        stubbed.success && stubbed.stub_code.is_some(),
+        "the root is recorded a Stub, not a translation"
+    );
+    assert!(
+        stubbed.retry_result.attempts.is_empty(),
+        "a planned Stub spends no attempt"
+    );
+    let skipped = result
+        .results
+        .iter()
+        .find(|record| record.function == "memcpy")
+        .expect("the runtime-library function is in the results");
+    assert!(
+        skipped.success && skipped.rust_code.is_none() && skipped.stub_code.is_none(),
+        "the runtime-library function is recorded skipped — a success carrying no code"
+    );
+    assert_eq!(
+        seen,
+        vec!["Start".to_string()],
+        "the Stub's record reaches the caller's callback; the skipped unit never does"
     );
 }
 

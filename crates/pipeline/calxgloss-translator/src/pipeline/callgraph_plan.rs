@@ -234,7 +234,11 @@ impl TranslationPipeline {
     /// through the call-graph adapter: the ordered plan becomes planned
     /// units, with entry points planned Stub, runtime-library functions
     /// planned skip, and every other unit planned to translate
-    /// (issue #488).
+    /// (issue #488). The pass over that queue is the one batch
+    /// protocol, [`run_batch`](Self::run_batch) (issue #490). A
+    /// call-graph batch answers operator cancellation like an
+    /// explicit-list batch. It keeps its attempt history and files its
+    /// ledgers the same way.
     ///
     /// # Example
     ///
@@ -286,7 +290,7 @@ impl TranslationPipeline {
         graph: &calxgloss_callgraph::CallGraph,
         config: &retry::RetryConfig,
         verifier: &Verifier,
-        mut on_function_completed: Option<
+        on_function_completed: Option<
             &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
         >,
     ) -> Result<batch::BatchTranslationResult> {
@@ -298,250 +302,21 @@ impl TranslationPipeline {
         // document exists for this binary (issue #256), with each unit's
         // planned disposition. Operator scope applies too: skipped
         // functions leave the queue, and priority functions sort first.
-        let binary = &graph.binary;
         let queue = self.callgraph_queue(graph)?;
 
-        self.begin_cached_source(binary).await;
-
-        self.run_prebatch_scans(binary).await;
-
-        // Carry-over seeding (issue #299): the scan step saved the pairing
-        // documents for these exact bytes; collect the seeds from the
-        // queue's unit names before its first unit starts.
-        let queue_names: Vec<String> = queue.iter().map(|unit| unit.name.clone()).collect();
-        self.refresh_carry_over_seeds(binary, &queue_names);
-
-        // Unknown residue (issues #369, #371): the batch's ledger write
-        // files the current derived set, so the previous batch's
-        // accumulated set starts out gone — what this batch's producers
-        // admit replaces it.
-        *self.unknown_residue.lock().expect("unknown residue lock") = None;
-
-        // Verification residue (issue #373): the export-coverage check
-        // runs ahead of the queue here too — every export no filed
-        // baseline document covers files its standing question into the
-        // same accumulator the ladder and seam residues land in.
-        self.record_export_residue(binary).await;
-
-        let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
-
-        for (idx, unit) in queue.iter().enumerate() {
-            // The same unit gate the explicit-list pass runs, so a
-            // call-graph batch stops, pauses and budget-stops exactly
-            // like an explicit-list batch (issue #487).
-            if let Some(gate) = self.unit_gate(binary).await {
-                info!(
-                    binary,
-                    gate = %gate,
-                    remaining = queue.len() - idx,
-                    "Ending call-graph batch at unit boundary"
-                );
-                break;
-            }
-
-            // The batch pass branches on the unit's planned disposition,
-            // whichever adapter built the queue (issue #488).
-            match unit.disposition {
-                // Skipped units (runtime library functions) are recorded
-                // as skipped and never start.
-                PlannedDisposition::Skip => {
-                    info!(
-                        binary,
-                        name = %unit.name,
-                        "Skipping runtime library function"
-                    );
-                    let skipped = batch::FunctionResult::skipped(binary.clone(), unit.name.clone());
-                    batch_result.add(skipped);
-
-                    self.emit(ProgressEvent::FunctionCompleted {
-                        binary: binary.clone().into(),
-                        function: unit.name.clone(),
-                        success: true,
-                        attempts: 0,
-                        branch: None,
-                    });
-
-                    // A skipped plan node never reaches the caller's
-                    // callback: it was never attempted, so it has no
-                    // translated code to write and no branch to clean up,
-                    // and a caller that assumes a success always carries
-                    // code would panic.
-
-                    continue;
-                }
-                // Stubbed units (entry-point roots) get a Stub, not a
-                // translation.
-                PlannedDisposition::Stub => {
-                    info!(binary, name = %unit.name, "Generating stub for root function");
-                    let stub_code = self.generate_stub(&unit.name, "");
-                    let stubbed = batch::FunctionResult::stubbed(
-                        binary.clone(),
-                        unit.name.clone(),
-                        stub_code,
-                    );
-                    batch_result.add(stubbed.clone());
-
-                    self.emit(ProgressEvent::FunctionCompleted {
-                        binary: binary.clone().into(),
-                        function: unit.name.clone(),
-                        success: true,
-                        attempts: 0,
-                        branch: None,
-                    });
-
-                    // Run the caller's callback even for functions that got a Stub
-                    if let Some(ref mut cb) = on_function_completed
-                        && !cb(binary, &unit.name, &mut stubbed.clone())
-                    {
-                        info!(binary, function = %unit.name, "Batch stopped early by callback");
-                        break;
-                    }
-
-                    continue;
-                }
-                PlannedDisposition::Translate => {}
-            }
-
-            let name = unit.name.as_str();
-
-            info!(
-                binary,
-                name = %name,
-                index = idx + 1,
-                total = queue.len(),
-                "Translating function in batch"
-            );
-
-            // A stopped root — a name-pattern root that reached the unit
-            // anyway, or a self-call thunk the name patterns cannot see
-            // (issue #269) — is a request the pipeline stops, not a unit
-            // that failed: record it as skipped, the way the explicit-list
-            // path does, and the flag keeps it out of the completion
-            // callback below (a stopped unit has no code to write).
-            let mut unit_refused = false;
-            let mut result = match self
-                .try_translate_with_retry(binary, name, config, verifier)
-                .await
-            {
-                Ok(retry_result) => {
-                    if retry_result.success {
-                        info!(
-                            binary,
-                            name = %name,
-                            attempts = retry_result.attempts.len(),
-                            "Batch function succeeded"
-                        );
-                        let rust_code = retry_result.rust_code.clone().unwrap_or_default();
-                        batch::FunctionResult::success(
-                            binary.clone(),
-                            name.to_string(),
-                            rust_code,
-                            retry_result,
-                            None,
-                        )
-                    } else {
-                        warn!(
-                            binary,
-                            name = %name,
-                            attempts = retry_result.attempts.len(),
-                            "Batch function exhausted all retries"
-                        );
-                        let empty_result = retry::RetryResult::new();
-                        batch::FunctionResult::failure(
-                            binary.clone(),
-                            name.to_string(),
-                            empty_result,
-                        )
-                    }
-                }
-                Err(e) => {
-                    // A stopped root is a stop, not a failure: record it
-                    // as skipped, exactly as the explicit-list path does.
-                    if matches!(e, TranslatorError::SkippedRoot { .. }) {
-                        info!(
-                            binary,
-                            name = %name,
-                            error = %e,
-                            "Plan function is a root symbol — recorded skipped, not failed"
-                        );
-                        unit_refused = true;
-                        batch::FunctionResult::skipped(binary.clone(), name.to_string())
-                    } else {
-                        warn!(
-                            binary,
-                            name = %name,
-                            error = %e,
-                            "Batch function translation failed (pipeline error)"
-                        );
-                        let empty_result = retry::RetryResult::new();
-                        batch::FunctionResult::failure(
-                            binary.clone(),
-                            name.to_string(),
-                            empty_result,
-                        )
-                    }
-                }
-            };
-
-            // Carry-over history (issue #299): when attempt 1 arrived on an
-            // accepted translation and that code is what succeeded, say so on
-            // the record — the git callback's commit message reads it.
-            self.attach_carry_over_provenance(&mut result);
-
-            let success = result.success;
-            // W2.5: charge the unit's token spend against the run budget.
-            self.record_unit_tokens(&result);
-            batch_result.add(result.clone());
-
-            // Send the progress event used for real-time tracking
-            self.emit(ProgressEvent::FunctionCompleted {
-                binary: binary.clone().into(),
-                function: name.to_string(),
-                success,
-                attempts: 0,  // filled by caller after git branch creation
-                branch: None, // filled by caller after git branch creation
-            });
-
-            // Run the caller's callback. A stopped root never reaches
-            // it: it was never attempted, so it has no translated code to
-            // write and no branch to clean up, and a caller that assumes a
-            // success carries code would panic.
-            let continue_batch = if let Some(ref mut cb) = on_function_completed
-                && !unit_refused
-            {
-                cb(binary, name, &mut result)
-            } else {
-                true
-            };
-
-            // The unit is complete — file this binary's unknown ledger so
-            // the gaps the batch's folds admitted stand on disk even if
-            // the batch stops before its last unit (issue #369).
-            self.file_unknown_ledger(binary)?;
-
-            // ...and re-file its obligation ledger beside it: the roster
-            // the batch closed with stays the current state even when the
-            // batch stops mid-plan (issue #422).
-            self.file_obligation_ledger(binary).await?;
-
-            if !continue_batch {
-                info!(binary, function = %name, "Batch stopped early by callback");
-                break;
-            }
-        }
-
-        // A batch whose plan ran no unit — or never reached the boundary
-        // write — still closes by filing its obligation ledger (issue #422).
-        self.file_obligation_ledger(binary).await?;
-
-        info!(
-            binary,
-            total = batch_result.total_count(),
-            success = batch_result.success_count(),
-            failure = batch_result.failure_count(),
-            "Call-graph batch translation complete"
-        );
-
-        Ok(batch_result)
+        // The pass itself is the one batch protocol (issue #490). The
+        // call-graph batch rides it exactly like the explicit-list
+        // batch. The protocol owns the unit gate and the cancellation
+        // watch around each in-flight unit. It keeps the real attempt
+        // history on an exhausted-retries record, and files both
+        // ledgers at the boundaries and at the close.
+        self.run_batch(
+            &graph.binary,
+            &queue,
+            config,
+            verifier,
+            on_function_completed,
+        )
+        .await
     }
 }
