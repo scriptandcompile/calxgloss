@@ -1,17 +1,21 @@
-//! The batch translation pass and its carry-over provenance: what a unit
-//! inherits from the previous run of the same binary, and what files it.
+//! The batch protocol: the one production batch pass over a queue of
+//! planned units, plus its carry-over provenance — what a unit
+//! inherits from the previous run of the same binary, and what files
+//! it (issue #489, part of #486).
 
 use super::*;
 
 impl TranslationPipeline {
     /// Translate the given functions in one binary as a batch.
     ///
-    /// The run's queue is built ahead of the batch's opening steps
-    /// through the explicit-list adapter: every operator-scoped
-    /// function enters as a planned unit, planned to translate
-    /// (issue #488).
+    /// The explicit-list entry point (issue #489): a thin facade over
+    /// the batch protocol. It builds the run's queue through the
+    /// explicit-list adapter — every operator-scoped function enters
+    /// as a planned unit, planned to translate (issue #488) — and
+    /// hands it to [`run_batch`], which owns everything after that.
     ///
     /// Returns a `BatchTranslationResult` holding each function's translation outcome.
+    // The completion callback's FnMut signature has no shorter spelling.
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,
@@ -19,7 +23,7 @@ impl TranslationPipeline {
         functions: &[String],
         config: &retry::RetryConfig,
         verifier: &Verifier,
-        mut on_function_completed: Option<
+        on_function_completed: Option<
             &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
         >,
     ) -> Result<batch::BatchTranslationResult> {
@@ -34,6 +38,37 @@ impl TranslationPipeline {
         // applies, and every scoped function is planned to translate.
         let queue = self.explicit_queue(binary, functions);
 
+        self.run_batch(binary, &queue, config, verifier, on_function_completed)
+            .await
+    }
+
+    /// The batch protocol (issue #489): the one production batch pass,
+    /// over the planned-unit queue whichever adapter built it.
+    ///
+    /// Its prologue opens the cached scan source, runs the pre-batch
+    /// scans, collects the carry-over seeds, resets the unknown
+    /// residue, and records the export residue. At every unit
+    /// boundary the shared unit gate decides whether the batch goes
+    /// on (issue #487). Each unit's attempt rides the retry path and
+    /// races the cancellation watch. The unit's folding charges its
+    /// tokens, attaches carry-over provenance, sends the completion
+    /// event, and runs the caller's callback. The unknown and
+    /// obligation ledgers are filed at each boundary and again at the
+    /// batch's close. The pass reads each entry's planned disposition
+    /// and never the queue's source (issue #488). Per-attempt policy
+    /// stays outside this function (ADR-0051).
+    // The completion callback's FnMut signature has no shorter spelling.
+    #[allow(clippy::type_complexity)]
+    pub(super) async fn run_batch(
+        &self,
+        binary: &str,
+        queue: &[PlannedUnit],
+        config: &retry::RetryConfig,
+        verifier: &Verifier,
+        mut on_function_completed: Option<
+            &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
+        >,
+    ) -> Result<batch::BatchTranslationResult> {
         self.begin_cached_source(binary).await;
 
         self.run_prebatch_scans(binary).await;
@@ -61,10 +96,6 @@ impl TranslationPipeline {
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, unit) in queue.iter().enumerate() {
-            // Every unit here is planned to translate, so the per-unit
-            // body is the batch's work unchanged (issue #488).
-            let function = unit.name.as_str();
-
             // The unit gate holds the operator's four steering arms in
             // one fixed order (issue #487). The reason it names goes
             // into the boundary log line beside the remaining count.
@@ -77,6 +108,73 @@ impl TranslationPipeline {
                 );
                 break;
             }
+
+            // The pass branches on the unit's planned disposition — a
+            // property of the queue entry itself — and never asks
+            // which adapter built the queue (issues #488, #489).
+            match unit.disposition {
+                // Skipped units (runtime library functions) are
+                // recorded as skipped and never start.
+                PlannedDisposition::Skip => {
+                    info!(
+                        binary,
+                        name = %unit.name,
+                        "Skipping runtime library function"
+                    );
+                    let skipped =
+                        batch::FunctionResult::skipped(binary.to_string(), unit.name.clone());
+                    batch_result.add(skipped);
+
+                    self.emit(ProgressEvent::FunctionCompleted {
+                        binary: binary.to_string().into(),
+                        function: unit.name.clone(),
+                        success: true,
+                        attempts: 0,
+                        branch: None,
+                    });
+
+                    // A skipped plan node never reaches the caller's
+                    // callback: it was never attempted, so it has no
+                    // translated code to write and no branch to clean
+                    // up, and a caller that assumes a success always
+                    // carries code would panic.
+
+                    continue;
+                }
+                // Stubbed units (entry-point roots) get a Stub, not a
+                // translation.
+                PlannedDisposition::Stub => {
+                    info!(binary, name = %unit.name, "Generating stub for root function");
+                    let stub_code = self.generate_stub(&unit.name, "");
+                    let stubbed = batch::FunctionResult::stubbed(
+                        binary.to_string(),
+                        unit.name.clone(),
+                        stub_code,
+                    );
+                    batch_result.add(stubbed.clone());
+
+                    self.emit(ProgressEvent::FunctionCompleted {
+                        binary: binary.to_string().into(),
+                        function: unit.name.clone(),
+                        success: true,
+                        attempts: 0,
+                        branch: None,
+                    });
+
+                    // Run the caller's callback even for functions that got a Stub
+                    if let Some(ref mut cb) = on_function_completed
+                        && !cb(binary, &unit.name, &mut stubbed.clone())
+                    {
+                        info!(binary, function = %unit.name, "Batch stopped early by callback");
+                        break;
+                    }
+
+                    continue;
+                }
+                PlannedDisposition::Translate => {}
+            }
+
+            let function = unit.name.as_str();
 
             info!(
                 binary,

@@ -81,6 +81,14 @@ The one check both batch passes run at every unit boundary: it reads the operato
 - The named reason and the remaining unit count go into the boundary log line.
 _Avoid_: gate check, steering check
 
+**Batch protocol**:
+The one code path that runs a production batch, from its opening scans to its closing ledger filings (`run_batch`).
+*Rules:*
+- A batch entry point is a facade: it builds its *planned unit* queue and hands it over.
+- The protocol reads each entry's planned disposition, never which queue source produced it.
+- Per-attempt policy stays outside the protocol, on the retry path (ADR-0051).
+_Avoid_: batch loop, batch body
+
 **Override**:
 The operator's standing decision that outranks the system's own judgment — a classification override outranks PE facts and name tables.
 
