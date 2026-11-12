@@ -1,5 +1,6 @@
-//! Source-level pins for the pipeline assembly contract (issue #328) and
-//! the attempt-seam shape (issue #330, pin step #335).
+//! Source-level pins for the pipeline assembly contract (issue #328), the
+//! attempt-seam shape (issue #330, pin step #335), and the batch protocol
+//! staying one module with facade entry points (issue #486, pin step #491).
 //!
 //! The compiler pins the crate boundary — the pipeline constructor and its
 //! `with_*` setter surface are assembly-internal (`pub(crate)`), and so is
@@ -338,6 +339,127 @@ fn the_retry_loop_body_stays_policy_only_within_budget() {
          the inline attempt bodies the seam replaced spanned ~900 on their own; \
          a body this big in the loop means it re-inflated past policy (issue #330)"
     );
+}
+
+// ==========================================================================
+// The batch protocol (issues #486–#491) — the protocol lives in one module
+// inside a line budget, and both batch entry points stay facades that build
+// a queue and hand it over.
+// ==========================================================================
+
+/// The one production module holding the batch protocol (issue #489),
+/// relative to `crates/`.
+const BATCH_PROTOCOL_MODULE: &str = "pipeline/calxgloss-translator/src/pipeline/batch_run.rs";
+
+/// The module holding the two queue adapters — the explicit list and the
+/// call graph each build their planned-unit queue here (issue #488).
+const QUEUE_ADAPTER_MODULE: &str = "pipeline/calxgloss-translator/src/pipeline/queue.rs";
+
+/// The call-graph entry point's module (issue #490 rode it onto the protocol).
+const CALLGRAPH_MODULE: &str = "pipeline/calxgloss-translator/src/pipeline/callgraph_plan.rs";
+
+/// Source lines of a function: from its signature line through the closing
+/// brace at the signature's own indentation. rustfmt returns a method's
+/// closer to the opener's indent, and every nested closer sits deeper.
+/// The needle must name exactly one function, and the measurement assumes
+/// a rustfmt-formatted file.
+fn function_lines(text: &str, needle: &str) -> usize {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no line containing `{needle}`"));
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    for (offset, line) in lines.iter().enumerate().skip(start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.len() + indent == line.len() && trimmed.ends_with('}') {
+            return offset - start + 1;
+        }
+    }
+    panic!("no closing brace at indent {indent} after `{needle}`");
+}
+
+/// The batch protocol exists once. The steps it runs at every unit boundary
+/// and at the close — the unit gate, the cancellation watch, and the two
+/// ledger writes — are called from exactly one production module: the
+/// protocol itself.
+///
+/// Pre-merge this pin fails by construction. The explicit path in
+/// `batch_run.rs` and the call-graph path in `callgraph_plan.rs` each called
+/// every step from their own protocol copy (measured at 68208d9: 267 lines
+/// plus 263), so every needle names two modules. A second copy in any other
+/// module trips the equality the same way; a copy pasted into the protocol
+/// module's own file is caught by the line budget below instead (issue #491).
+#[test]
+fn the_batch_protocol_lives_in_one_production_module() {
+    let crates = crates_dir();
+    let files = source_files(&crates);
+
+    for needle in [
+        concat!("unit_", "gate("),
+        concat!("wait_for_unit_", "cancel("),
+        concat!("file_unknown_", "ledger("),
+        concat!("file_obligation_", "ledger("),
+    ] {
+        let hits = files_calling(&crates, &files, needle);
+        assert_eq!(
+            hits,
+            vec![BATCH_PROTOCOL_MODULE.to_string()],
+            "`{needle}` must be called from exactly one production module — the \
+             batch protocol — so two protocol copies can never run one path's \
+             steps while the other's go missing (issue #491)"
+        );
+    }
+}
+
+/// The line budget catches a copy pasted into the protocol module itself.
+/// The pin above pins the one calling module, so a re-fork can hide only
+/// inside the protocol file. The budget sits below the historical two-copy
+/// total: before the merge the two protocol copies spanned 267 lines
+/// (explicit) and 263 lines (call-graph). The module's production region
+/// measured 448 at write-time, so pasting either copy back takes it past
+/// 500, while ordinary policy growth stays inside (issue #491).
+#[test]
+fn the_batch_protocol_stays_one_copy_within_budget() {
+    let crates = crates_dir();
+    let text = std::fs::read_to_string(crates.join(BATCH_PROTOCOL_MODULE))
+        .expect("read the batch protocol module");
+    let production_lines = production_region(&text).count();
+    assert!(
+        production_lines <= 500,
+        "the batch protocol's production region grew to {production_lines} lines — \
+         the two protocol copies the merge deleted spanned 267 and 263 lines between \
+         them, and a body that size inside the protocol module means the protocol \
+         was copied in place (issue #491)"
+    );
+}
+
+/// Both batch entry points stay facades over the protocol, each with the
+/// queue adapter that builds its planned units. Pre-merge the entry points
+/// carried the protocol themselves: `batch_translate` spanned 267 lines,
+/// and `batch_translate_from_callgraph` 263. A ceiling far below those
+/// numbers keeps the protocol inside `run_batch`, so a third queue source
+/// means a new adapter rather than a second protocol copy (measured 24,
+/// 34, 10 and 31 at write-time; issue #491).
+#[test]
+fn both_batch_entry_points_stay_facades_over_the_protocol() {
+    let crates = crates_dir();
+    for (module, needle) in [
+        (BATCH_PROTOCOL_MODULE, "fn batch_translate("),
+        (CALLGRAPH_MODULE, "fn batch_translate_from_callgraph("),
+        (QUEUE_ADAPTER_MODULE, "fn explicit_queue("),
+        (QUEUE_ADAPTER_MODULE, "fn callgraph_queue("),
+    ] {
+        let text = std::fs::read_to_string(crates.join(module)).expect("read the entry module");
+        let lines = function_lines(&text, needle);
+        assert!(
+            lines <= 60,
+            "`{needle}` spans {lines} lines in `{module}` — the entry points are \
+             facades and queue adapters, and the protocol copies they used to carry \
+             spanned 267 and 263 lines, so growth toward this ceiling means protocol \
+             moved back out of `run_batch` (issue #491)"
+        );
+    }
 }
 
 /// The public surface the epic was forbidden to move: everything outside
