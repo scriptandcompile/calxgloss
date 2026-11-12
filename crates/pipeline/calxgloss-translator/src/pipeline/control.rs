@@ -41,14 +41,41 @@ impl TranslationPipeline {
     /// A run-level pause holds the loop at a unit boundary until the operator
     /// resumes it; a paused binary, by contrast, **ends** the batch at the
     /// next boundary — the batch returns instead of waiting, so the run can
-    /// move on to another binary. The batch loops check this just before
-    /// [`control_allows_next_unit`](Self::control_allows_next_unit), so the
-    /// pause is honored at the boundary even while the run itself is on
-    /// hold. With no scope handle attached, no binary is ever paused.
+    /// move on to another binary. The unit gate checks this just before
+    /// its pipeline-control arm, so the pause is honored at the boundary
+    /// even while the run itself is on hold. With no scope handle
+    /// attached, no binary is ever paused.
     pub(super) fn binary_paused(&self, binary: &str) -> bool {
         self.scope
             .as_ref()
             .is_some_and(|scope| scope.is_paused(binary))
+    }
+
+    /// The operator's steering checked as one gate at a unit boundary
+    /// (issue #487).
+    ///
+    /// The gate reads four arms in one fixed order: stop signal, token
+    /// budget, paused target binary, pipeline control. It returns the
+    /// first arm that holds — the reason the boundary log line names.
+    /// The order decides where several arms hold at once. The stop
+    /// signal outranks the spent budget, and the paused binary outranks
+    /// the halt, so a paused binary ends the batch instead of waiting
+    /// in a run-level pause. Returns `None` when the next unit may
+    /// start.
+    pub(super) async fn unit_gate(&self, binary: &str) -> Option<UnitGate> {
+        if self.stop_requested() {
+            return Some(UnitGate::StopSignal);
+        }
+        if self.budget_exhausted() {
+            return Some(UnitGate::BudgetExhausted);
+        }
+        if self.binary_paused(binary) {
+            return Some(UnitGate::BinaryPaused);
+        }
+        if !self.control_allows_next_unit().await {
+            return Some(UnitGate::ControlHalt);
+        }
+        None
     }
 
     /// Resolves once a cancellation has arrived for the named unit (issue
@@ -264,5 +291,38 @@ impl TranslationPipeline {
             out.push_str(&format!("- {hint}\n"));
         }
         out
+    }
+}
+
+/// Why the unit gate closed a batch pass at a unit boundary (issue #487).
+///
+/// The gate checks four operator controls in one fixed order: stop
+/// signal, token budget, paused target binary, pipeline control. It
+/// names the first arm that holds. Both batch passes call
+/// [`unit_gate`](TranslationPipeline::unit_gate) at every unit
+/// boundary, so a call-graph batch stops, pauses and budget-stops
+/// exactly like an explicit-list batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UnitGate {
+    /// The operator's stop signal was requested.
+    StopSignal,
+    /// The run's token budget is spent.
+    BudgetExhausted,
+    /// The batch's target binary is paused.
+    BinaryPaused,
+    /// The pipeline control halted the run, or stopped it while the gate
+    /// waited in a run-level pause.
+    ControlHalt,
+}
+
+impl std::fmt::Display for UnitGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            UnitGate::StopSignal => "stop signal received",
+            UnitGate::BudgetExhausted => "token budget exhausted",
+            UnitGate::BinaryPaused => "binary paused",
+            UnitGate::ControlHalt => "pipeline control halt",
+        };
+        f.write_str(reason)
     }
 }

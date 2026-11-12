@@ -54,40 +54,15 @@ impl TranslationPipeline {
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
-            if self.stop_requested() {
+            // The unit gate holds the operator's four steering arms in
+            // one fixed order (issue #487). The reason it names goes
+            // into the boundary log line beside the remaining count.
+            if let Some(gate) = self.unit_gate(binary).await {
                 info!(
                     binary,
+                    gate = %gate,
                     remaining = functions.len() - idx,
-                    "Stop signal received — ending batch at unit boundary"
-                );
-                break;
-            }
-
-            if self.budget_exhausted() {
-                info!(
-                    binary,
-                    remaining = functions.len() - idx,
-                    "Token budget exhausted — ending batch at unit boundary"
-                );
-                break;
-            }
-
-            // A paused binary ends this batch — unlike a run-level pause it
-            // never holds the loop open (issue #219, part of #217).
-            if self.binary_paused(binary) {
-                info!(
-                    binary,
-                    remaining = functions.len() - idx,
-                    "Binary paused — ending batch at unit boundary"
-                );
-                break;
-            }
-
-            if !self.control_allows_next_unit().await {
-                info!(
-                    binary,
-                    remaining = functions.len() - idx,
-                    "Pipeline control halt — ending batch at unit boundary"
+                    "Ending batch at unit boundary"
                 );
                 break;
             }

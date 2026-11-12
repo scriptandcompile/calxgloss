@@ -316,6 +316,31 @@ fn veneer_graph() -> calxgloss_callgraph::CallGraph {
     }
 }
 
+/// A three-node call graph over names the fixture does not list — the
+/// call-graph twin of the explicit-list gate tests' function queue.
+/// Each unit fails by name at the analysis engine and reaches the
+/// completion callback as a failure. The ascending addresses fix the
+/// plan order, because the orderer sorts independent nodes by address.
+fn queue_graph() -> calxgloss_callgraph::CallGraph {
+    calxgloss_callgraph::CallGraph {
+        binary: "game_logic.dll".to_string(),
+        functions: [
+            ("DrawPrimitive", 0x1000),
+            ("UpdateScene", 0x2000),
+            ("SpawnEntity", 0x3000),
+        ]
+        .into_iter()
+        .map(|(name, address)| calxgloss_callgraph::FunctionCallGraph {
+            name: name.to_string(),
+            address,
+            callers: vec![],
+            callees: vec![],
+            node_category: calxgloss_callgraph::NodeCategory::Middle,
+        })
+        .collect(),
+    }
+}
+
 /// The call-graph plan path queues both veneers as units, and the
 /// body-shape guard refuses each one in the unit loop. The plan path
 /// must record them skipped rather than failed — the way the
@@ -365,6 +390,322 @@ async fn callgraph_batch_records_a_self_call_thunk_as_skipped() {
             "the {veneer} veneer must never reach the completion callback"
         );
     }
+}
+
+// ─── Call-graph twins of the unit-gate tests (issue #487) ─────────
+//
+// Each test below drives the call-graph entry point with the same
+// steering the matching explicit-list gate test above applies, and
+// asserts the batch ends at the same unit boundary. Both passes run
+// the same gate, so both must answer the operator identically.
+
+/// The stop signal ends a call-graph batch at the next unit boundary
+/// exactly like an explicit-list batch: the unit in flight completes
+/// and no further unit starts.
+#[tokio::test]
+async fn callgraph_batch_breaks_at_unit_boundary_when_stop_is_requested() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let stop = StopSignal::new();
+    let stop_cb = stop.clone();
+    let pipeline = pipeline_over(Some(dir.path())).with_stop_signal(stop);
+    let graph = queue_graph();
+
+    let mut completed = 0;
+    let result = pipeline
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, _function, _func_result| {
+                completed += 1;
+                // Stop requested right after the first unit completes.
+                stop_cb.stop();
+                true
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+
+    assert_eq!(completed, 1, "only the first unit should have run");
+    assert_eq!(
+        result.results.len(),
+        1,
+        "the second unit must not start after the stop signal"
+    );
+}
+
+/// With the run's token budget already spent, a call-graph batch ends
+/// at the very first unit boundary — no unit starts — exactly like an
+/// explicit-list batch.
+#[tokio::test]
+async fn callgraph_batch_ends_before_any_unit_when_token_budget_is_spent() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let scope = spent_budget_scope();
+
+    let graph = queue_graph();
+    let result = pipeline_over(Some(dir.path()))
+        .with_scope(scope)
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, function, _func_result| {
+                panic!("no unit may start once the token budget is spent: {function}");
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+
+    assert!(
+        result.results.is_empty(),
+        "no unit may start once the token budget is spent"
+    );
+}
+
+/// A paused `PipelineControl` holds a call-graph batch open at the next
+/// unit boundary and the resume continues exactly where it stopped —
+/// the same hold an explicit-list batch takes.
+#[tokio::test]
+async fn callgraph_batch_pauses_at_unit_boundary_and_resumes_where_it_stopped() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let control = PipelineControl::new();
+    control.start().expect("idle -> running");
+
+    // The "operator" side: watch for the pause to land, record it, then
+    // resume — mirroring the pause/resume endpoints driving the handle.
+    let watched = control.clone();
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let order_watch = order.clone();
+    let resume_task = tokio::spawn(async move {
+        while watched.state() != PipelineState::Paused {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        order_watch
+            .lock()
+            .expect("order lock")
+            .push("paused".to_string());
+        watched.resume().expect("paused -> running");
+    });
+
+    let pipeline = pipeline_over(Some(dir.path())).with_pipeline_control(control.clone());
+    let graph = queue_graph();
+    let order_cb = order.clone();
+    let mut seen = 0;
+    let result = pipeline
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, function, _func_result| {
+                order_cb
+                    .lock()
+                    .expect("order lock")
+                    .push(function.to_string());
+                seen += 1;
+                // Pause requested right after the first unit completes.
+                if seen == 1 {
+                    control.pause().expect("running -> paused");
+                }
+                true
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+    resume_task.await.expect("the resume task ran");
+
+    assert_eq!(
+        control.state(),
+        PipelineState::Running,
+        "the run resumed and finished running"
+    );
+    assert_eq!(result.results.len(), 3, "a pause never drops a queued unit");
+    assert_eq!(
+        *order.lock().expect("order lock"),
+        ["DrawPrimitive", "paused", "UpdateScene", "SpawnEntity"],
+        "the pause took effect at the boundary after unit 1, before unit 2 started"
+    );
+}
+
+/// A stopped `PipelineControl` ends a call-graph batch at the next unit
+/// boundary — the unit in flight completes, then the run halts in
+/// `Stopping` — exactly like an explicit-list batch.
+#[tokio::test]
+async fn callgraph_batch_halts_at_unit_boundary_when_control_is_stopped() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let control = PipelineControl::new();
+    control.start().expect("idle -> running");
+    let control_cb = control.clone();
+    let pipeline = pipeline_over(Some(dir.path())).with_pipeline_control(control.clone());
+    let graph = queue_graph();
+
+    let mut completed = 0;
+    let result = pipeline
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, _function, _func_result| {
+                completed += 1;
+                // Stop requested right after the first unit completes.
+                control_cb.stop().expect("running -> stopping");
+                true
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+
+    assert_eq!(completed, 1, "the in-flight unit completed first");
+    assert_eq!(
+        result.results.len(),
+        1,
+        "the second unit must not start after the stop"
+    );
+    assert_eq!(
+        control.state(),
+        PipelineState::Stopping,
+        "the batch halts in the stopping state"
+    );
+}
+
+/// A stop signal arriving while a call-graph batch waits at a pause
+/// boundary releases the wait and ends the batch — shutdown must never
+/// hang on a paused run, on either entry point.
+#[tokio::test]
+async fn callgraph_batch_stop_during_pause_releases_the_wait() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let control = PipelineControl::new();
+    control.start().expect("idle -> running");
+    let stop = StopSignal::new();
+
+    // The "operator" side: once the run is waiting in Paused, fire the
+    // stop signal (what the shutdown endpoint does).
+    let watched = control.clone();
+    let stop_signal = stop.clone();
+    let stop_task = tokio::spawn(async move {
+        while watched.state() != PipelineState::Paused {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        stop_signal.stop();
+    });
+
+    let pipeline = pipeline_over(Some(dir.path()))
+        .with_pipeline_control(control.clone())
+        .with_stop_signal(stop.clone());
+    let graph = queue_graph();
+    let control_cb = control.clone();
+    let mut seen = 0;
+    let result = pipeline
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, _function, _func_result| {
+                seen += 1;
+                if seen == 1 {
+                    control_cb.pause().expect("running -> paused");
+                }
+                true
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+    stop_task.await.expect("the stop task ran");
+
+    assert_eq!(
+        result.results.len(),
+        1,
+        "the paused loop ended at the boundary on the stop signal"
+    );
+}
+
+/// A paused target binary ends a call-graph batch at the next unit
+/// boundary and the batch returns rather than waiting for a resume —
+/// the same end an explicit-list batch takes (issue #219).
+#[tokio::test]
+async fn callgraph_batch_ends_at_unit_boundary_when_its_binary_is_paused() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let scope = ScopeControl::new();
+    let scope_cb = scope.clone();
+    let pipeline = pipeline_over(Some(dir.path())).with_scope(scope);
+    let graph = queue_graph();
+
+    let mut completed = 0;
+    // The timeout is the "never waits forever" assertion: a run-level
+    // pause would hold here until a resume that never arrives, while a
+    // binary pause ends the batch on its own. The bound is generous
+    // because the fifteen pre-analysis scans over the fixture run inside it.
+    let batch = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        pipeline.batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, _function, _func_result| {
+                completed += 1;
+                // Pause requested right after the first unit completes.
+                scope_cb
+                    .pause_binary("game_logic.dll")
+                    .expect("pause persists");
+                true
+            }),
+        ),
+    )
+    .await
+    .expect("a paused binary ends the batch — it never waits for a resume");
+
+    let result = batch
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+    assert_eq!(completed, 1, "the in-flight unit completed first");
+    assert_eq!(
+        result.results.len(),
+        1,
+        "the second unit must not start after the binary pause"
+    );
+}
+
+/// A binary paused before its call-graph batch starts attempts zero
+/// units, and the differently-cased pause still matches — the same
+/// boundary check and the one match rule from #107.
+#[tokio::test]
+async fn callgraph_batch_attempts_no_units_when_its_binary_is_paused_before_start() {
+    let dir = TempDir::new().expect("temp workspace");
+    let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+    let scope = ScopeControl::new();
+    scope
+        .pause_binary("GAME_LOGIC.DLL")
+        .expect("pause persists before the batch starts");
+
+    let graph = queue_graph();
+    let result = pipeline_over(Some(dir.path()))
+        .with_scope(scope)
+        .batch_translate_from_callgraph(
+            &graph,
+            &retry::RetryConfig::default(),
+            &verifier,
+            Some(&mut |_binary, function, _func_result| {
+                panic!("no unit may start for a binary paused before its batch: {function}");
+            }),
+        )
+        .await
+        .expect("a batch over functions the fixture lacks still reports per-function failures");
+
+    assert!(
+        result.results.is_empty(),
+        "a binary paused before its batch starts attempts zero units"
+    );
 }
 
 /// A pre-built request carrying a thunk's self-call body is refused
@@ -850,6 +1191,96 @@ async fn batch_translate_attempts_no_units_when_its_binary_is_paused_before_star
         result.results.is_empty(),
         "a binary paused before its batch starts attempts zero units"
     );
+}
+
+// ─── The unit gate (issue #487) ────────────────────────────────────
+
+/// A scope whose run has already spent its token budget.
+fn spent_budget_scope() -> ScopeControl {
+    let scope = ScopeControl::new();
+    scope
+        .set_constraints(TranslationConstraints {
+            max_attempts: None,
+            max_context_tier: None,
+            token_budget: Some(100),
+        })
+        .expect("constraints should persist");
+    scope.record_tokens(100);
+    scope
+}
+
+/// A scope with its token budget already spent and its target binary
+/// paused, for the gate order pins below.
+fn held_scope() -> ScopeControl {
+    let scope = spent_budget_scope();
+    scope
+        .pause_binary("game_logic.dll")
+        .expect("pause persists");
+    scope
+}
+
+/// A `PipelineControl` halted in `Stopping`, for the gate order pins.
+fn halted_control() -> PipelineControl {
+    let control = PipelineControl::new();
+    control.start().expect("idle -> running");
+    control.stop().expect("running -> stopping");
+    control
+}
+
+/// One pin fixes the gate's arm order (issue #487). When several arms
+/// hold at one boundary, the gate names the earliest arm in the fixed
+/// order: stop, budget, paused binary, pipeline control. Each stage
+/// below releases the leading arm, and the next arm takes over.
+#[tokio::test]
+async fn unit_gate_names_the_earliest_arm_when_several_hold() {
+    // All four arms hold: the stop signal is the reason named.
+    let stop = StopSignal::new();
+    stop.stop();
+    let pipeline = pipeline_over(None)
+        .with_stop_signal(stop)
+        .with_scope(held_scope())
+        .with_pipeline_control(halted_control());
+    assert_eq!(
+        pipeline.unit_gate("game_logic.dll").await,
+        Some(UnitGate::StopSignal),
+        "a held stop signal outranks the other three arms"
+    );
+
+    // No stop signal: the spent budget is next.
+    let pipeline = pipeline_over(None)
+        .with_scope(held_scope())
+        .with_pipeline_control(halted_control());
+    assert_eq!(
+        pipeline.unit_gate("game_logic.dll").await,
+        Some(UnitGate::BudgetExhausted),
+        "a spent budget outranks the paused binary and the halt"
+    );
+
+    // No budget spent either — the scope holds only the pause: the
+    // paused binary is next.
+    let paused_only = ScopeControl::new();
+    paused_only
+        .pause_binary("game_logic.dll")
+        .expect("pause persists");
+    let pipeline = pipeline_over(None)
+        .with_scope(paused_only)
+        .with_pipeline_control(halted_control());
+    assert_eq!(
+        pipeline.unit_gate("game_logic.dll").await,
+        Some(UnitGate::BinaryPaused),
+        "a paused binary outranks the pipeline control halt"
+    );
+
+    // Only the control halt holds: it is the reason named.
+    let pipeline = pipeline_over(None).with_pipeline_control(halted_control());
+    assert_eq!(
+        pipeline.unit_gate("game_logic.dll").await,
+        Some(UnitGate::ControlHalt),
+        "the halt is the reason when it is the only arm holding"
+    );
+
+    // Nothing holds: the gate opens and the next unit may start.
+    assert_eq!(pipeline_over(None).unit_gate("game_logic.dll").await, None);
 }
 
 /// A stand-in LLM server that accepts connections and never answers —

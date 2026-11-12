@@ -69,6 +69,14 @@ _Avoid_: bare priority where the two could be confused
 The operator's act of holding a unit out of translation work while the run goes on.
 _Avoid_: park — that is a target binary's classification act, owned by Evidence; pause / hold — target-binary steering within the run
 
+**Unit gate**:
+The one check both batch passes run at every unit boundary: it reads the operator's four steering controls in a fixed order — stop signal, token budget, paused target binary, pipeline control — and names the first control that holds.
+*Rules:*
+- The fixed order decides precedence when several controls hold at one boundary; the earliest named wins.
+- A paused target binary outranks a pipeline-control halt, so the batch returns instead of waiting in a run-level pause.
+- The named reason and the remaining unit count go into the boundary log line.
+_Avoid_: gate check, steering check
+
 **Override**:
 The operator's standing decision that outranks the system's own judgment — a classification override outranks PE facts and name tables.
 

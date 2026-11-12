@@ -329,40 +329,15 @@ impl TranslationPipeline {
         for (idx, plan_func) in plan.iter().enumerate() {
             use calxgloss_callgraph::TranslationPriority;
 
-            if self.stop_requested() {
+            // The same unit gate the explicit-list pass runs, so a
+            // call-graph batch stops, pauses and budget-stops exactly
+            // like an explicit-list batch (issue #487).
+            if let Some(gate) = self.unit_gate(binary).await {
                 info!(
                     binary,
+                    gate = %gate,
                     remaining = plan.len() - idx,
-                    "Stop signal received — ending call-graph batch at unit boundary"
-                );
-                break;
-            }
-
-            if self.budget_exhausted() {
-                info!(
-                    binary,
-                    remaining = plan.len() - idx,
-                    "Token budget exhausted — ending call-graph batch at unit boundary"
-                );
-                break;
-            }
-
-            // A paused binary ends this batch — unlike a run-level pause it
-            // never holds the loop open (issue #219, part of #217).
-            if self.binary_paused(binary) {
-                info!(
-                    binary,
-                    remaining = plan.len() - idx,
-                    "Binary paused — ending call-graph batch at unit boundary"
-                );
-                break;
-            }
-
-            if !self.control_allows_next_unit().await {
-                info!(
-                    binary,
-                    remaining = plan.len() - idx,
-                    "Pipeline control halt — ending call-graph batch at unit boundary"
+                    "Ending call-graph batch at unit boundary"
                 );
                 break;
             }
