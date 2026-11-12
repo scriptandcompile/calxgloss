@@ -6,6 +6,11 @@ use super::*;
 impl TranslationPipeline {
     /// Translate the given functions in one binary as a batch.
     ///
+    /// The run's queue is built ahead of the batch's opening steps
+    /// through the explicit-list adapter: every operator-scoped
+    /// function enters as a planned unit, planned to translate
+    /// (issue #488).
+    ///
     /// Returns a `BatchTranslationResult` holding each function's translation outcome.
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
@@ -24,19 +29,21 @@ impl TranslationPipeline {
             "Starting batch translation"
         );
 
+        // The run's queue comes from the explicit-list adapter, ahead of
+        // the batch's opening steps (issue #488): operator scope
+        // applies, and every scoped function is planned to translate.
+        let queue = self.explicit_queue(binary, functions);
+
         self.begin_cached_source(binary).await;
 
         self.run_prebatch_scans(binary).await;
 
-        // W2.5: operator scope — skipped functions never enter the queue and
-        // priority functions move to the front.
-        let functions = self.apply_function_scope(binary, functions.to_vec(), |f| f.as_str());
-
         // Carry-over seeding (issue #299): the scan step just saved the
-        // pairing documents for these exact bytes, so collect the seeds for
-        // this queue now and the batch's inputs are settled before its first
-        // unit starts.
-        self.refresh_carry_over_seeds(binary, &functions);
+        // pairing documents for these exact bytes, so collect the seeds
+        // from the queue's unit names now and the batch's inputs are
+        // settled before its first unit starts.
+        let queue_names: Vec<String> = queue.iter().map(|unit| unit.name.clone()).collect();
+        self.refresh_carry_over_seeds(binary, &queue_names);
 
         // Unknown residue (issues #369, #371): the batch's ledger write
         // files the current derived set, so the previous batch's
@@ -53,7 +60,11 @@ impl TranslationPipeline {
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
-        for (idx, function) in functions.iter().enumerate() {
+        for (idx, unit) in queue.iter().enumerate() {
+            // Every unit here is planned to translate, so the per-unit
+            // body is the batch's work unchanged (issue #488).
+            let function = unit.name.as_str();
+
             // The unit gate holds the operator's four steering arms in
             // one fixed order (issue #487). The reason it names goes
             // into the boundary log line beside the remaining count.
@@ -61,7 +72,7 @@ impl TranslationPipeline {
                 info!(
                     binary,
                     gate = %gate,
-                    remaining = functions.len() - idx,
+                    remaining = queue.len() - idx,
                     "Ending batch at unit boundary"
                 );
                 break;
@@ -71,7 +82,7 @@ impl TranslationPipeline {
                 binary,
                 function,
                 index = idx + 1,
-                total = functions.len(),
+                total = queue.len(),
                 "Translating function in batch"
             );
 
@@ -103,7 +114,7 @@ impl TranslationPipeline {
                                 let rust_code = retry_result.rust_code.clone().unwrap_or_default();
                                 batch::FunctionResult::success(
                                     binary.to_string(),
-                                    function.clone(),
+                                    function.to_string(),
                                     rust_code,
                                     retry_result,
                                     None, // git handled by caller via callback
@@ -117,7 +128,7 @@ impl TranslationPipeline {
                                 );
                                 batch::FunctionResult::failure(
                                     binary.to_string(),
-                                    function.clone(),
+                                    function.to_string(),
                                     retry_result,
                                 )
                             }
@@ -135,7 +146,7 @@ impl TranslationPipeline {
                                     "Batch function is a root symbol — recorded skipped, not failed"
                                 );
                                 unit_refused = true;
-                                batch::FunctionResult::skipped(binary.to_string(), function.clone())
+                                batch::FunctionResult::skipped(binary.to_string(), function.to_string())
                             } else {
                                 warn!(
                                     binary,
@@ -147,7 +158,7 @@ impl TranslationPipeline {
                                 let empty_result = retry::RetryResult::new();
                                 batch::FunctionResult::failure(
                                     binary.to_string(),
-                                    function.clone(),
+                                    function.to_string(),
                                     empty_result,
                                 )
                             }
@@ -165,7 +176,7 @@ impl TranslationPipeline {
                     (
                         batch::FunctionResult::failure(
                             binary.to_string(),
-                            function.clone(),
+                            function.to_string(),
                             empty_result,
                         ),
                         true,
@@ -191,7 +202,7 @@ impl TranslationPipeline {
                     let empty_result = retry::RetryResult::new();
                     result = batch::FunctionResult::failure(
                         binary.to_string(),
-                        function.clone(),
+                        function.to_string(),
                         empty_result,
                     );
                 }
@@ -215,7 +226,7 @@ impl TranslationPipeline {
             if !aborted {
                 self.emit(ProgressEvent::FunctionCompleted {
                     binary: binary.to_string().into(),
-                    function: function.clone(),
+                    function: function.to_string(),
                     success,
                     attempts: 0,  // filled by caller after git branch creation
                     branch: None, // filled by caller after git branch creation

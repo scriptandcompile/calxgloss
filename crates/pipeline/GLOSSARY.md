@@ -58,6 +58,10 @@ The human who starts, stops, and steers the run, and whose overrides outrank the
 **Queue**:
 The run's ordered waiting list of units. The call graph sets the natural order. Steering edits it.
 
+**Planned unit**:
+One entry in the run's queue: the unit's name plus its planned disposition — translate, stub, or skip. Both batch entry points build their queue from planned units before the batch's opening steps run.
+_Avoid_: queue entry, plan node — that is the call graph's own record, before a disposition is assigned
+
 **Priority**:
 An operator-chosen elevation of a unit above the natural work order, in two qualified surfaces.
 *Rules:*

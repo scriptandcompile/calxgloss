@@ -230,6 +230,12 @@ impl TranslationPipeline {
     /// classified as [`NodeCategory::Skip`] (runtime library functions) are
     /// not stubbed and appear as `batch::FunctionResult::skipped`.
     ///
+    /// The run's queue is built ahead of the batch's opening steps
+    /// through the call-graph adapter: the ordered plan becomes planned
+    /// units, with entry points planned Stub, runtime-library functions
+    /// planned skip, and every other unit planned to translate
+    /// (issue #488).
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -286,30 +292,23 @@ impl TranslationPipeline {
     ) -> Result<batch::BatchTranslationResult> {
         debug!(binary = %graph.binary, count = graph.functions.len(), "Starting call-graph batch translation");
 
-        self.begin_cached_source(&graph.binary).await;
-
-        self.run_prebatch_scans(&graph.binary).await;
-
-        // Build the plan in priority order, extended by the saved
-        // shared-globals index when the global-state scan has run for
-        // this binary (issue #256) — it reads the artifact, never scans.
-        let orderer = calxgloss_callgraph::TranslationOrderer::new()
-            .with_state_sharing(self.state_sharing_edges(&graph.binary));
-        let plan = orderer
-            .order(graph)
-            .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
-
-        let plan: Vec<_> = plan.into_iter().collect();
+        // The run's queue comes from the call-graph adapter, ahead of
+        // the batch's opening steps (issue #488): the plan in priority
+        // order, extended by the saved shared-globals index when that
+        // document exists for this binary (issue #256), with each unit's
+        // planned disposition. Operator scope applies too: skipped
+        // functions leave the queue, and priority functions sort first.
         let binary = &graph.binary;
+        let queue = self.callgraph_queue(graph)?;
 
-        // W2.5: operator scope — skipped functions are taken out of the plan
-        // before the first unit starts, and priority functions sort first.
-        let plan = self.apply_function_scope(binary, plan, |p| p.name.as_str());
+        self.begin_cached_source(binary).await;
+
+        self.run_prebatch_scans(binary).await;
 
         // Carry-over seeding (issue #299): the scan step saved the pairing
-        // documents for these exact bytes; collect the seeds for this plan
-        // before its first unit starts.
-        let queue_names: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
+        // documents for these exact bytes; collect the seeds from the
+        // queue's unit names before its first unit starts.
+        let queue_names: Vec<String> = queue.iter().map(|unit| unit.name.clone()).collect();
         self.refresh_carry_over_seeds(binary, &queue_names);
 
         // Unknown residue (issues #369, #371): the batch's ledger write
@@ -326,9 +325,7 @@ impl TranslationPipeline {
 
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
-        for (idx, plan_func) in plan.iter().enumerate() {
-            use calxgloss_callgraph::TranslationPriority;
-
+        for (idx, unit) in queue.iter().enumerate() {
             // The same unit gate the explicit-list pass runs, so a
             // call-graph batch stops, pauses and budget-stops exactly
             // like an explicit-list batch (issue #487).
@@ -336,29 +333,29 @@ impl TranslationPipeline {
                 info!(
                     binary,
                     gate = %gate,
-                    remaining = plan.len() - idx,
+                    remaining = queue.len() - idx,
                     "Ending call-graph batch at unit boundary"
                 );
                 break;
             }
 
-            // Handle root functions (entry points) — generate Stubs, not translations
-            if matches!(plan_func.priority, TranslationPriority::Root) {
-                // Skip functions are recorded as skipped (runtime library functions)
-                if matches!(plan_func.category, NodeCategory::Skip) {
+            // The batch pass branches on the unit's planned disposition,
+            // whichever adapter built the queue (issue #488).
+            match unit.disposition {
+                // Skipped units (runtime library functions) are recorded
+                // as skipped and never start.
+                PlannedDisposition::Skip => {
                     info!(
                         binary,
-                        name = %plan_func.name,
-                        address = plan_func.address,
+                        name = %unit.name,
                         "Skipping runtime library function"
                     );
-                    let skipped =
-                        batch::FunctionResult::skipped(binary.clone(), plan_func.name.clone());
+                    let skipped = batch::FunctionResult::skipped(binary.clone(), unit.name.clone());
                     batch_result.add(skipped);
 
                     self.emit(ProgressEvent::FunctionCompleted {
                         binary: binary.clone().into(),
-                        function: plan_func.name.clone(),
+                        function: unit.name.clone(),
                         success: true,
                         attempts: 0,
                         branch: None,
@@ -372,48 +369,46 @@ impl TranslationPipeline {
 
                     continue;
                 }
+                // Stubbed units (entry-point roots) get a Stub, not a
+                // translation.
+                PlannedDisposition::Stub => {
+                    info!(binary, name = %unit.name, "Generating stub for root function");
+                    let stub_code = self.generate_stub(&unit.name, "");
+                    let stubbed = batch::FunctionResult::stubbed(
+                        binary.clone(),
+                        unit.name.clone(),
+                        stub_code,
+                    );
+                    batch_result.add(stubbed.clone());
 
-                // Generate a Stub for entry-point functions
-                info!(
-                    binary,
-                    name = %plan_func.name,
-                    address = plan_func.address,
-                    "Generating stub for root function"
-                );
-                let stub_code = self.generate_stub(&plan_func.name, "");
-                let stubbed = batch::FunctionResult::stubbed(
-                    binary.clone(),
-                    plan_func.name.clone(),
-                    stub_code,
-                );
-                batch_result.add(stubbed.clone());
+                    self.emit(ProgressEvent::FunctionCompleted {
+                        binary: binary.clone().into(),
+                        function: unit.name.clone(),
+                        success: true,
+                        attempts: 0,
+                        branch: None,
+                    });
 
-                self.emit(ProgressEvent::FunctionCompleted {
-                    binary: binary.clone().into(),
-                    function: plan_func.name.clone(),
-                    success: true,
-                    attempts: 0,
-                    branch: None,
-                });
+                    // Run the caller's callback even for functions that got a Stub
+                    if let Some(ref mut cb) = on_function_completed
+                        && !cb(binary, &unit.name, &mut stubbed.clone())
+                    {
+                        info!(binary, function = %unit.name, "Batch stopped early by callback");
+                        break;
+                    }
 
-                // Run the caller's callback even for functions that got a Stub
-                if let Some(ref mut cb) = on_function_completed
-                    && !cb(binary, &plan_func.name, &mut stubbed.clone())
-                {
-                    info!(binary, function = %plan_func.name, "Batch stopped early by callback");
-                    break;
+                    continue;
                 }
-
-                continue;
+                PlannedDisposition::Translate => {}
             }
+
+            let name = unit.name.as_str();
 
             info!(
                 binary,
-                name = %plan_func.name,
-                address = plan_func.address,
-                priority = ?plan_func.priority,
+                name = %name,
                 index = idx + 1,
-                total = plan.len(),
+                total = queue.len(),
                 "Translating function in batch"
             );
 
@@ -425,21 +420,21 @@ impl TranslationPipeline {
             // callback below (a stopped unit has no code to write).
             let mut unit_refused = false;
             let mut result = match self
-                .try_translate_with_retry(binary, &plan_func.name, config, verifier)
+                .try_translate_with_retry(binary, name, config, verifier)
                 .await
             {
                 Ok(retry_result) => {
                     if retry_result.success {
                         info!(
                             binary,
-                            name = %plan_func.name,
+                            name = %name,
                             attempts = retry_result.attempts.len(),
                             "Batch function succeeded"
                         );
                         let rust_code = retry_result.rust_code.clone().unwrap_or_default();
                         batch::FunctionResult::success(
                             binary.clone(),
-                            plan_func.name.clone(),
+                            name.to_string(),
                             rust_code,
                             retry_result,
                             None,
@@ -447,14 +442,14 @@ impl TranslationPipeline {
                     } else {
                         warn!(
                             binary,
-                            name = %plan_func.name,
+                            name = %name,
                             attempts = retry_result.attempts.len(),
                             "Batch function exhausted all retries"
                         );
                         let empty_result = retry::RetryResult::new();
                         batch::FunctionResult::failure(
                             binary.clone(),
-                            plan_func.name.clone(),
+                            name.to_string(),
                             empty_result,
                         )
                     }
@@ -465,23 +460,23 @@ impl TranslationPipeline {
                     if matches!(e, TranslatorError::SkippedRoot { .. }) {
                         info!(
                             binary,
-                            name = %plan_func.name,
+                            name = %name,
                             error = %e,
                             "Plan function is a root symbol — recorded skipped, not failed"
                         );
                         unit_refused = true;
-                        batch::FunctionResult::skipped(binary.clone(), plan_func.name.clone())
+                        batch::FunctionResult::skipped(binary.clone(), name.to_string())
                     } else {
                         warn!(
                             binary,
-                            name = %plan_func.name,
+                            name = %name,
                             error = %e,
                             "Batch function translation failed (pipeline error)"
                         );
                         let empty_result = retry::RetryResult::new();
                         batch::FunctionResult::failure(
                             binary.clone(),
-                            plan_func.name.clone(),
+                            name.to_string(),
                             empty_result,
                         )
                     }
@@ -501,7 +496,7 @@ impl TranslationPipeline {
             // Send the progress event used for real-time tracking
             self.emit(ProgressEvent::FunctionCompleted {
                 binary: binary.clone().into(),
-                function: plan_func.name.clone(),
+                function: name.to_string(),
                 success,
                 attempts: 0,  // filled by caller after git branch creation
                 branch: None, // filled by caller after git branch creation
@@ -514,7 +509,7 @@ impl TranslationPipeline {
             let continue_batch = if let Some(ref mut cb) = on_function_completed
                 && !unit_refused
             {
-                cb(binary, &plan_func.name, &mut result)
+                cb(binary, name, &mut result)
             } else {
                 true
             };
@@ -530,11 +525,7 @@ impl TranslationPipeline {
             self.file_obligation_ledger(binary).await?;
 
             if !continue_batch {
-                info!(
-                    binary,
-                    function = %plan_func.name,
-                    "Batch stopped early by callback"
-                );
+                info!(binary, function = %name, "Batch stopped early by callback");
                 break;
             }
         }
