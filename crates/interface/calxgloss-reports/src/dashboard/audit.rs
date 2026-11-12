@@ -201,7 +201,10 @@ mod tests {
         assert_eq!(ledger.unknowns.resolved, 1);
         assert_eq!(ledger.unknowns.dismissed, 1);
         assert_eq!(
-            ledger.unknowns.open_by_severity.get(&UnknownSeverity::Blocking),
+            ledger
+                .unknowns
+                .open_by_severity
+                .get(&UnknownSeverity::Blocking),
             Some(&1),
             "the open severity counts are the open ones"
         );

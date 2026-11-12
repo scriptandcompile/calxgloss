@@ -236,7 +236,8 @@ async fn test_headless_scenario_section_renders_the_honest_negative_with_no_rows
     // reading, never an empty success and never a pass.
     let negative_visible = tab
         .wait_for_text(SCENARIO_STRIP, |strip| {
-            strip.contains("no scenario documents stand filed") && strip.contains("never a clean run")
+            strip.contains("no scenario documents stand filed")
+                && strip.contains("never a clean run")
         })
         .await;
     let strip = scenario_strip_text(&tab);

@@ -1,10 +1,10 @@
 //! Utility functions for the CLI.
 
-use anyhow::{Context, Result};
 pub(crate) use crate::printers::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
 };
+use anyhow::{Context, Result};
 pub use calxgloss_translator::RetryStrategy;
 use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};

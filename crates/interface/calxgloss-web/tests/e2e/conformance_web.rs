@@ -471,12 +471,7 @@ fn file_empty_unknown_ledger(repo: &std::path::Path) {
 }
 
 /// File the obligation ledger for one fully-closed green claim.
-fn stage_closed_claim(
-    repo: &std::path::Path,
-    function: &str,
-    owner: &str,
-    citation: &str,
-) {
+fn stage_closed_claim(repo: &std::path::Path, function: &str, owner: &str, citation: &str) {
     let mut entry = calxgloss_types::ObligationEntry::new(
         function,
         1,
@@ -554,7 +549,10 @@ async fn the_dashboard_payload_tallies_every_honest_disposition_apart_from_verif
                 "ReviewMeNot",
                 calxgloss_types::ObligationDisposition::UnReviewed,
             ),
-            ("NoCover", calxgloss_types::ObligationDisposition::NoBaseline),
+            (
+                "NoCover",
+                calxgloss_types::ObligationDisposition::NoBaseline,
+            ),
         ]
         .into_iter()
         .map(|(function, disposition)| {
@@ -661,9 +659,12 @@ async fn tampered_obligation_ledger_bytes_fall_to_unknown_naming_the_digest_mism
         .as_str()
         .expect("the entry carries its owner")
         .to_string();
-    let forged = if owner_field.starts_with('0') { '1' } else { '0' };
-    doc["entries"][0]["owner_commit"] =
-        serde_json::json!(format!("{forged}{}", &owner_field[1..]));
+    let forged = if owner_field.starts_with('0') {
+        '1'
+    } else {
+        '0'
+    };
+    doc["entries"][0]["owner_commit"] = serde_json::json!(format!("{forged}{}", &owner_field[1..]));
     std::fs::write(&path, doc.to_string()).expect("edit a sealed entry under the unchanged seal");
 
     let body = dashboard_body(&world).await;

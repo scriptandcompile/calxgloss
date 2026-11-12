@@ -950,8 +950,8 @@ mod tests {
             "keyless_engine.dll".to_string(),
         ];
         let unknown = super::super::audit::derive_binary_unknown_ledgers(dir.path(), &targets);
-        let conformance = derive_run_conformance(dir.path(), &targets)
-            .expect("the close derives its rows");
+        let conformance =
+            derive_run_conformance(dir.path(), &targets).expect("the close derives its rows");
         assert_eq!(
             conformance
                 .iter()
